@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Panel Admin</title>
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: #f2f4f8;
+}
+
+.top {
+    background: #141b2d;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.top a {
+    color: white;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+.wrap {
+    max-width: 1150px;
+    margin: 20px auto;
+    padding: 0 16px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 14px;
+}
+
+.box {
+    background: white;
+    border: 1px solid #dce3ef;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.row {
+    border-bottom: 1px solid #edf1f6;
+    padding: 10px 0;
+}
+
+.row:last-child {
+    border-bottom: 0;
+}
+
+.meta {
+    color: #5f6c81;
+    font-size: 13px;
+}
+
+button {
+    border: 0;
+    border-radius: 8px;
+    background: #8a2f1a;
+    color: white;
+    padding: 8px 11px;
+    cursor: pointer;
+}
+
+input[type="password"],
+input[type="file"] {
+    border: 1px solid #d1d7e3;
+    border-radius: 8px;
+    padding: 6px;
+    font-size: 12px;
+}
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: #eef2fb;
+    color: #35415a;
+}
+
+@media (max-width: 900px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+</head>
+<body>
+<div class="top">
+    <div>Casa Monarca | Administrador</div>
+    <div>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/bandeja">Bandeja Admin</a>
+        <a href="/usuarios">Usuarios</a>
+        <a href="/logs">Bitacora</a>
+        <a href="/logout">Cerrar sesion</a>
+    </div>
+</div>
+
+<div class="wrap">
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="box" style="background:#eafaf0; border-color:#a7d8b7;">{{ messages[0] }}</div>
+        {% endif %}
+    {% endwith %}
+
+    <div class="grid">
+        <div class="box">
+            <h2 style="margin-top:0;">Expedientes del sistema</h2>
+            {% if expedientes %}
+                {% for d in expedientes %}
+                    <div class="row">
+                        <strong>#{{ d.id }} {{ d.nombre }} {{ d.apellido_paterno }}</strong>
+                        <div class="meta">Creado por {{ d.creado_por }} | Estado: <span class="badge">{{ d.estado }}</span></div>
+                        <div class="meta">Pais: {{ d.pais }} | Edad: {{ d.edad }} | Estancia: {{ d.tiempo_estancia }} meses</div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>Sin expedientes.</p>
+            {% endif %}
+        </div>
+
+        <div class="box">
+            <h2 style="margin-top:0;">Solicitudes de eliminacion</h2>
+            {% if solicitudes %}
+                {% for s in solicitudes %}
+                    <div class="row">
+                        <div><strong>Solicitud #{{ s['id'] }}</strong></div>
+                        <div class="meta">Expediente: {{ s['encuesta_id'] }}</div>
+                        <div class="meta">Solicitante: {{ s['solicitante'] }}</div>
+                        <div class="meta">Motivo: {{ s['motivo'] }}</div>
+                        <div class="meta">Fecha: {{ s['fecha_solicitud'] }}</div>
+                        <div style="display:flex; gap:8px; margin-top:8px;">
+                            <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                                <input type="hidden" name="decision" value="aprobar">
+                                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                                <button type="submit">Aprobar</button>
+                            </form>
+                            <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                                <input type="hidden" name="decision" value="rechazar">
+                                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                                <button type="submit" style="background:#445068;">Rechazar</button>
+                            </form>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No hay solicitudes pendientes.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+</body>
+</html>

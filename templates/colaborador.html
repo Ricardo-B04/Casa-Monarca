@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Bandeja de trabajo</title>
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: #f4f5f8;
+}
+
+.top {
+    background: #111827;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.top a {
+    color: #fff;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+.wrap {
+    max-width: 1080px;
+    margin: 18px auto;
+    padding: 0 16px;
+}
+
+.banner {
+    background: #fff4d6;
+    border: 1px solid #ebd89a;
+    padding: 10px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+}
+
+.card {
+    background: white;
+    border: 1px solid #e2e6ef;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+}
+
+.meta {
+    color: #667085;
+    font-size: 13px;
+    margin: 2px 0;
+}
+
+.actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+button {
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 11px;
+    cursor: pointer;
+    color: white;
+    background: #8b2c14;
+}
+
+input[type="text"],
+input[type="password"] {
+    padding: 8px;
+    border: 1px solid #d6dce9;
+    border-radius: 8px;
+    min-width: 220px;
+}
+
+.empty {
+    text-align: center;
+    padding: 40px;
+    color: #7a8190;
+    background: white;
+    border: 1px solid #e2e6ef;
+    border-radius: 12px;
+}
+</style>
+</head>
+<body>
+
+<div class="top">
+    <div>Bandeja | Rol: {{ role }}</div>
+    <div>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/logout">Cerrar sesion</a>
+    </div>
+</div>
+
+<div class="wrap">
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="banner">{{ messages[0] }}</div>
+        {% endif %}
+    {% endwith %}
+
+    {% if datos %}
+        {% for d in datos %}
+            <div class="card">
+                <h3 style="margin:0 0 8px;">Expediente #{{ d.id }} - {{ d.nombre }} {{ d.apellido_paterno }}</h3>
+                <div class="meta">Creado por: {{ d.creado_por }} | Estado: {{ d.estado }}</div>
+                <div class="meta">Pais: {{ d.pais }} | Edad: {{ d.edad }} | Estancia: {{ d.tiempo_estancia }} meses</div>
+                <div class="meta">Actualizado: {{ d.updated_at }}</div>
+
+                <div class="actions">
+                    {% if role == "usuario" and d.estado == "borrador" %}
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <button type="submit">Canalizar a Operativo</button>
+                        </form>
+                    {% endif %}
+
+                    {% if role == "operativo" and d.estado == "en_revision_operativa" %}
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <button type="submit">Canalizar a Coordinador</button>
+                        </form>
+                    {% endif %}
+
+                    {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
+                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <button type="submit">Validar y enviar a Admin</button>
+                        </form>
+                        <form method="POST" action="/solicitar-eliminacion/{{ d.id }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
+                            <input type="text" name="motivo" placeholder="Motivo de eliminacion" required>
+                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <button type="submit">Solicitar eliminacion</button>
+                        </form>
+                    {% endif %}
+
+                    {% if role == "admin" and d.estado == "validado_coordinacion" %}
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
+                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <button type="submit">Cerrar expediente</button>
+                        </form>
+                    {% endif %}
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <div class="empty">No hay expedientes en tu bandeja actual.</div>
+    {% endif %}
+</div>
+
+</body>
+</html>

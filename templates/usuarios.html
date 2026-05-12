@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Usuarios y Roles</title>
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: #f4f6fa;
+}
+
+.top {
+    background: #161d2f;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.top a {
+    color: white;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+.wrap {
+    max-width: 1180px;
+    margin: 20px auto;
+    padding: 0 16px;
+}
+
+.grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 1.2fr 1fr;
+}
+
+.box {
+    background: white;
+    border: 1px solid #dbe2ef;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.table th, .table td {
+    text-align: left;
+    border-bottom: 1px solid #ecf0f7;
+    padding: 8px 6px;
+}
+
+.table th {
+    font-size: 13px;
+    color: #5b677d;
+}
+
+input, select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px;
+    border-radius: 8px;
+    border: 1px solid #cfd7e6;
+    margin-bottom: 10px;
+}
+
+button {
+    border: 0;
+    border-radius: 8px;
+    background: #8f3219;
+    color: white;
+    padding: 9px 12px;
+    cursor: pointer;
+}
+
+.log-row {
+    border-bottom: 1px solid #edf0f5;
+    padding: 8px 0;
+    font-size: 13px;
+}
+
+.log-row:last-child {
+    border-bottom: 0;
+}
+
+.helper {
+    color: #6a7382;
+    font-size: 12px;
+    margin-top: -8px;
+    margin-bottom: 8px;
+}
+
+@media (max-width: 980px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+</head>
+<body>
+<div class="top">
+    <div>Casa Monarca | Gestion de usuarios</div>
+    <div>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/admin">Panel Admin</a>
+        <a href="/logs">Bitacora</a>
+        <a href="/logout">Cerrar sesion</a>
+    </div>
+</div>
+
+<div class="wrap">
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="box" style="background:#eef8ff; border-color:#b8d5ed; margin-bottom:14px;">{{ messages[0] }}</div>
+        {% endif %}
+    {% endwith %}
+
+    <div class="grid">
+        <div class="box">
+            <h2 style="margin-top:0;">Usuarios activos</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuario</th>
+                        <th>Rol</th>
+                        <th>Area</th>
+                        <th>Contingencia</th>
+                        <th>Accion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in lista_usuarios %}
+                        <tr>
+                            <td>{{ u['id'] }}</td>
+                            <td>{{ u['username'] }}</td>
+                            <td>{{ role_labels.get(u['rol'], u['rol']) }}</td>
+                            <td>{{ u['area'] or '-' }}</td>
+                            <td>{{ 'Si' if u['is_contingency'] == 1 else 'No' }}</td>
+                            <td>
+                                <form method="POST" action="/eliminar-usuario/{{ u['id'] }}" enctype="multipart/form-data" onsubmit="return confirm('Se eliminara el usuario. Continuar?');">
+                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                                    <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                                    <button type="submit" style="background:#44506a;">Eliminar</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="box">
+            <h2 style="margin-top:0;">Crear usuario</h2>
+            <form method="POST" enctype="multipart/form-data">
+                <label>Usuario</label>
+                <input name="username" required>
+
+                <label>Contrasena</label>
+                <input type="password" name="password" required>
+
+                <label>Rol</label>
+                <select name="rol" id="rol-select" onchange="toggleArea()">
+                    <option value="usuario">Usuario (C)</option>
+                    <option value="operativo">Operativo (CR)</option>
+                    <option value="coordinador">Coordinador (CRU)</option>
+                    <option value="admin">Administrador (CRUD)</option>
+                </select>
+
+                <div id="area-wrap" style="display:none;">
+                    <label>Area de coordinacion</label>
+                    <select name="area">
+                        {% for area in coordinator_areas %}
+                            <option value="{{ area }}">{{ area }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <label>Certificado del admin para firmar</label>
+                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                <div class="helper">Obligatorio para firmar la creacion.</div>
+
+                <label>
+                    <input type="checkbox" name="is_contingency" value="1" style="width:auto; margin-right:6px;">
+                    Cuenta de contingencia
+                </label>
+
+                <div class="helper">Admins y coordinadores deben configurar su certificado al iniciar sesion.</div>
+
+                <button type="submit">Guardar usuario</button>
+            </form>
+
+            <hr style="margin:18px 0; border:0; border-top:1px solid #eceff5;">
+            <h3 style="margin:0 0 8px;">Ultimos eventos</h3>
+            {% for l in lista_logs[:12] %}
+                <div class="log-row">{{ l['fecha'] }} | <strong>{{ l['usuario'] }}</strong> | {{ l['accion'] }}</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="box" style="margin-top:14px;">
+        <h2 style="margin-top:0;">Certificados</h2>
+        {% if certificados %}
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Usuario</th>
+                        <th>Rol</th>
+                        <th>Emitido por</th>
+                        <th>Emitido en</th>
+                        <th>Expira</th>
+                        <th>Estado</th>
+                        <th>Hash PEM</th>
+                        <th>Huella publica</th>
+                        <th>Serial</th>
+                        <th>Accion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in certificados %}
+                        <tr>
+                            <td>{{ c['username'] }}</td>
+                            <td>{{ role_labels.get(c['rol'], c['rol']) }}</td>
+                            <td>{{ c['issued_by'] or '-' }} ({{ c['issuer_short'] }})</td>
+                            <td>{{ c['issued_at'] or '-' }}</td>
+                            <td>{{ c['expires_at'] or '-' }}</td>
+                            <td>{{ c['status'] }}</td>
+                            <td>{{ c['hash_short'] }}</td>
+                            <td>{{ c['public_short'] }}</td>
+                            <td>{{ c['cert_serial'] or '-' }}</td>
+                            <td>
+                                <form method="POST" action="/certificado/{{ c['id'] }}/descargar" enctype="multipart/form-data">
+                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="width:170px;">
+                                    <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required style="width:140px;">
+                                    <button type="submit" style="background:#44506a;">Descargar</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No hay certificados registrados.</p>
+        {% endif %}
+        <div class="helper">Los PEM se guardan cifrados con passphrase en la carpeta certs.</div>
+    </div>
+</div>
+
+<script>
+function toggleArea() {
+    var rol = document.getElementById('rol-select').value;
+    document.getElementById('area-wrap').style.display = rol === 'coordinador' ? 'block' : 'none';
+}
+toggleArea();
+</script>
+
+</body>
+</html>

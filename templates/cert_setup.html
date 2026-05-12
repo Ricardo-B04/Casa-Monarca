@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Configurar certificado</title>
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: #f3f5f9;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+}
+
+.card {
+    width: min(640px, 92vw);
+    background: white;
+    border-radius: 16px;
+    border: 1px solid #dbe3ef;
+    padding: 24px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+}
+
+h1 {
+    margin: 0 0 10px;
+    font-size: 22px;
+}
+
+p {
+    margin: 0 0 16px;
+    color: #4b5563;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+label {
+    display: block;
+    font-size: 13px;
+    color: #374151;
+    margin-bottom: 6px;
+}
+
+input {
+    width: 100%;
+    padding: 11px 12px;
+    border-radius: 10px;
+    border: 1px solid #cfd7e6;
+    margin-bottom: 12px;
+    box-sizing: border-box;
+}
+
+button {
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 12px;
+    background: #8b2c14;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.note {
+    background: #f8f4ec;
+    border: 1px solid #e6dccb;
+    color: #6b4e2d;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 12px;
+    margin-top: 14px;
+}
+
+.msg {
+    background: #c53030;
+    color: white;
+    padding: 10px 12px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    font-size: 14px;
+}
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>Configurar certificado</h1>
+    <p>Para continuar debes crear tu certificado cifrado. Guarda tu passphrase en un lugar seguro; no se puede recuperar.</p>
+
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="msg">{{ messages[0] }}</div>
+        {% endif %}
+    {% endwith %}
+
+    <form method="POST">
+        <label>Passphrase</label>
+        <input type="password" name="passphrase" required>
+
+        <label>Confirmar passphrase</label>
+        <input type="password" name="passphrase_confirm" required>
+
+        <button type="submit">Generar certificado</button>
+    </form>
+
+    <div class="note">
+        El PEM se genera cifrado (AES-256-CBC). Solo tu passphrase lo puede desbloquear.
+    </div>
+</div>
+</body>
+</html>

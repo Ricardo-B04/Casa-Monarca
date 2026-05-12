@@ -1,0 +1,32 @@
+CHANGELOG
+
+Formato sugerido para nuevas entradas:
+[VERSION] - YYYY-MM-DD
+- Added: nuevas caracteristicas.
+- Changed: cambios en comportamiento existente.
+- Fixed: correcciones de bugs.
+- Security: mejoras de seguridad.
+
+[0.1.0] - 2026-04-24
+- Added:
+  - Modelo base de roles: admin, coordinador, operativo, usuario.
+  - Matriz de permisos por rol (CRUD/CRU/CR/C).
+  - Flujo de estados del expediente con canalizacion por niveles.
+  - Bandeja por rol para visualizar y operar pendientes.
+  - Solicitudes de eliminacion por coordinador y resolucion por admin.
+  - Bitacora de eventos con opcion de limpieza.
+  - Vistas principales renovadas (login, dashboard, bandeja, admin, usuarios, logs).
+- Changed:
+  - Migracion de autenticacion de contrasena plana a password_hash.
+  - Ajustes de esquema en SQLite para compatibilidad con base previa.
+- Fixed:
+  - Correccion en avance de expediente para rol usuario.
+- Security:
+  - Cifrado de datos sensibles en encuestas con Fernet.
+  - Verificacion de certificado (huella SHA-256) para roles criticos con huella registrada.
+  - Bootstrap de certificados de desarrollo para pruebas locales.
+
+Notas para mantenimiento posterior
+- Toda nueva funcionalidad debe registrar su entrada en este archivo.
+- Para cada fix de bug, describir causa y efecto visible.
+- Si se cambia esquema de DB, incluir pasos de migracion.

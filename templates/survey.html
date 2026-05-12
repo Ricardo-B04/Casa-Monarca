@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Nuevo registro</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: "Segoe UI", sans-serif;
+            background: #f6f7fb;
+        }
+
+        .top {
+            background: #1b263b;
+            color: white;
+            padding: 14px 22px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .top a {
+            color: white;
+            text-decoration: none;
+            margin-left: 10px;
+        }
+
+        .container {
+            max-width: 760px;
+            margin: 26px auto;
+            background: white;
+            border: 1px solid #e0e5ef;
+            border-radius: 14px;
+            padding: 22px;
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 4px;
+            color: #505b6f;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 9px;
+            border: 1px solid #cfd6e4;
+            box-sizing: border-box;
+        }
+
+        button {
+            margin-top: 14px;
+            border: 0;
+            border-radius: 10px;
+            background: #8a2f18;
+            color: white;
+            padding: 10px 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        @media (max-width: 700px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="top">
+        <div>Casa Monarca | Nuevo expediente</div>
+        <div>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/logout">Cerrar sesion</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Registro de beneficiario</h2>
+        <form method="POST">
+            <div class="grid">
+                <div>
+                    <label>Nombre</label>
+                    <input name="nombre" required>
+                </div>
+                <div>
+                    <label>Apellido paterno</label>
+                    <input name="apellido_paterno" required>
+                </div>
+                <div>
+                    <label>Apellido materno</label>
+                    <input name="apellido_materno" required>
+                </div>
+                <div>
+                    <label>Pais</label>
+                    <input name="pais" required>
+                </div>
+                <div>
+                    <label>Edad</label>
+                    <input type="number" name="edad" min="0" required>
+                </div>
+                <div>
+                    <label>Tiempo de estancia (meses)</label>
+                    <input type="number" name="tiempo_estancia" min="0" required>
+                </div>
+            </div>
+            <button type="submit">Guardar registro</button>
+        </form>
+    </div>
+</body>
+</html>

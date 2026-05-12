@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Bitacora</title>
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", sans-serif;
+    background: #f4f6fb;
+}
+
+.top {
+    background: #131b2e;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.top a {
+    color: white;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+.wrap {
+    max-width: 980px;
+    margin: 20px auto;
+    padding: 0 16px;
+}
+
+.box {
+    background: white;
+    border: 1px solid #dbe3ef;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+button {
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 11px;
+    background: #8f3219;
+    color: white;
+    cursor: pointer;
+}
+
+input[type="password"],
+input[type="file"] {
+    border: 1px solid #d1d7e3;
+    border-radius: 8px;
+    padding: 6px;
+    font-size: 12px;
+}
+
+.row {
+    border-bottom: 1px solid #edf1f8;
+    padding: 10px 0;
+    font-size: 14px;
+}
+
+.row:last-child {
+    border-bottom: 0;
+}
+
+.meta {
+    color: #667287;
+    font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div class="top">
+    <div>Casa Monarca | Bitacora del sistema</div>
+    <div>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/admin">Panel Admin</a>
+        <a href="/usuarios">Usuarios</a>
+        <a href="/logout">Cerrar sesion</a>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="box">
+        <div class="toolbar">
+            <h2 style="margin:0;">Eventos registrados</h2>
+            <form method="POST" action="/logs/clear" enctype="multipart/form-data" onsubmit="return confirm('Se limpiara toda la bitacora. Continuar?');">
+                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                <button type="submit">Limpiar bitacora</button>
+            </form>
+        </div>
+
+        {% if logs %}
+            {% for l in logs %}
+                <div class="row">
+                    <strong>{{ l['usuario'] }}</strong> - {{ l['accion'] }}
+                    <div class="meta">{{ l['fecha'] }}</div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No hay eventos.</p>
+        {% endif %}
+    </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+TODO - Pendientes del proyecto
+
+Alta prioridad
+- Migrar secreto de Flask y rutas sensibles a variables de entorno.
+- Reemplazar certificados de desarrollo por esquema real (PKI o CA interna).
+- Implementar manejo de expiracion de certificados con alertas.
+- Fortalecer validaciones de entrada y manejo de errores de formularios.
+- Definir politica de respaldo/recuperacion de database.db y key.key.
+
+Prioridad media
+- Agregar catalogo real de paises (lista desplegable) y departamentos.
+- Mejorar UI para mobile y consistencia visual entre pantallas.
+- Implementar paginacion y filtros en bitacora y expedientes.
+- Agregar exportacion de bitacora y reporte de expedientes.
+- Crear modulo de emision de documentos con firma/verificacion.
+
+Prioridad baja
+- Agregar pruebas automatizadas unitarias e integracion (pytest).
+- Incorporar linters/formatters y pipeline CI.
+- Preparar despliegue con contenedor Docker.
+- Documentar guia operativa para admin de contingencia.
