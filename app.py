@@ -15,6 +15,7 @@ import secrets
 import urllib.request
 import urllib.error
 import time
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or os.environ.get("APP_SECRET_KEY") or "secreto_demo"
@@ -378,6 +379,34 @@ def password_has_minimum_entropy(password):
     if pw.lower() in COMMON_WEAK_PASSWORDS:
         return False
 
+    return True
+
+
+def validate_email_address(email):
+    if not email:
+        return True
+    if len(email) > 254:
+        return False
+    # Simple RFC-adjacent sanity check
+    pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+    return re.match(pattern, email) is not None
+
+
+def validate_phone_number(phone):
+    if not phone:
+        return True
+    # Allow +, digits, spaces, hyphens, parentheses. Normalize to digits for length check.
+    cleaned = phone.strip()
+    # remove common separators
+    cleaned_digits = re.sub(r"[\s\-().]", "", cleaned)
+    # allow leading +
+    if cleaned_digits.startswith("+"):
+        digits_only = re.sub(r"[^0-9]", "", cleaned_digits[1:])
+    else:
+        digits_only = re.sub(r"[^0-9]", "", cleaned_digits)
+
+    if len(digits_only) < 7 or len(digits_only) > 20:
+        return False
     return True
 
 
@@ -1775,6 +1804,30 @@ def profile():
             email = request.form.get("email", "").strip() or None
             phone = request.form.get("phone", "").strip() or None
             full_name = request.form.get("full_name", "").strip() or None
+
+            # Validate email and phone (optional fields)
+            if email and not validate_email_address(email):
+                conn.close()
+                flash("Direccion de correo invalida.")
+                return redirect("/profile")
+
+            if phone and not validate_phone_number(phone):
+                conn.close()
+                flash("Numero de telefono invalido. Incluye codigo de pais si aplica.")
+                return redirect("/profile")
+
+            # Normalize email and phone before storing
+            if email:
+                email = email.lower()
+
+            if phone:
+                cleaned = phone.strip()
+                cleaned_digits = re.sub(r"[\s\-().]", "", cleaned)
+                if cleaned_digits.startswith("+"):
+                    normalized_phone = "+" + re.sub(r"[^0-9]", "", cleaned_digits[1:])
+                else:
+                    normalized_phone = re.sub(r"[^0-9]", "", cleaned_digits)
+                phone = normalized_phone
 
             c.execute(
                 "UPDATE usuarios SET email=?, phone=?, full_name=? WHERE username=?",
