@@ -64,8 +64,8 @@ source .venv/bin/activate
 - `admin_prod / admin123` (requiere [certs/admin_prod.pem](certs/admin_prod.pem))
 - `admin_cont / admin123` (requiere [certs/admin_cont.pem](certs/admin_cont.pem))
 - `coord_admin / coord123` (requiere [certs/coord_admin.pem](certs/coord_admin.pem))
-- `operativo_1 / oper123`
-- `usuario_1 / user123`
+- `operativo_1 / Operativo_2026!`
+ - `usuario_1 / Usuario_2026!X`
 
 4. Ejemplo breve de flujo:
 - Usuario crea expediente -> Usuario canaliza -> Operativo canaliza -> Coordinador valida -> Admin cierra.

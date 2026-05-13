@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Mi Perfil</title>
+    <style>
+        body { font-family: "Segoe UI", sans-serif; background: #f4f5f8; color: #222; }
+        .top { background: #132034; color: white; padding: 12px 20px; display:flex; justify-content:space-between; align-items:center }
+        .top a { color: white; text-decoration:none; margin-left:12px }
+        .wrap { max-width:900px; margin:26px auto; padding:0 18px }
+        .card { background:white; border:1px solid #dfe3eb; border-radius:12px; padding:16px; margin-bottom:14px }
+        label { display:block; font-size:13px; color:#616b7c; margin-top:8px }
+        input[type=text], input[type=password], input[type=email] { width:100%; padding:8px; border:1px solid #e2e8f0; border-radius:8px }
+        .btn { background:#8c2f1d; color:white; border:0; padding:8px 12px; border-radius:8px; margin-top:12px }
+    </style>
+</head>
+<body>
+    <div class="top">
+        <div>Casa Monarca | Mi Perfil</div>
+        <div>
+            <a href="/dashboard">Inicio</a>
+            <a href="/logout">Cerrar sesion</a>
+        </div>
+    </div>
+
+    <div class="wrap">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="card" style="border-color:#9dd4b2; background:#ecfff3;">{{ messages[0] }}</div>
+            {% endif %}
+        {% endwith %}
+
+        <div class="card">
+            <h2 style="margin-top:0;">Datos de la cuenta</h2>
+            <div><strong>Usuario:</strong> {{ user['username'] }}</div>
+            <div><strong>Rol:</strong> {{ user['rol'] }} {% if role_label %}({{ role_label }}){% endif %}</div>
+            <div><strong>Area:</strong> {{ user['area'] or '-' }}</div>
+            <div><strong>Activo:</strong> {{ 'Si' if user['activo'] else 'No' }}</div>
+            <div><strong>Ultimo cambio de contrasena:</strong> {{ user['password_updated_at'] or '-' }}</div>
+        </div>
+
+        <form method="POST" class="card">
+            <h3 style="margin-top:0;">Datos de contacto (opcionales)</h3>
+            <input type="hidden" name="action" value="update_contact" />
+            <label>Nombre completo</label>
+            <input type="text" name="full_name" value="{{ user['full_name'] or '' }}" />
+            <label>Correo electronico</label>
+            <input type="email" name="email" value="{{ user['email'] or '' }}" />
+            <label>Telefono</label>
+            <input type="text" name="phone" value="{{ user['phone'] or '' }}" />
+            <button class="btn" type="submit">Guardar datos</button>
+        </form>
+
+        <form method="POST" class="card">
+            <h3 style="margin-top:0;">Cambiar contrasena</h3>
+            <input type="hidden" name="action" value="change_password" />
+            <label>Contrasena actual</label>
+            <input type="password" name="current_password" />
+            <label>Nueva contrasena</label>
+            <input type="password" name="new_password" />
+            <label>Confirmar nueva contrasena</label>
+            <input type="password" name="confirm_password" />
+            <button class="btn" type="submit">Actualizar contrasena</button>
+        </form>
+    </div>
+</body>
+</html>

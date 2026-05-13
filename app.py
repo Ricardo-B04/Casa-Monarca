@@ -175,6 +175,10 @@ def init_db():
     ensure_column(c, "usuarios", "password_updated_at", "TEXT")
     ensure_column(c, "usuarios", "password_algo", "TEXT")
     ensure_column(c, "usuarios", "password_salt", "TEXT")
+    # Campos opcionales para perfil de usuario
+    ensure_column(c, "usuarios", "email", "TEXT")
+    ensure_column(c, "usuarios", "phone", "TEXT")
+    ensure_column(c, "usuarios", "full_name", "TEXT")
 
     ensure_column(c, "certificados", "rol", "TEXT")
     ensure_column(c, "certificados", "issued_by", "TEXT")
@@ -1607,6 +1611,100 @@ def logout():
     log(session.get("user", "desconocido"), "Cerro sesion")
     session.clear()
     return redirect("/")
+
+
+@app.route("/profile", methods=["GET", "POST"])
+def profile():
+    if not require_login():
+        return redirect("/")
+
+    conn = get_conn()
+    c = conn.cursor()
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "update_contact":
+            email = request.form.get("email", "").strip() or None
+            phone = request.form.get("phone", "").strip() or None
+            full_name = request.form.get("full_name", "").strip() or None
+
+            c.execute(
+                "UPDATE usuarios SET email=?, phone=?, full_name=? WHERE username=?",
+                (email, phone, full_name, session.get("user")),
+            )
+            conn.commit()
+            conn.close()
+            log(session.get("user"), "Actualizo datos de perfil")
+            flash("Datos de perfil actualizados.")
+            return redirect("/profile")
+
+        if action == "change_password":
+            current_password = request.form.get("current_password", "")
+            new_password = request.form.get("new_password", "")
+            confirm_password = request.form.get("confirm_password", "")
+
+            c.execute(
+                "SELECT * FROM usuarios WHERE username=? AND activo=1",
+                (session.get("user"),),
+            )
+            user = c.fetchone()
+
+            if not user or not verify_user_password(user, current_password):
+                conn.close()
+                flash("Contrasena actual incorrecta.")
+                return redirect("/profile")
+
+            if new_password != confirm_password:
+                conn.close()
+                flash("La nueva contrasena y su confirmacion no coinciden.")
+                return redirect("/profile")
+
+            if new_password == current_password:
+                conn.close()
+                flash("La nueva contrasena debe ser diferente a la actual.")
+                return redirect("/profile")
+
+            valid, error, warning = validate_new_password_policy(new_password)
+            if warning:
+                flash(warning)
+
+            if not valid:
+                conn.close()
+                flash(error)
+                return redirect("/profile")
+
+            salt = generate_password_salt()
+            c.execute(
+                """
+                UPDATE usuarios
+                SET password_hash=?, password_algo='argon2id', password_salt=?,
+                    password_updated_at=?, must_change_password=0
+                WHERE username=?
+                """,
+                (
+                    hash_password_argon2id(new_password, salt),
+                    encode_salt(salt),
+                    str(datetime.datetime.now()),
+                    session.get("user"),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            session.pop("password_change_required", None)
+            log(session.get("user"), "Actualizo su contrasena (perfil)")
+            flash("Contrasena actualizada correctamente.")
+            return redirect(role_home(session.get("role")))
+
+    c.execute(
+        "SELECT username, rol, area, activo, password_updated_at, email, phone, full_name FROM usuarios WHERE username=?",
+        (session.get("user"),),
+    )
+    user = c.fetchone()
+    conn.close()
+
+    return render_template("profile.html", user=user, role_label=ROLE_LABELS.get(session.get("role"), session.get("role")))
 
 
 if __name__ == "__main__":
