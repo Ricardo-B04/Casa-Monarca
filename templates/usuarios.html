@@ -144,6 +144,7 @@ button {
                             <td>{{ 'Si' if u['is_contingency'] == 1 else 'No' }}</td>
                             <td>
                                 <form method="POST" action="/eliminar-usuario/{{ u['id'] }}" enctype="multipart/form-data" onsubmit="return confirm('Se eliminara el usuario. Continuar?');">
+                                    <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                     <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
                                     <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
                                     <button type="submit" style="background:#44506a;">Eliminar</button>
@@ -158,6 +159,7 @@ button {
         <div class="box">
             <h2 style="margin-top:0;">Crear usuario</h2>
             <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                 <label>Usuario</label>
                 <input name="username" required>
 

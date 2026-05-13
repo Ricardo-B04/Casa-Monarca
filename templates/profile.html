@@ -40,6 +40,7 @@
         </div>
 
         <form method="POST" class="card">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <h3 style="margin-top:0;">Datos de contacto (opcionales)</h3>
             <input type="hidden" name="action" value="update_contact" />
             <label>Nombre completo</label>
@@ -52,6 +53,7 @@
         </form>
 
         <form method="POST" class="card">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <h3 style="margin-top:0;">Cambiar contrasena</h3>
             <input type="hidden" name="action" value="change_password" />
             <label>Contrasena actual</label>

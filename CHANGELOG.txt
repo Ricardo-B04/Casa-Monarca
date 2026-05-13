@@ -30,3 +30,50 @@ Notas para mantenimiento posterior
 - Toda nueva funcionalidad debe registrar su entrada en este archivo.
 - Para cada fix de bug, describir causa y efecto visible.
 - Si se cambia esquema de DB, incluir pasos de migracion.
+
+[0.2.0] - 2026-05-13
+- Added:
+  - Roadmap de implementación por sprints (Hardening, PKI educativa, Mantenibilidad).
+- Changed:
+  - Recomendaciones operativas: separar secretos del código; desplegar sin `debug`; exigir HTTPS.
+- Security:
+  - Plan inicial de mejoras de seguridad: mover `SECRET_KEY` y credenciales a variables de entorno; agregar CSRF; limitar intentos de login; flags de cookies seguras; backups cifrados; validación backend de email/phone; logging más robusto.
+
+Sprint 1 — Hardening y seguridad web (2 semanas)
+- Inquietudes principales:
+  - Riesgo de exposición de PII por backups o DB sin protección.
+  - Sesiones y formularios sin protección contra CSRF y fuerza bruta.
+  - Secretos en código y debug activo en entorno inseguro.
+- Mejoras urgentes a implementar:
+  - Mover secretos a variables de entorno y documentar configuración por entorno.
+  - Desactivar `debug=True` en despliegues y configurar `SECRET_KEY` externo.
+  - Forzar HTTPS (documentar reverse proxy) y marcar cookies `Secure`, `HttpOnly`, `SameSite`.
+  - Añadir protección CSRF para todos los formularios POST.
+  - Implementar rate-limiting/login lockout y registro de intentos en bitácora.
+  - Backups cifrados de `database.db` y procedimiento de restauración probado.
+  - Validación backend para `email` y `phone`.
+
+Sprint 2 — PKI educativa y firma (2 semanas)
+- Inquietudes principales:
+  - Custodia de claves privadas en servidor debilita no-repudio.
+  - Ausencia de CA formal y mecanismo de revocación verificable.
+  - UX/operativa para emisión y reemisión de certificados.
+- Mejoras urgentes a implementar:
+  - Definir política de certificación (CA root/intermedia) y procesos de emisión/revocación.
+  - Emitir certificados X.509 firmados por la CA y verificar cadenas al autenticar/firmar.
+  - Implementar revocación verificable (CRL u OCSP) y pruebas de validación.
+  - Favorecer custodia de claves por parte del usuario (instrucciones/guía, no almacenar claves privadas en servidor sin consentimiento explícito).
+  - UI para gestión de certificados: estado, expiración, reemisión y descarga con autorizaciones.
+
+Sprint 3 — Mantenibilidad, tests y documentación (2 semanas)
+- Inquietudes principales:
+  - Monolito con lógica centralizada dificulta pruebas y mantenimiento.
+  - Falta de tests de integración y documentación operacional.
+- Mejoras urgentes a implementar:
+  - Refactor: separar `app.py` en módulos (`auth`, `users`, `certs`, `surveys`, `db`, `utils`).
+  - Introducir capa de repositorio/servicio para facilitar tests unitarios.
+  - Añadir tests unitarios y de integración para flujos críticos (login, cambio de contraseña, avance de expediente).
+  - Logging estructurado, scripts de backup/restore, y documentación operativa para Casa Monarca.
+
+Notas:
+- Las entradas aquí son el resumen de planificación para la siguiente versión `0.2.0`. Cada cambio implementado deberá agregar su propia línea en el changelog con fecha y categoría correspondiente.

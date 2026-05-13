@@ -50,6 +50,51 @@ source .venv/bin/activate
 - Al iniciar, la app crea tablas faltantes y cuentas semilla.
 - Se generan/actualizan certificados de desarrollo en la carpeta [certs](certs).
 
+### Variables de entorno recomendadas
+Antes de desplegar en un entorno no controlado, exporta las siguientes variables de entorno para mejorar seguridad:
+
+- `SECRET_KEY` o `APP_SECRET_KEY`: valor secreto para la sesión de Flask. Debe ser una cadena fuerte (por ejemplo, 32+ bytes aleatorios en base64).
+- `FLASK_DEBUG`: `1` para activar `debug` en desarrollo, `0` (por defecto) para desactivar en producción.
+- `ENABLE_SESSION_COOKIE_SECURE`: `1` para marcar la cookie de sesión como `Secure` (recomendado en HTTPS), `0` por defecto.
+- `SESSION_COOKIE_SAMESITE`: `Lax` por defecto; puede ajustarse a `Strict` si la app no requiere cross-site form posts.
+
+Ejemplo (bash):
+
+```bash
+export SECRET_KEY="$(python -c 'import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
+export FLASK_DEBUG=0
+export ENABLE_SESSION_COOKIE_SECURE=1
+export SESSION_COOKIE_SAMESITE=Lax
+.venv/bin/python app.py
+```
+
+Nota: en producción, sirve la app detrás de un proxy HTTPS (Nginx, Caddy) y habilita `ENABLE_SESSION_COOKIE_SECURE=1`.
+
+## Mejoras de seguridad aplicadas (Sprint 1)
+Se implementaron varias medidas iniciales de hardening. Resumen rápido:
+
+- CSRF: se añadió protección por token CSRF por sesión en formularios POST. En desarrollo/`TESTING` los tests deshabilitan la verificación para facilitar pruebas automatizadas.
+- Cookies: se forzaron flags `HttpOnly` y `SameSite` por defecto; activar `ENABLE_SESSION_COOKIE_SECURE=1` en despliegues HTTPS añade `Secure`.
+- Rate-limiting / login lockout: bloqueo temporal por intentos fallidos configurable mediante variables de entorno:
+	- `LOGIN_MAX_ATTEMPTS` (por defecto `5`)
+	- `LOGIN_WINDOW_SECONDS` (por defecto `300`)
+	- `LOGIN_LOCKOUT_SECONDS` (por defecto `900`)
+	Estas protecciones usan un store en memoria (por ahora); plan de mejora: persistencia en DB o uso de Redis para sobrevivir reinicios.
+- Tests: añadidos tests para el comportamiento de bloqueo de login en `tests/test_password_security.py`.
+
+### Cómo ejecutar pruebas
+Desde la raíz del proyecto (usa el entorno virtual):
+
+```bash
+# agregar el proyecto al PYTHONPATH para que `import app` funcione en tests
+PYTHONPATH=. .venv/bin/pytest -q
+```
+
+Notas operativas:
+- En entornos de CI, exporta `SECRET_KEY` mediante un gestor de secretos y activa `ENABLE_SESSION_COOKIE_SECURE=1` si corres pruebas sobre HTTPS.
+- Considera usar Redis o una tabla en la base de datos para almacenar contadores de intentos fallidos en producción.
+
+
 ## Uso basico
 1. Ejecutar:
 

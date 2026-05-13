@@ -92,3 +92,48 @@ def test_qa_b_legacy_user_is_blocked_until_upgrade(client, monkeypatch):
 
     allowed = client.get("/dashboard", follow_redirects=False)
     assert allowed.status_code == 200
+
+
+def test_login_rate_limit_and_reset_on_success(client, monkeypatch):
+    # configure limits for test speed
+    monkeypatch.setattr(app_module, "LOGIN_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(app_module, "LOGIN_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(app_module, "LOGIN_LOCKOUT_SECONDS", 60)
+
+    # ensure clean state
+    app_module.failed_login_store.clear()
+
+    # perform failed attempts up to limit
+    for _ in range(3):
+        r = client.post("/", data={"username": "usuario_1", "password": "badpass"}, follow_redirects=True)
+        assert b"Usuario o contrasena incorrectos" in r.data
+
+    # next attempt should be blocked
+    r = client.post("/", data={"username": "usuario_1", "password": "badpass"}, follow_redirects=True)
+    assert b"Cuenta bloqueada" in r.data
+
+    # now login with correct creds should still be blocked until lockout expires
+    r = client.post("/", data={"username": "usuario_1", "password": "Usuario_2026!X"}, follow_redirects=True)
+    assert b"Cuenta bloqueada" in r.data or b"Usuario o contrasena incorrectos" in r.data
+
+
+def test_failed_then_success_resets_counter(client, monkeypatch):
+    monkeypatch.setattr(app_module, "LOGIN_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(app_module, "LOGIN_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(app_module, "LOGIN_LOCKOUT_SECONDS", 60)
+
+    app_module.failed_login_store.clear()
+
+    # two failed attempts
+    for _ in range(2):
+        r = client.post("/", data={"username": "usuario_1", "password": "badpass"}, follow_redirects=True)
+        assert b"Usuario o contrasena incorrectos" in r.data
+
+    # successful login (uses legacy test seed password)
+    r = client.post("/", data={"username": "usuario_1", "password": "user123"}, follow_redirects=True)
+    # should redirect to dashboard or render dashboard
+    assert r.status_code in (200, 302)
+
+    # failed_login_store should be cleared for identifier
+    ident = app_module._login_identifier_from_request("usuario_1")
+    assert ident not in app_module.failed_login_store

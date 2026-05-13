@@ -88,6 +88,7 @@
     <div class="container">
         <h2>Registro de beneficiario</h2>
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <div class="grid">
                 <div>
                     <label>Nombre</label>

@@ -137,12 +137,14 @@ input[type="file"] {
                         <div class="meta">Fecha: {{ s['fecha_solicitud'] }}</div>
                         <div style="display:flex; gap:8px; margin-top:8px;">
                             <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="aprobar">
                                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
                                 <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
                                 <button type="submit">Aprobar</button>
                             </form>
                             <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="rechazar">
                                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
                                 <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>

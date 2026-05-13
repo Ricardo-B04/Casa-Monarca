@@ -93,6 +93,7 @@ button {
     {% endwith %}
 
     <form method="POST">
+        <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
         <label>Passphrase</label>
         <input type="password" name="passphrase" required>
 
