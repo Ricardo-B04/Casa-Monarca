@@ -53,6 +53,15 @@ Sprint 1 — Hardening y seguridad web (2 semanas)
   - Backups cifrados de `database.db` y procedimiento de restauración probado.
   - Validación backend para `email` y `phone`.
 
+[0.2.1] - 2026-05-14
+- Fixed:
+  - Persistencia en SQLite del lockout de login para que sobreviva reinicios y limpiezas de memoria.
+  - Prueba de regresión para confirmar que el bloqueo sigue activo tras vaciar el cache en memoria.
+  - Documentación operativa del flujo de backup y restore cifrado.
+- Security:
+  - Cierre validado localmente del procedimiento de backup/restore cifrado de `database.db`.
+  - Refuerzo del control de fuerza bruta con estado persistente de intentos fallidos.
+
 Sprint 2 — PKI educativa y firma (2 semanas)
 - Inquietudes principales:
   - Custodia de claves privadas en servidor debilita no-repudio.

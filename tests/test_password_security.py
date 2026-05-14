@@ -137,3 +137,38 @@ def test_failed_then_success_resets_counter(client, monkeypatch):
     # failed_login_store should be cleared for identifier
     ident = app_module._login_identifier_from_request("usuario_1")
     assert ident not in app_module.failed_login_store
+
+
+def test_login_lockout_survives_memory_clear(client, monkeypatch):
+    monkeypatch.setattr(app_module, "LOGIN_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(app_module, "LOGIN_WINDOW_SECONDS", 120)
+    monkeypatch.setattr(app_module, "LOGIN_LOCKOUT_SECONDS", 120)
+
+    app_module.failed_login_store.clear()
+
+    for _ in range(3):
+        response = client.post(
+            "/",
+            data={"username": "usuario_1", "password": "badpass"},
+            follow_redirects=True,
+        )
+        assert b"Usuario o contrasena incorrectos" in response.data
+
+    ident = app_module._login_identifier_from_request("usuario_1")
+    app_module.failed_login_store.clear()
+
+    locked, until = app_module._is_locked(ident)
+    assert locked is True
+    assert until is not None
+
+    conn = app_module.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT attempts, lockout_until FROM login_lockouts WHERE identifier=?",
+        (ident,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    assert row["attempts"] == 3
+    assert row["lockout_until"] is not None

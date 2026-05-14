@@ -79,8 +79,9 @@ Se implementaron varias medidas iniciales de hardening. Resumen rápido:
 	- `LOGIN_MAX_ATTEMPTS` (por defecto `5`)
 	- `LOGIN_WINDOW_SECONDS` (por defecto `300`)
 	- `LOGIN_LOCKOUT_SECONDS` (por defecto `900`)
-	Estas protecciones usan un store en memoria (por ahora); plan de mejora: persistencia en DB o uso de Redis para sobrevivir reinicios.
+	El estado de bloqueo se persiste en SQLite para sobrevivir reinicios y limpiar el contador cuando corresponde.
 - Tests: añadidos tests para el comportamiento de bloqueo de login en `tests/test_password_security.py`.
+- Backups cifrados: se añadieron scripts para generar y restaurar copias cifradas de `database.db` usando `key.key`.
 
 ### Cómo ejecutar pruebas
 Desde la raíz del proyecto (usa el entorno virtual):
@@ -170,6 +171,25 @@ Si deseas colaborar:
 
 - Prueba de seguridad minima:
 - Verificar que admin/coordinador con huella configurada no entren sin certificado.
+
+## Runbook de backup y restore
+1. Crear un respaldo cifrado:
+
+```bash
+.venv/bin/python tools/backup_db.py
+```
+
+2. Confirmar que se genero un archivo `.enc` en `backups/`.
+
+3. Probar la restauracion sobre una copia de trabajo o en un entorno descartable:
+
+```bash
+.venv/bin/python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
+```
+
+4. Validar que `database.db` vuelve a abrirse y que la app arranca normalmente.
+
+Validacion local realizada durante el cierre de Sprint 1 con respaldo y restauracion exitosos en el entorno de desarrollo.
 
 ## Licencia de uso
 Pendiente de definir (solo mencion).

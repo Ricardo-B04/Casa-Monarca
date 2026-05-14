@@ -39,7 +39,7 @@ LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
 LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", "900"))
 
-# In-memory store for failed login attempts: {identifier: {attempts, first_ts, lockout_until}}
+# Backward-compatible in-memory cache for failed login attempts.
 failed_login_store = {}
 
 COMMON_WEAK_PASSWORDS = {
@@ -152,6 +152,17 @@ def init_db():
 
     c.execute(
         """
+        CREATE TABLE IF NOT EXISTS login_lockouts (
+            identifier TEXT PRIMARY KEY,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            first_ts REAL NOT NULL DEFAULT 0,
+            lockout_until REAL
+        )
+        """
+    )
+
+    c.execute(
+        """
         CREATE TABLE IF NOT EXISTS certificados (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
@@ -212,6 +223,10 @@ def init_db():
     ensure_column(c, "certificados", "revoked_by", "TEXT")
     ensure_column(c, "certificados", "created_at", "TEXT")
     ensure_column(c, "certificados", "updated_at", "TEXT")
+
+    ensure_column(c, "login_lockouts", "attempts", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(c, "login_lockouts", "first_ts", "REAL NOT NULL DEFAULT 0")
+    ensure_column(c, "login_lockouts", "lockout_until", "REAL")
 
     c.execute(
         """
@@ -285,8 +300,55 @@ def _login_identifier_from_request(provided_username=None):
     return f"ip:{addr}"
 
 
+def _get_failed_login_record(identifier):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT identifier, attempts, first_ts, lockout_until FROM login_lockouts WHERE identifier=?",
+        (identifier,),
+    )
+    rec = c.fetchone()
+    conn.close()
+    return rec
+
+
+def _save_failed_login_record(identifier, attempts, first_ts, lockout_until=None):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO login_lockouts (identifier, attempts, first_ts, lockout_until)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(identifier) DO UPDATE SET
+            attempts=excluded.attempts,
+            first_ts=excluded.first_ts,
+            lockout_until=excluded.lockout_until
+        """,
+        (identifier, attempts, first_ts, lockout_until),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _delete_failed_login_record(identifier):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM login_lockouts WHERE identifier=?", (identifier,))
+    conn.commit()
+    conn.close()
+
+
 def _is_locked(identifier):
     rec = failed_login_store.get(identifier)
+    if not rec:
+        db_rec = _get_failed_login_record(identifier)
+        if db_rec:
+            rec = {
+                "attempts": db_rec["attempts"],
+                "first_ts": db_rec["first_ts"],
+                "lockout_until": db_rec["lockout_until"],
+            }
+            failed_login_store[identifier] = rec
     if not rec:
         return False, None
     now = time.time()
@@ -296,6 +358,7 @@ def _is_locked(identifier):
     first = rec.get("first_ts", 0)
     if now - first > LOGIN_WINDOW_SECONDS:
         failed_login_store.pop(identifier, None)
+        _delete_failed_login_record(identifier)
         return False, None
     return False, None
 
@@ -304,24 +367,37 @@ def _record_failed(identifier):
     now = time.time()
     rec = failed_login_store.get(identifier)
     if not rec:
-        failed_login_store[identifier] = {"attempts": 1, "first_ts": now}
-        return failed_login_store[identifier]
+        db_rec = _get_failed_login_record(identifier)
+        if db_rec:
+            rec = {
+                "attempts": db_rec["attempts"],
+                "first_ts": db_rec["first_ts"],
+                "lockout_until": db_rec["lockout_until"],
+            }
+        else:
+            rec = {"attempts": 0, "first_ts": now}
 
-    # reset window if expired
     if now - rec.get("first_ts", 0) > LOGIN_WINDOW_SECONDS:
         rec["attempts"] = 1
         rec["first_ts"] = now
         rec.pop("lockout_until", None)
+        failed_login_store[identifier] = rec
+        _save_failed_login_record(identifier, rec["attempts"], rec["first_ts"])
         return rec
 
     rec["attempts"] = rec.get("attempts", 0) + 1
     if rec["attempts"] >= LOGIN_MAX_ATTEMPTS:
         rec["lockout_until"] = now + LOGIN_LOCKOUT_SECONDS
+    else:
+        rec.pop("lockout_until", None)
+    failed_login_store[identifier] = rec
+    _save_failed_login_record(identifier, rec["attempts"], rec["first_ts"], rec.get("lockout_until"))
     return rec
 
 
 def _clear_failed(identifier):
     failed_login_store.pop(identifier, None)
+    _delete_failed_login_record(identifier)
 
 
 def generate_password_salt():
