@@ -62,6 +62,66 @@ Sprint 1 — Hardening y seguridad web (2 semanas)
   - Cierre validado localmente del procedimiento de backup/restore cifrado de `database.db`.
   - Refuerzo del control de fuerza bruta con estado persistente de intentos fallidos.
 
+[0.2.2] - 2026-05-14
+- Added:
+  - CA interna del proyecto para emitir certificados X.509 de roles criticos.
+  - Flujo de revocacion de certificados desde el panel de usuarios con motivo obligatorio.
+- Fixed:
+  - Validacion de certificados con firma de CA, vigencia, huella y correspondencia usuario/rol.
+  - Prueba end-to-end de emision, verificacion y revocacion de certificados.
+- Security:
+  - Reemplazo del PEM legado por un paquete X.509 firmado por CA + llave privada cifrada.
+  - Registro de revocacion en la tabla `certificados` y en la bitacora de auditoria.
+
+[0.2.3] - 2026-05-14
+- Added:
+  - Emision de certificados basada en CSR para separar la custodia de la clave privada del servidor.
+  - Soporte de autenticacion con certificado y llave privada separada para roles criticos.
+  - Marcado de custodia por certificado con `custody_mode` para distinguir flujo legado y flujo PKI.
+- Changed:
+  - Configuracion de certificados con soporte dual: bundle legado o CSR generado por el usuario.
+  - Validacion de login y acciones administrativas para aceptar bundle heredado o certificado + llave separada.
+  - Descarga de certificados ajustada al tipo de custodia para no mezclar artefactos.
+- Fixed:
+  - Prueba de regresion para emision por CSR y autenticacion con llave privada externa.
+  - Mantenimiento de compatibilidad con los certificados heredados ya emitidos.
+- Security:
+  - Reduccion de custodia de claves en servidor para el flujo objetivo de PKI.
+  - Separacion entre certificado publico emitido por CA y llave privada conservada por el usuario.
+
+[0.2.4] - 2026-05-14
+- Added:
+  - Login de roles criticos basado en challenge-response con firma del desafio por clave privada local.
+  - Verificacion de acciones criticas mediante firma de desafio de sesion en lugar de passphrase o llave privada enviada al servidor.
+  - Inyeccion de desafios de firma separados para login y acciones administrativas.
+- Changed:
+  - Flujo de autenticacion de admin/coordinador simplificado: certificado publico + firma Base64 o archivo binario de la firma.
+  - Formularios administrativos actualizados para pedir el desafio firmado y no la llave privada.
+  - Validacion del certificado centrada en la clave publica y en la firma del desafio.
+- Fixed:
+  - Eliminacion de la dependencia del servidor sobre la llave privada y la passphrase en login y acciones criticas.
+  - Pruebas end-to-end ajustadas al nuevo protocolo challenge-response.
+- Security:
+  - El servidor verifica posesion de clave privada sin custodiarla ni recibirla.
+  - Reduccion de superficie de ataque al retirar la passphrase del flujo de autenticacion operacional.
+
+[0.2.5] - 2026-05-14
+- Added:
+  - Bootstrap determinista para cuentas semilla con contrasenas fuertes y certificados X.509 validos para `admin_prod`, `admin_cont` y `coord_admin`.
+  - Registro automatico de certificados semilla en la tabla `certificados` al iniciar la aplicacion.
+  - Documentacion operativa del flujo de login con challenge-response y firma del desafio en `README.md`.
+- Changed:
+  - Eliminacion de artefactos legacy de certificados al regenerar el entorno de desarrollo.
+  - Actualizacion del flujo de arranque para evitar contrasenas debiles y estados que forzaban el cambio de password en las cuentas de prueba.
+  - Alineacion de la documentacion con las nuevas credenciales y el proceso de firma de desafio.
+- Fixed:
+  - Error de login provocado por certificados legacy que no eran X.509 validos.
+  - Redireccion innecesaria a actualizacion de contrasena en las cuentas criticas de prueba.
+  - Inconsistencias entre los archivos de `certs/` y los registros persistidos en SQLite.
+- Security:
+  - Reduccion del inventario visible de certificados a los artefactos utiles para las cuentas criticas.
+  - Refuerzo del arranque de desarrollo para que las cuentas sensibles usen certificados emitidos por la CA interna y no archivos heredados.
+
 Sprint 2 — PKI educativa y firma (2 semanas)
 - Inquietudes principales:
   - Custodia de claves privadas en servidor debilita no-repudio.
@@ -74,15 +134,49 @@ Sprint 2 — PKI educativa y firma (2 semanas)
   - Favorecer custodia de claves por parte del usuario (instrucciones/guía, no almacenar claves privadas en servidor sin consentimiento explícito).
   - UI para gestión de certificados: estado, expiración, reemisión y descarga con autorizaciones.
 
+Política de certificación y revocación
+- Emisor: la CA del proyecto firma los certificados de `admin` y `coordinador`. El servidor no es una CA pública; solo emite en el entorno educativo controlado.
+- Alcance: solo `admin` y `coordinador` requieren certificado. Los demás roles no dependen de PKI para autenticarse.
+- Emisión: primero se valida identidad funcional, rol y passphrase de custodia; luego se crea el certificado y se registra evidencia en la tabla `certificados`.
+- Estados: `pendiente` = creado pero no activado; `activo` = usable; `expirado` = fuera de fecha; `revocado` = invalidado manualmente o por incidente.
+- Revocación: se usa ante pérdida de custodia, sospecha de compromiso, baja del usuario, cambio de rol o error de emisión. Debe quedar trazabilidad de quién revocó, cuándo y por qué.
+- Verificación: antes de una acción crítica la app debe validar estado, expiración, huella pública y correspondencia con el usuario autenticado.
+- Reemisión: solo si el certificado está expirado o revocado; siempre genera nuevo serial y nueva huella pública.
+- Evidencia: cada cambio de estado debe quedar en logs y ser visible desde la UI administrativa.
+
 Sprint 3 — Mantenibilidad, tests y documentación (2 semanas)
 - Inquietudes principales:
   - Monolito con lógica centralizada dificulta pruebas y mantenimiento.
+  - La PKI aún es educativa y no separa con suficiente claridad custodia, emisión y verificación.
   - Falta de tests de integración y documentación operacional.
+- Plan de acción prioritario:
+  - Definir el modelo final de confianza: modo demo vs modo PKI defendible para evaluación.
+  - Separar custodia de clave privada y autenticación: la passphrase protege la llave local, no el acceso normal al servidor.
+  - Pasar a emisión basada en CSR para que el servidor emita certificados sin generar la clave privada del usuario.
+  - Formalizar revocación con evidencia trazable: estado, motivo, actor, fecha y lista de revocados consultable.
+  - Reforzar pruebas reproducibles con fixtures, passphrase fija de test y manifest de certificados emitidos.
+  - Dejar documentación operativa y criterios de cierre del sprint para defender el alcance real del producto.
 - Mejoras urgentes a implementar:
-  - Refactor: separar `app.py` en módulos (`auth`, `users`, `certs`, `surveys`, `db`, `utils`).
-  - Introducir capa de repositorio/servicio para facilitar tests unitarios.
-  - Añadir tests unitarios y de integración para flujos críticos (login, cambio de contraseña, avance de expediente).
+  - Refactor mínimo orientado al flujo de certificados: separar la lógica de emisión, validación y revocación.
+  - Introducir capa de repositorio/servicio para facilitar tests unitarios y de integración.
+  - Añadir tests unitarios y de integración para flujos críticos (login, cambio de contraseña, emisión, revocación).
   - Logging estructurado, scripts de backup/restore, y documentación operativa para Casa Monarca.
+- Criterios de cierre:
+  - La clave privada del usuario no queda custodiada como secreto operativo del servidor en el flujo objetivo.
+  - La revocación puede demostrarse con estado persistente y evidencia visible.
+  - Las pruebas pueden reproducirse con datos de test estables sin exponer secretos en claro.
+  - La documentación explica el alcance educativo y las limitaciones frente a una PKI convencional.
+
+Sprint 4 — Mantenibilidad, tests y documentación (2 semanas)
+- Inquietudes principales:
+  - Monolito con lógica centralizada dificulta pruebas y mantenimiento.
+  - La PKI todavía mezcla custodia, emisión y verificacion en una sola superficie.
+  - Falta una base documental y de pruebas mas estable para sostener futuras versiones.
+- Mejoras urgentes a implementar:
+  - Refactor minimo para separar `app.py` en areas funcionales (`auth`, `users`, `certs`, `surveys`, `db`, `utils`).
+  - Introducir capa de repositorio/servicio para facilitar tests unitarios y de integracion.
+  - Añadir tests para login, challenge-response, cambio de contrasena, emision de certificados y avance de expediente.
+  - Mejorar logging, backup/restore y documentacion operativa para Casa Monarca.
 
 Notas:
 - Las entradas aquí son el resumen de planificación para la siguiente versión `0.2.0`. Cada cambio implementado deberá agregar su propia línea en el changelog con fecha y categoría correspondiente.

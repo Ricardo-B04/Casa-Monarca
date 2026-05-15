@@ -139,15 +139,19 @@ input[type="file"] {
                             <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="aprobar">
+                                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                                <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                                 <button type="submit">Aprobar</button>
                             </form>
                             <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="rechazar">
+                                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                                <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                                 <button type="submit" style="background:#445068;">Rechazar</button>
                             </form>
                         </div>

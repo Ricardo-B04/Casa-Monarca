@@ -126,22 +126,28 @@ input[type="password"] {
 
                     {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
                         <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
+                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                             <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                             <button type="submit">Validar y enviar a Admin</button>
                         </form>
                         <form method="POST" action="/solicitar-eliminacion/{{ d.id }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
+                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                             <input type="text" name="motivo" placeholder="Motivo de eliminacion" required>
                             <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                             <button type="submit">Solicitar eliminacion</button>
                         </form>
                     {% endif %}
 
                     {% if role == "admin" and d.estado == "validado_coordinacion" %}
                         <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
+                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                             <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                             <button type="submit">Cerrar expediente</button>
                         </form>
                     {% endif %}

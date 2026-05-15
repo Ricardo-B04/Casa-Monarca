@@ -93,8 +93,10 @@ input[type="file"] {
         <div class="toolbar">
             <h2 style="margin:0;">Eventos registrados</h2>
             <form method="POST" action="/logs/clear" enctype="multipart/form-data" onsubmit="return confirm('Se limpiara toda la bitacora. Continuar?');">
+                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
+                <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
                 <button type="submit">Limpiar bitacora</button>
             </form>
         </div>

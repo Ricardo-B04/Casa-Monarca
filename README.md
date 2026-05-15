@@ -48,7 +48,8 @@ source .venv/bin/activate
 ## Configuracion
 - Verificar que exista [key.key](key.key) para cifrado.
 - Al iniciar, la app crea tablas faltantes y cuentas semilla.
-- Se generan/actualizan certificados de desarrollo en la carpeta [certs](certs).
+- Se generan/actualizan certificados X.509 de desarrollo para `admin_prod`, `admin_cont` y `coord_admin` en la carpeta [certs](certs), y se limpian los artefactos legacy.
+- Las llaves demo para firmar challenges quedan en `admin_prod_demo.key`, `admin_cont_demo.key` y `coord_admin_demo.key`.
 
 ### Variables de entorno recomendadas
 Antes de desplegar en un entorno no controlado, exporta las siguientes variables de entorno para mejorar seguridad:
@@ -83,6 +84,15 @@ Se implementaron varias medidas iniciales de hardening. Resumen rápido:
 - Tests: añadidos tests para el comportamiento de bloqueo de login en `tests/test_password_security.py`.
 - Backups cifrados: se añadieron scripts para generar y restaurar copias cifradas de `database.db` usando `key.key`.
 
+## Mejoras de PKI aplicadas (Sprint 2)
+Se incorporo una CA interna del proyecto para emitir certificados X.509 de los roles criticos.
+
+- Emision: `admin` y `coordinador` generan un certificado X.509 firmado por la CA local y empaquetado junto con la llave privada cifrada en el mismo archivo `.pem`.
+- Validacion: al iniciar sesion y al ejecutar acciones criticas, la app verifica firma de CA, vigencia, huella del certificado, correspondencia con el usuario y estado activo.
+- Revocacion: el panel de usuarios permite revocar certificados activos con un motivo obligatorio; la revocacion queda auditada en la tabla `certificados` y en la bitacora.
+- Custodia: la CA del proyecto se crea automaticamente en `certs/ca_cert.pem` y `certs/ca_key.pem` la primera vez que se emite un certificado.
+- Flujo operativo: si un certificado se revoca o expira, el usuario debe reemitirlo desde `certificado/setup`.
+
 ### Cómo ejecutar pruebas
 Desde la raíz del proyecto (usa el entorno virtual):
 
@@ -107,13 +117,31 @@ Notas operativas:
 - `http://127.0.0.1:5000`
 
 3. Cuentas de prueba:
-- `admin_prod / admin123` (requiere [certs/admin_prod.pem](certs/admin_prod.pem))
-- `admin_cont / admin123` (requiere [certs/admin_cont.pem](certs/admin_cont.pem))
-- `coord_admin / coord123` (requiere [certs/coord_admin.pem](certs/coord_admin.pem))
+- `admin_prod / AdminProdX2026!` (requiere [certs/admin_prod.pem](certs/admin_prod.pem))
+- `admin_cont / AdminContX2026!` (requiere [certs/admin_cont.pem](certs/admin_cont.pem))
+- `coord_admin / CoordAdminX2026!` (requiere [certs/coord_admin.pem](certs/coord_admin.pem))
 - `operativo_1 / Operativo_2026!`
  - `usuario_1 / Usuario_2026!X`
 
-4. Ejemplo breve de flujo:
+4. Login de cuentas sensibles con challenge-response:
+- El formulario de acceso pedira usuario, contrasena, certificado X.509 y firma del desafio.
+- Primero abre el login y copia el valor del campo `Desafio a firmar`.
+- Firma ese valor con la llave privada local asociada a la cuenta.
+- Enviar la firma en Base64 o como archivo binario y luego seleccionar el certificado X.509 correspondiente.
+- En macOS, la firma puede generarse con este flujo:
+
+```bash
+payload='CasaMonarca|login|admin_cont|<CHALLENGE>'
+printf '%s' "$payload" > /tmp/cm_login_payload.txt
+openssl dgst -sha256 -sign admin_cont_demo.key -passin pass:AdminContX2026! -out /tmp/cm_login.sig /tmp/cm_login_payload.txt
+base64 -i /tmp/cm_login.sig | tr -d '\n'
+```
+
+- Sustituye `admin_cont` y `admin_cont_demo.key` por `admin_prod` o `coord_admin` cuando corresponda.
+- La contraseña que debe ingresarse en el login es la de la cuenta semilla, no la passphrase de la llave demo.
+
+5. Ejemplo breve de flujo completo:
+- Abrir el login, copiar el desafio, firmarlo, seleccionar el certificado X.509 y entrar.
 - Usuario crea expediente -> Usuario canaliza -> Operativo canaliza -> Coordinador valida -> Admin cierra.
 
 ## Estructura del proyecto

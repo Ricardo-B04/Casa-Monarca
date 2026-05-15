@@ -1,8 +1,13 @@
 import base64
+import io
 import shutil
+import re
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 import app as app_module
 
@@ -23,6 +28,17 @@ def client(tmp_path, monkeypatch):
 
     with app_module.app.test_client() as test_client:
         yield test_client
+
+
+def _get_session_challenge(client, key):
+    with client.session_transaction() as session_data:
+        return session_data[key]["value"]
+
+
+def _sign_challenge(private_key, purpose, username, challenge):
+    payload = app_module.build_signature_payload(purpose, username, challenge)
+    signature = private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(signature).decode("ascii")
 
 
 def test_qa_a_rejects_weak_password_on_forced_update(client):
@@ -172,3 +188,208 @@ def test_login_lockout_survives_memory_clear(client, monkeypatch):
 
     assert row["attempts"] == 3
     assert row["lockout_until"] is not None
+
+
+def test_x509_certificate_issue_and_revocation(client, monkeypatch):
+    monkeypatch.setattr(app_module, "check_password_pwned", lambda _password: False)
+
+    login = client.post(
+        "/",
+        data={"username": "admin_prod", "password": "admin123"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 302
+    assert login.headers["Location"].endswith("/password/update")
+
+    update = client.post(
+        "/password/update",
+        data={
+            "current_password": "admin123",
+            "new_password": "AdminX2026!Pass",
+            "confirm_password": "AdminX2026!Pass",
+        },
+        follow_redirects=False,
+    )
+    assert update.status_code == 302
+    assert update.headers["Location"].endswith("/admin")
+
+    client.get("/logout", follow_redirects=False)
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(app_module._certificate_subject_for_user("admin_prod", "admin"))
+        .sign(private_key, hashes.SHA256())
+    )
+
+    relogin = client.post(
+        "/",
+        data={"username": "admin_prod", "password": "AdminX2026!Pass"},
+        follow_redirects=False,
+    )
+    assert relogin.status_code == 302
+    assert relogin.headers["Location"].endswith("/certificado/setup")
+
+    setup = client.post(
+        "/certificado/setup",
+        data={"csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")},
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert setup.status_code == 200
+
+    conn = app_module.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, pem_path, cert_fingerprint, public_fp, custody_mode, status FROM certificados WHERE username=? ORDER BY id DESC LIMIT 1",
+        ("admin_prod",),
+    )
+    cert_row = cur.fetchone()
+    conn.close()
+
+    assert cert_row["status"] == "activo"
+    assert cert_row["cert_fingerprint"]
+    assert cert_row["custody_mode"] == "user_key"
+
+    cert_bytes = Path(cert_row["pem_path"]).read_bytes()
+    cert_obj = x509.load_pem_x509_certificate(cert_bytes)
+    assert cert_obj.subject.rfc4514_string().startswith("CN=admin_prod")
+    assert cert_obj.issuer.rfc4514_string().startswith("CN=Casa Monarca Development CA")
+
+    client.get("/logout", follow_redirects=False)
+
+    login_page = client.get("/", follow_redirects=False)
+    assert login_page.status_code == 200
+    login_challenge = _get_session_challenge(client, "login_signature_challenge")
+    login_signature = _sign_challenge(private_key, "login", "admin_prod", login_challenge)
+
+    login = client.post(
+        "/",
+        data={
+            "username": "admin_prod",
+            "password": "AdminX2026!Pass",
+            "cert_file": (io.BytesIO(cert_bytes), "admin_prod.crt"),
+            "cert_signature": login_signature,
+            "login_challenge": login_challenge,
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert login.status_code == 302
+    assert login.headers["Location"].endswith("/admin")
+
+    client.get("/usuarios", follow_redirects=False)
+    action_challenge = _get_session_challenge(client, "action_signature_challenge")
+    revoke_signature = _sign_challenge(private_key, "revocacion de certificado", "admin_prod", action_challenge)
+
+    with Path(cert_row["pem_path"]).open("rb") as cert_file:
+        revoke = client.post(
+            f"/certificado/{cert_row['id']}/revocar",
+            data={
+                "action_cert_file": (cert_file, "admin_prod.crt"),
+                "action_signature": revoke_signature,
+                "action_challenge": action_challenge,
+                "revocation_reason": "prueba de revocacion",
+            },
+            content_type="multipart/form-data",
+            follow_redirects=False,
+        )
+    assert revoke.status_code == 302
+
+    conn = app_module.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT status, revoked_by, revocation_reason FROM certificados WHERE id=?",
+        (cert_row["id"],),
+    )
+    revoked_row = cur.fetchone()
+    conn.close()
+
+    assert revoked_row["status"] == "revocado"
+    assert revoked_row["revoked_by"] == "admin_prod"
+    assert revoked_row["revocation_reason"] == "prueba de revocacion"
+
+
+def test_x509_csr_issue_and_login_with_separate_key(client, monkeypatch):
+    monkeypatch.setattr(app_module, "check_password_pwned", lambda _password: False)
+
+    login = client.post(
+        "/",
+        data={"username": "coord_admin", "password": "coord123"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 302
+    assert login.headers["Location"].endswith("/password/update")
+
+    update = client.post(
+        "/password/update",
+        data={
+            "current_password": "coord123",
+            "new_password": "CoordX2026!Pass",
+            "confirm_password": "CoordX2026!Pass",
+        },
+        follow_redirects=False,
+    )
+    assert update.status_code == 302
+    assert update.headers["Location"].endswith("/dashboard")
+
+    client.get("/logout", follow_redirects=False)
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(app_module._certificate_subject_for_user("coord_admin", "coordinador"))
+        .sign(private_key, hashes.SHA256())
+    )
+
+    relogin = client.post(
+        "/",
+        data={"username": "coord_admin", "password": "CoordX2026!Pass"},
+        follow_redirects=False,
+    )
+    assert relogin.status_code == 302
+    assert relogin.headers["Location"].endswith("/certificado/setup")
+
+    setup = client.post(
+        "/certificado/setup",
+        data={"csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")},
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert setup.status_code == 200
+    assert setup.headers["Content-Disposition"].startswith("attachment;")
+
+    conn = app_module.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, pem_path, custody_mode, status, cert_fingerprint FROM certificados WHERE username=? ORDER BY id DESC LIMIT 1",
+        ("coord_admin",),
+    )
+    cert_row = cur.fetchone()
+    conn.close()
+
+    assert cert_row["status"] == "activo"
+    assert cert_row["custody_mode"] == "user_key"
+    assert cert_row["cert_fingerprint"]
+
+    cert_bytes = Path(cert_row["pem_path"]).read_bytes()
+
+    client.get("/logout", follow_redirects=False)
+    client.get("/", follow_redirects=False)
+    login_challenge = _get_session_challenge(client, "login_signature_challenge")
+    login_signature = _sign_challenge(private_key, "login", "coord_admin", login_challenge)
+
+    login = client.post(
+        "/",
+        data={
+            "username": "coord_admin",
+            "password": "CoordX2026!Pass",
+            "cert_file": (io.BytesIO(cert_bytes), "coord_admin.crt"),
+            "cert_signature": login_signature,
+            "login_challenge": login_challenge,
+        },
+        content_type="multipart/form-data",
+        follow_redirects=False,
+    )
+    assert login.status_code == 302
+    assert login.headers["Location"].endswith("/dashboard")

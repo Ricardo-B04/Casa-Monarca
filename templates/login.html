@@ -138,6 +138,7 @@
 
             <form method="POST" enctype="multipart/form-data">
                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                <input type="hidden" name="login_challenge" value="{{ login_signature_challenge }}">
                 <div class="row">
                     <label>Usuario</label>
                     <input type="text" name="username" required>
@@ -155,9 +156,19 @@
                 </div>
 
                 <div class="row">
-                    <label>Passphrase del certificado</label>
-                    <input type="password" name="cert_passphrase">
-                    <div class="hint">Obligatoria cuando se adjunta el certificado.</div>
+                    <label>Desafio a firmar</label>
+                    <textarea readonly rows="3" style="width:100%; box-sizing:border-box; padding:11px 12px; border-radius:10px; border:1px solid #d6d6d6; font-family:monospace; background:#f8f8f8;">{{ login_signature_challenge }}</textarea>
+                    <div class="hint">Firma este valor con tu clave privada local y envia la firma en Base64 o como archivo binario.</div>
+                </div>
+
+                <div class="row">
+                    <label>Firma del desafio (Base64)</label>
+                    <input type="text" name="cert_signature" placeholder="Firma Base64">
+                </div>
+
+                <div class="row">
+                    <label>Firma del desafio (archivo binario opcional)</label>
+                    <input type="file" name="cert_signature_file" accept=".sig,.bin,.dat">
                 </div>
 
                 <button type="submit">Entrar</button>

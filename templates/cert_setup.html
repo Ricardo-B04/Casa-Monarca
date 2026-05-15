@@ -84,7 +84,7 @@ button {
 <body>
 <div class="card">
     <h1>Configurar certificado</h1>
-    <p>Para continuar debes crear tu certificado cifrado. Guarda tu passphrase en un lugar seguro; no se puede recuperar.</p>
+    <p>Para continuar puedes usar el flujo legado con passphrase o registrar una CSR generada por ti para que la clave privada quede fuera del servidor.</p>
 
     {% with messages = get_flashed_messages() %}
         {% if messages %}
@@ -92,19 +92,29 @@ button {
         {% endif %}
     {% endwith %}
 
-    <form method="POST">
+    <form method="POST" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+        <label>CSR PEM o texto de la solicitud (opcional)</label>
+        <textarea name="csr_pem" rows="8" style="width:100%; padding:11px 12px; border-radius:10px; border:1px solid #cfd7e6; box-sizing:border-box; margin-bottom:12px; font-family:monospace;"></textarea>
+
+        <label>Archivo CSR (opcional)</label>
+        <input type="file" name="csr_file" accept=".csr,.pem">
+
+        <div class="note" style="margin-top:0; margin-bottom:12px;">
+            Si adjuntas una CSR, el servidor solo firmara la clave publica y te devolvera el certificado; tu llave privada seguira en tu equipo.
+        </div>
+
         <label>Passphrase</label>
-        <input type="password" name="passphrase" required>
+        <input type="password" name="passphrase">
 
         <label>Confirmar passphrase</label>
-        <input type="password" name="passphrase_confirm" required>
+        <input type="password" name="passphrase_confirm">
 
         <button type="submit">Generar certificado</button>
     </form>
 
     <div class="note">
-        El PEM se genera cifrado (AES-256-CBC). Solo tu passphrase lo puede desbloquear.
+        El modo legado sigue generando un bundle cifrado (AES-256-CBC). En modo CSR, la clave privada no se genera en el servidor.
     </div>
 </div>
 </body>

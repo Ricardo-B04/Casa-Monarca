@@ -183,10 +183,13 @@ button {
                     </select>
                 </div>
 
+                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                 <label>Certificado del admin para firmar</label>
                 <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
-                <div class="helper">Obligatorio para firmar la creacion.</div>
+                <div class="helper">Desafio actual: <span style="font-family:monospace;">{{ action_signature_challenge }}</span></div>
+                <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
+                <div class="helper">Firma el desafio con tu clave privada local. El servidor solo necesita el certificado y la firma.</div>
 
                 <label>
                     <input type="checkbox" name="is_contingency" value="1" style="width:auto; margin-right:6px;">
@@ -220,7 +223,9 @@ button {
                         <th>Estado</th>
                         <th>Hash PEM</th>
                         <th>Huella publica</th>
+                        <th>Huella cert.</th>
                         <th>Serial</th>
+                        <th>Revocacion</th>
                         <th>Accion</th>
                     </tr>
                 </thead>
@@ -235,13 +240,27 @@ button {
                             <td>{{ c['status'] }}</td>
                             <td>{{ c['hash_short'] }}</td>
                             <td>{{ c['public_short'] }}</td>
+                            <td>{{ (c['cert_fingerprint'] or '-')[:12] }}</td>
                             <td>{{ c['cert_serial'] or '-' }}</td>
+                            <td>{{ c['revocation_reason'] or '-' }}</td>
                             <td>
                                 <form method="POST" action="/certificado/{{ c['id'] }}/descargar" enctype="multipart/form-data">
+                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
                                     <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="width:170px;">
-                                    <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required style="width:140px;">
+                                    <input type="text" name="action_signature" placeholder="Firma Base64" required style="width:170px;">
+                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat" style="width:170px;">
                                     <button type="submit" style="background:#44506a;">Descargar</button>
                                 </form>
+                                {% if c['status'] == 'activo' %}
+                                <form method="POST" action="/certificado/{{ c['id'] }}/revocar" enctype="multipart/form-data" style="margin-top:8px;">
+                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="width:170px;">
+                                    <input type="text" name="action_signature" placeholder="Firma Base64" required style="width:170px;">
+                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat" style="width:170px;">
+                                    <input type="text" name="revocation_reason" placeholder="Motivo de revocacion" required style="width:220px; margin-top:6px;">
+                                    <button type="submit" style="background:#8f3219;">Revocar</button>
+                                </form>
+                                {% endif %}
                             </td>
                         </tr>
                     {% endfor %}
@@ -250,7 +269,7 @@ button {
         {% else %}
             <p>No hay certificados registrados.</p>
         {% endif %}
-        <div class="helper">Los PEM se guardan cifrados con passphrase en la carpeta certs.</div>
+        <div class="helper">Los certificados incluyen una firma de la CA interna y se guardan cifrados con passphrase en la carpeta certs.</div>
     </div>
 </div>
 

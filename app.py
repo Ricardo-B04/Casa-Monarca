@@ -1,8 +1,10 @@
 from flask import Flask, render_template, request, redirect, session, flash, send_file
 import sqlite3
+from cryptography import x509
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.x509.oid import NameOID
 from argon2.low_level import Type, hash_secret
 from werkzeug.security import check_password_hash
 import hmac
@@ -26,6 +28,12 @@ if os.environ.get("ENABLE_SESSION_COOKIE_SECURE", "0") == "1":
     app.config["SESSION_COOKIE_SECURE"] = True
 
 CERT_VALIDITY_HOURS = 720
+CERT_CA_CERT_PATH = os.environ.get("CERT_CA_CERT_PATH", "certs/ca_cert.pem")
+CERT_CA_KEY_PATH = os.environ.get("CERT_CA_KEY_PATH", "certs/ca_key.pem")
+CERT_PRODUCT_ALGORITHM = "X509/RSA-2048/AES-256-CBC"
+CERT_CA_COMMON_NAME = "Casa Monarca Development CA"
+CERT_CA_ORG = "Casa Monarca"
+CERT_CA_COUNTRY = "MX"
 PASSWORD_MIN_LENGTH = 12
 ARGON2_MEMORY_COST = 65536
 ARGON2_TIME_COST = 3
@@ -38,6 +46,7 @@ HIBP_TIMEOUT_SECONDS = 4
 LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
 LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", "900"))
+SIGNATURE_CHALLENGE_TTL_SECONDS = int(os.environ.get("SIGNATURE_CHALLENGE_TTL_SECONDS", "300"))
 
 # Backward-compatible in-memory cache for failed login attempts.
 failed_login_store = {}
@@ -169,6 +178,7 @@ def init_db():
             rol TEXT,
             issued_by TEXT,
             issuer_fingerprint TEXT,
+            cert_fingerprint TEXT,
             issued_at TEXT,
             expires_at TEXT,
             status TEXT,
@@ -180,8 +190,10 @@ def init_db():
             last_used_at TEXT,
             revoked_at TEXT,
             revoked_by TEXT,
+            revocation_reason TEXT,
             created_at TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            custody_mode TEXT
         )
         """
     )
@@ -210,6 +222,7 @@ def init_db():
     ensure_column(c, "certificados", "rol", "TEXT")
     ensure_column(c, "certificados", "issued_by", "TEXT")
     ensure_column(c, "certificados", "issuer_fingerprint", "TEXT")
+    ensure_column(c, "certificados", "cert_fingerprint", "TEXT")
     ensure_column(c, "certificados", "issued_at", "TEXT")
     ensure_column(c, "certificados", "expires_at", "TEXT")
     ensure_column(c, "certificados", "status", "TEXT")
@@ -221,8 +234,10 @@ def init_db():
     ensure_column(c, "certificados", "last_used_at", "TEXT")
     ensure_column(c, "certificados", "revoked_at", "TEXT")
     ensure_column(c, "certificados", "revoked_by", "TEXT")
+    ensure_column(c, "certificados", "revocation_reason", "TEXT")
     ensure_column(c, "certificados", "created_at", "TEXT")
     ensure_column(c, "certificados", "updated_at", "TEXT")
+    ensure_column(c, "certificados", "custody_mode", "TEXT")
 
     ensure_column(c, "login_lockouts", "attempts", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(c, "login_lockouts", "first_ts", "REAL NOT NULL DEFAULT 0")
@@ -562,16 +577,19 @@ def create_default_accounts():
         ]
     else:
         default_users = [
-            ("admin_prod", "admin123", "admin", None, 0),
-            ("admin_cont", "admin123", "admin", None, 1),
-            ("coord_admin", "coord123", "coordinador", "Administracion", 0),
+            ("admin_prod", "AdminProdX2026!", "admin", None, 0),
+            ("admin_cont", "AdminContX2026!", "admin", None, 1),
+            ("coord_admin", "CoordAdminX2026!", "coordinador", "Administracion", 0),
             ("operativo_1", "Operativo_2026!", "operativo", None, 0),
             ("usuario_1", "Usuario_2026!X", "usuario", None, 0),
         ]
 
     for username, password, rol, area, contingency in default_users:
+        salt = generate_password_salt()
+        password_hash = hash_password_argon2id(password, salt)
         c.execute("SELECT id FROM usuarios WHERE username=?", (username,))
-        if c.fetchone() is None:
+        existing = c.fetchone()
+        if existing is None:
             salt = generate_password_salt()
             c.execute(
                 """
@@ -579,7 +597,7 @@ def create_default_accounts():
                     username, password_hash, rol, area, is_contingency, activo,
                     must_change_password, password_updated_at, password_algo, password_salt
                 )
-                VALUES (?, ?, ?, ?, ?, 1, 1, ?, 'argon2id', ?)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'argon2id', ?)
                 """,
                 (
                     username,
@@ -587,8 +605,28 @@ def create_default_accounts():
                     rol,
                     area,
                     contingency,
+                    0 if not app.config.get("TESTING", False) else 1,
                     str(datetime.datetime.now()),
                     encode_salt(salt),
+                ),
+            )
+        elif not app.config.get("TESTING", False):
+            c.execute(
+                """
+                UPDATE usuarios
+                SET password_hash=?, rol=?, area=?, is_contingency=?, activo=1,
+                    must_change_password=0, password_updated_at=?, password_algo='argon2id',
+                    password_salt=?
+                WHERE username=?
+                """,
+                (
+                    password_hash,
+                    rol,
+                    area,
+                    contingency,
+                    str(datetime.datetime.now()),
+                    encode_salt(salt),
+                    username,
                 ),
             )
 
@@ -623,17 +661,66 @@ def create_default_accounts():
     conn.close()
 
 
+def _demo_private_key_path(username):
+    if username == "admin_cont":
+        return "admin_cont_demo.key"
+    return f"{username}_demo.key"
+
+
+def _load_or_create_demo_private_key(username, passphrase):
+    key_path = _demo_private_key_path(username)
+    if os.path.exists(key_path):
+        try:
+            with open(key_path, "rb") as key_file:
+                return serialization.load_pem_private_key(
+                    key_file.read(),
+                    password=passphrase.encode("utf-8") if passphrase else None,
+                )
+        except Exception:
+            pass
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    with open(key_path, "wb") as key_file:
+        key_file.write(serialize_private_key_encrypted(private_key, passphrase))
+    return private_key
+
+
+def _build_demo_csr(username, role, private_key):
+    return (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(_certificate_subject_for_user(username, role))
+        .sign(private_key, hashes.SHA256())
+    )
+
+
+def _cleanup_legacy_certificate_files():
+    os.makedirs("certs", exist_ok=True)
+    allowed = {"ca_cert.pem", "ca_key.pem", "admin_prod.pem", "admin_cont.pem", "coord_admin.pem"}
+    for entry in os.scandir("certs"):
+        if entry.is_file() and entry.name not in allowed:
+            try:
+                os.remove(entry.path)
+            except OSError:
+                pass
+
+
 def bootstrap_dev_certificates():
     conn = get_conn()
     c = conn.cursor()
 
     defaults = {
-        "admin_prod": ("admin", "admin123"),
-        "admin_cont": ("admin", "admin123"),
-        "coord_admin": ("coordinador", "coord123"),
+        "admin_prod": ("admin", "AdminProdX2026!"),
+        "admin_cont": ("admin", "AdminContX2026!"),
+        "coord_admin": ("coordinador", "CoordAdminX2026!"),
     }
 
-    for username, (role, _password) in defaults.items():
+    if app.config.get("TESTING", False):
+        conn.close()
+        return
+
+    _cleanup_legacy_certificate_files()
+
+    for username, (role, passphrase) in defaults.items():
         c.execute(
             "SELECT id FROM usuarios WHERE username=?",
             (username,),
@@ -642,14 +729,24 @@ def bootstrap_dev_certificates():
         if not row:
             continue
 
-        c.execute(
-            "SELECT id FROM certificados WHERE username=?",
-            (username,),
-        )
-        if c.fetchone() is not None:
-            continue
+        c.execute("DELETE FROM certificados WHERE username=?", (username,))
 
-        create_pending_certificate(conn, username, role, "system", None)
+        private_key = _load_or_create_demo_private_key(username, passphrase)
+        csr = _build_demo_csr(username, role, private_key)
+        cert_info = issue_user_certificate_from_csr(
+            conn,
+            username,
+            role,
+            csr.public_bytes(serialization.Encoding.PEM),
+            "system",
+            None,
+        )
+
+        if cert_info:
+            c.execute(
+                "UPDATE usuarios SET cert_fingerprint=?, must_change_password=0, password_updated_at=? WHERE username=?",
+                (cert_info["public_fp"], str(datetime.datetime.now()), username),
+            )
 
     conn.commit()
     conn.close()
@@ -691,8 +788,369 @@ def store_pem_file(username, pem_bytes):
 def load_private_key_from_pem(pem_bytes, passphrase):
     return serialization.load_pem_private_key(
         pem_bytes,
-        password=passphrase.encode("utf-8"),
+        password=passphrase.encode("utf-8") if passphrase else None,
     )
+
+
+def _certificate_authority_name():
+    return x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_CA_COUNTRY),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_CA_ORG),
+            x509.NameAttribute(NameOID.COMMON_NAME, CERT_CA_COMMON_NAME),
+        ]
+    )
+
+
+_certificate_authority_cache = None
+
+
+def _load_or_create_certificate_authority():
+    global _certificate_authority_cache
+    if _certificate_authority_cache:
+        return _certificate_authority_cache
+
+    os.makedirs("certs", exist_ok=True)
+    if os.path.exists(CERT_CA_CERT_PATH) and os.path.exists(CERT_CA_KEY_PATH):
+        with open(CERT_CA_KEY_PATH, "rb") as key_file:
+            ca_key = serialization.load_pem_private_key(key_file.read(), password=key)
+        with open(CERT_CA_CERT_PATH, "rb") as cert_file:
+            ca_cert = x509.load_pem_x509_certificate(cert_file.read())
+        _certificate_authority_cache = (ca_key, ca_cert)
+        return _certificate_authority_cache
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    ca_name = _certificate_authority_name()
+    now = datetime.datetime.utcnow()
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(private_key=ca_key, algorithm=hashes.SHA256())
+    )
+
+    with open(CERT_CA_KEY_PATH, "wb") as key_file:
+        key_file.write(
+            ca_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.BestAvailableEncryption(key),
+            )
+        )
+
+    with open(CERT_CA_CERT_PATH, "wb") as cert_file:
+        cert_file.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+
+    _certificate_authority_cache = (ca_key, ca_cert)
+    return _certificate_authority_cache
+
+
+def _certificate_subject_for_user(username, role):
+    return x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_CA_COUNTRY),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_CA_ORG),
+            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, role),
+            x509.NameAttribute(NameOID.COMMON_NAME, username),
+        ]
+    )
+
+
+def _extract_pem_block(pem_bytes, label_pattern):
+    match = re.search(
+        rb"-----BEGIN " + label_pattern + rb"-----.*?-----END " + label_pattern + rb"-----",
+        pem_bytes,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    return match.group(0)
+
+
+def _extract_pem_certificate(pem_bytes):
+    return _extract_pem_block(pem_bytes, rb"CERTIFICATE")
+
+
+def _extract_pem_private_key(pem_bytes):
+    match = re.search(
+        rb"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        pem_bytes,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    return match.group(0)
+
+
+def _signature_challenge_key(scope):
+    return f"{scope}_signature_challenge"
+
+
+def issue_signature_challenge(scope, username=None):
+    challenge = secrets.token_urlsafe(32)
+    session[_signature_challenge_key(scope)] = {
+        "value": challenge,
+        "username": username,
+        "issued_at": time.time(),
+    }
+    return challenge
+
+
+def get_signature_challenge(scope, username=None):
+    challenge_row = session.get(_signature_challenge_key(scope))
+    if not challenge_row:
+        return issue_signature_challenge(scope, username)
+
+    issued_at = challenge_row.get("issued_at", 0)
+    if time.time() - issued_at > SIGNATURE_CHALLENGE_TTL_SECONDS:
+        return issue_signature_challenge(scope, challenge_row.get("username") or username)
+
+    return challenge_row.get("value")
+
+
+def consume_signature_challenge(scope):
+    session.pop(_signature_challenge_key(scope), None)
+
+
+def decode_signature_value(signature_text=None, signature_file=None):
+    if signature_file and getattr(signature_file, "filename", ""):
+        signature_bytes = signature_file.read()
+        if signature_bytes:
+            return signature_bytes
+
+    if not signature_text:
+        return None
+
+    cleaned = signature_text.strip().replace("\n", "")
+    if not cleaned:
+        return None
+
+    try:
+        return base64.b64decode(cleaned, validate=True)
+    except Exception:
+        try:
+            return bytes.fromhex(cleaned)
+        except Exception:
+            return None
+
+
+def build_signature_payload(purpose, username, challenge):
+    return f"CasaMonarca|{purpose}|{username}|{challenge}".encode("utf-8")
+
+
+@app.context_processor
+def inject_signature_challenges():
+    return {
+        "login_signature_challenge": get_signature_challenge("login"),
+        "action_signature_challenge": get_signature_challenge("action", session.get("user")),
+    }
+
+
+def verify_certificate_challenge_response(cert_row, pem_bytes, challenge, signature_bytes, purpose, username):
+    custody_mode = cert_row["custody_mode"] or "server_bundle"
+
+    if cert_row["status"] == "revocado":
+        return False, "El certificado esta revocado.", None
+
+    if cert_row["status"] != "activo":
+        return False, "No hay un certificado activo. Debes configurarlo.", None
+
+    ca_key, ca_cert = _load_or_create_certificate_authority()
+    cert_bytes = _extract_pem_certificate(pem_bytes)
+    if not cert_bytes:
+        return False, "El archivo PEM del certificado es invalido.", None
+
+    try:
+        cert = x509.load_pem_x509_certificate(cert_bytes)
+    except Exception:
+        return False, "El archivo PEM del certificado es invalido.", None
+
+    cert_fingerprint = hash_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    uploaded_cert_hash = hash_bytes(pem_bytes)
+    if cert_row["pem_hash"] not in (uploaded_cert_hash, cert_fingerprint):
+        return False, "El archivo no coincide con el certificado registrado.", None
+
+    if not _verify_certificate_signature(cert, ca_cert):
+        return False, "La firma del certificado no corresponde a la CA autorizada.", None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert_not_valid_before = getattr(cert, "not_valid_before_utc", None)
+    cert_not_valid_after = getattr(cert, "not_valid_after_utc", None)
+    if cert_not_valid_before is None:
+        cert_not_valid_before = cert.not_valid_before.replace(tzinfo=datetime.timezone.utc)
+    if cert_not_valid_after is None:
+        cert_not_valid_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+
+    if cert_not_valid_before > now or cert_not_valid_after < now:
+        return False, "Tu certificado ha expirado. Debes reemitirlo.", None
+
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    ou_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)
+    subject_cn = cn_attrs[0].value if cn_attrs else None
+    subject_ou = ou_attrs[0].value if ou_attrs else None
+
+    if subject_cn and subject_cn != cert_row["username"]:
+        return False, "El certificado no corresponde al usuario.", None
+
+    if subject_ou and subject_ou != cert_row["rol"]:
+        return False, "El certificado no corresponde al rol del usuario.", None
+
+    if cert_row["cert_fingerprint"] and cert_fingerprint != cert_row["cert_fingerprint"]:
+        return False, "La huella del certificado no coincide con el registro.", None
+
+    public_fp = _certificate_public_key_fingerprint(cert)
+    if cert_row["public_fp"] and public_fp != cert_row["public_fp"]:
+        return False, "El certificado no corresponde al usuario.", None
+
+    expected_payload = build_signature_payload(purpose, username, challenge)
+    try:
+        cert.public_key().verify(
+            signature_bytes,
+            expected_payload,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except Exception:
+        return False, "La firma del desafio no corresponde a la clave privada.", None
+
+    if custody_mode == "user_key" and uploaded_cert_hash != cert_row["pem_hash"]:
+        return False, "El archivo del certificado no coincide con el registro.", None
+
+    return True, None, public_fp
+
+
+def _extract_pem_csr(pem_bytes):
+    return _extract_pem_block(pem_bytes, rb"CERTIFICATE REQUEST")
+
+
+def _certificate_public_key_fingerprint(cert):
+    return hash_bytes(cert.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ))
+
+
+def _build_signed_certificate_from_public_key(username, role, public_key):
+    ca_key, ca_cert = _load_or_create_certificate_authority()
+    now = datetime.datetime.utcnow().replace(microsecond=0)
+    issued_at = now.isoformat()
+    expires_at = (now + datetime.timedelta(hours=CERT_VALIDITY_HOURS)).isoformat()
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(_certificate_subject_for_user(username, role))
+        .issuer_name(ca_cert.subject)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(hours=CERT_VALIDITY_HOURS))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(public_key),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),
+            critical=False,
+        )
+        .sign(private_key=ca_key, algorithm=hashes.SHA256())
+    )
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    public_bytes = serialize_public_key(public_key)
+
+    return {
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "serial": f"{cert.serial_number:x}"[:16],
+        "pem_hash": hash_bytes(cert_pem),
+        "cert_fingerprint": hash_bytes(cert_pem),
+        "public_fp": compute_public_fingerprint(public_bytes),
+        "bundle_pem": cert_pem,
+        "algorithm": CERT_PRODUCT_ALGORITHM,
+    }
+
+
+def _build_signed_certificate_bundle(username, role, passphrase):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = serialize_private_key_encrypted(private_key, passphrase)
+    cert_data = _build_signed_certificate_from_public_key(username, role, private_key.public_key())
+    bundle_pem = cert_data["bundle_pem"] + private_pem
+
+    return {
+        "issued_at": cert_data["issued_at"],
+        "expires_at": cert_data["expires_at"],
+        "serial": cert_data["serial"],
+        "pem_hash": hash_bytes(bundle_pem),
+        "cert_fingerprint": cert_data["cert_fingerprint"],
+        "public_fp": cert_data["public_fp"],
+        "bundle_pem": bundle_pem,
+        "algorithm": CERT_PRODUCT_ALGORITHM,
+    }
+
+
+def _build_signed_certificate_from_csr(username, role, csr_pem):
+    csr_bytes = csr_pem.encode("utf-8") if isinstance(csr_pem, str) else csr_pem
+    csr = x509.load_pem_x509_csr(csr_bytes)
+    if not csr.is_signature_valid:
+        raise ValueError("La CSR es invalida.")
+
+    cn_attrs = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    ou_attrs = csr.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)
+    if not cn_attrs or cn_attrs[0].value != username:
+        raise ValueError("La CSR no corresponde al usuario.")
+    if ou_attrs and ou_attrs[0].value != role:
+        raise ValueError("La CSR no corresponde al rol del usuario.")
+
+    cert_data = _build_signed_certificate_from_public_key(username, role, csr.public_key())
+    cert_data["csr_fingerprint"] = hash_bytes(csr.public_bytes(serialization.Encoding.PEM))
+    return cert_data
+
+
+def _verify_certificate_signature(cert, ca_cert):
+    try:
+        ca_cert.public_key().verify(
+            cert.signature,
+            cert.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            cert.signature_hash_algorithm,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def issue_user_certificate(
@@ -706,53 +1164,88 @@ def issue_user_certificate(
     if role not in ("admin", "coordinador"):
         return None
 
-    now = datetime.datetime.now()
-    issued_at = str(now)
-    expires_at = str(now + datetime.timedelta(hours=CERT_VALIDITY_HOURS))
-    status = "activo"
-    serial = hashlib.sha256(
-        f"{username}{issued_at}{os.urandom(8)}".encode()
-    ).hexdigest()[:16]
-
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private_pem = serialize_private_key_encrypted(private_key, passphrase)
-    public_bytes = serialize_public_key(private_key.public_key())
-
-    pem_hash = hash_bytes(private_pem)
-    public_fp = compute_public_fingerprint(public_bytes)
-    pem_path = store_pem_file(username, private_pem)
+    cert_data = _build_signed_certificate_bundle(username, role, passphrase)
+    pem_path = store_pem_file(username, cert_data["bundle_pem"])
 
     c = conn.cursor()
     c.execute(
         """
         INSERT INTO certificados (
-            username, rol, issued_by, issuer_fingerprint, issued_at, expires_at,
-            status, pem_hash, public_fp, cert_serial, pem_path, algorithm,
-            last_used_at, revoked_at, revoked_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            username, rol, issued_by, issuer_fingerprint, cert_fingerprint,
+            issued_at, expires_at, status, pem_hash, public_fp, cert_serial,
+            pem_path, algorithm, last_used_at, revoked_at, revoked_by,
+            revocation_reason, created_at, updated_at, custody_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             username,
             role,
             issued_by,
             issuer_fingerprint,
-            issued_at,
-            expires_at,
-            status,
-            pem_hash,
-            public_fp,
-            serial,
+            cert_data["cert_fingerprint"],
+            cert_data["issued_at"],
+            cert_data["expires_at"],
+            "activo",
+            cert_data["pem_hash"],
+            cert_data["public_fp"],
+            cert_data["serial"],
             pem_path,
-            "RSA-2048/AES-256-CBC",
+            cert_data["algorithm"],
             None,
             None,
             None,
-            issued_at,
-            issued_at,
+            None,
+            cert_data["issued_at"],
+            cert_data["issued_at"],
+            "server_bundle",
         ),
     )
 
-    return {"pem_hash": pem_hash, "public_fp": public_fp}
+    return {"pem_hash": cert_data["pem_hash"], "public_fp": cert_data["public_fp"]}
+
+
+def issue_user_certificate_from_csr(conn, username, role, csr_pem, issued_by, issuer_fingerprint):
+    if role not in ("admin", "coordinador"):
+        return None
+
+    cert_data = _build_signed_certificate_from_csr(username, role, csr_pem)
+    pem_path = store_pem_file(username, cert_data["bundle_pem"])
+
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO certificados (
+            username, rol, issued_by, issuer_fingerprint, cert_fingerprint,
+            issued_at, expires_at, status, pem_hash, public_fp, cert_serial,
+            pem_path, algorithm, last_used_at, revoked_at, revoked_by,
+            revocation_reason, created_at, updated_at, custody_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            username,
+            role,
+            issued_by,
+            issuer_fingerprint,
+            cert_data["cert_fingerprint"],
+            cert_data["issued_at"],
+            cert_data["expires_at"],
+            "activo",
+            cert_data["pem_hash"],
+            cert_data["public_fp"],
+            cert_data["serial"],
+            pem_path,
+            cert_data["algorithm"],
+            None,
+            None,
+            None,
+            None,
+            cert_data["issued_at"],
+            cert_data["issued_at"],
+            "user_key",
+        ),
+    )
+
+    return {"pem_hash": cert_data["pem_hash"], "public_fp": cert_data["public_fp"]}
 
 
 def create_pending_certificate(conn, username, role, issued_by, issuer_fingerprint):
@@ -762,8 +1255,8 @@ def create_pending_certificate(conn, username, role, issued_by, issuer_fingerpri
         """
         INSERT INTO certificados (
             username, rol, issued_by, issuer_fingerprint, status,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, custody_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             username,
@@ -773,57 +1266,86 @@ def create_pending_certificate(conn, username, role, issued_by, issuer_fingerpri
             "pendiente",
             now,
             now,
+            "server_bundle",
         ),
     )
     return c.lastrowid
 
 
 def activate_pending_certificate(conn, cert_id, username, role, passphrase, issued_by, issuer_fingerprint):
-    now = datetime.datetime.now()
-    issued_at = str(now)
-    expires_at = str(now + datetime.timedelta(hours=CERT_VALIDITY_HOURS))
-    status = "activo"
-    serial = hashlib.sha256(
-        f"{username}{issued_at}{os.urandom(8)}".encode()
-    ).hexdigest()[:16]
-
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private_pem = serialize_private_key_encrypted(private_key, passphrase)
-    public_bytes = serialize_public_key(private_key.public_key())
-
-    pem_hash = hash_bytes(private_pem)
-    public_fp = compute_public_fingerprint(public_bytes)
-    pem_path = store_pem_file(username, private_pem)
+    cert_data = _build_signed_certificate_bundle(username, role, passphrase)
+    pem_path = store_pem_file(username, cert_data["bundle_pem"])
 
     c = conn.cursor()
     c.execute(
         """
         UPDATE certificados
-        SET issued_by=?, issuer_fingerprint=?, issued_at=?, expires_at=?, status=?,
+        SET issued_by=?, issuer_fingerprint=?, cert_fingerprint=?, issued_at=?, expires_at=?, status=?,
             pem_hash=?, public_fp=?, cert_serial=?, pem_path=?, algorithm=?,
-            last_used_at=?, revoked_at=?, revoked_by=?, updated_at=?
+            last_used_at=?, revoked_at=?, revoked_by=?, revocation_reason=?, updated_at=?, custody_mode=?
         WHERE id=?
         """,
         (
             issued_by,
             issuer_fingerprint,
-            issued_at,
-            expires_at,
-            status,
-            pem_hash,
-            public_fp,
-            serial,
+            cert_data["cert_fingerprint"],
+            cert_data["issued_at"],
+            cert_data["expires_at"],
+            "activo",
+            cert_data["pem_hash"],
+            cert_data["public_fp"],
+            cert_data["serial"],
             pem_path,
-            "RSA-2048/AES-256-CBC",
+            cert_data["algorithm"],
             None,
             None,
             None,
-            issued_at,
+            None,
+            cert_data["issued_at"],
+            "server_bundle",
             cert_id,
         ),
     )
 
-    return {"pem_hash": pem_hash, "public_fp": public_fp}
+    return {"pem_hash": cert_data["pem_hash"], "public_fp": cert_data["public_fp"]}
+
+
+def activate_pending_certificate_from_csr(conn, cert_id, username, role, csr_pem, issued_by, issuer_fingerprint):
+    cert_data = _build_signed_certificate_from_csr(username, role, csr_pem)
+    pem_path = store_pem_file(username, cert_data["bundle_pem"])
+
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE certificados
+        SET issued_by=?, issuer_fingerprint=?, cert_fingerprint=?, issued_at=?, expires_at=?, status=?,
+            pem_hash=?, public_fp=?, cert_serial=?, pem_path=?, algorithm=?,
+            last_used_at=?, revoked_at=?, revoked_by=?, revocation_reason=?, updated_at=?, custody_mode=?
+        WHERE id=?
+        """,
+        (
+            issued_by,
+            issuer_fingerprint,
+            cert_data["cert_fingerprint"],
+            cert_data["issued_at"],
+            cert_data["expires_at"],
+            "activo",
+            cert_data["pem_hash"],
+            cert_data["public_fp"],
+            cert_data["serial"],
+            pem_path,
+            cert_data["algorithm"],
+            None,
+            None,
+            None,
+            None,
+            cert_data["issued_at"],
+            "user_key",
+            cert_id,
+        ),
+    )
+
+    return {"pem_hash": cert_data["pem_hash"], "public_fp": cert_data["public_fp"]}
 
 
 def get_active_certificate(conn, username):
@@ -852,6 +1374,19 @@ def get_pending_certificate(conn, username):
     return c.fetchone()
 
 
+def get_latest_certificate(conn, username):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT * FROM certificados
+        WHERE username=?
+        ORDER BY issued_at DESC, created_at DESC, id DESC LIMIT 1
+        """,
+        (username,),
+    )
+    return c.fetchone()
+
+
 def is_cert_expired(cert_row):
     exp_dt = parse_datetime(cert_row["expires_at"])
     if not exp_dt:
@@ -859,17 +1394,17 @@ def is_cert_expired(cert_row):
     return exp_dt < datetime.datetime.now()
 
 
-def update_cert_status(conn, cert_id, status, revoked_by=None):
+def update_cert_status(conn, cert_id, status, revoked_by=None, revocation_reason=None):
     now = str(datetime.datetime.now())
     c = conn.cursor()
     if status == "revocado":
         c.execute(
             """
             UPDATE certificados
-            SET status=?, revoked_at=?, revoked_by=?, updated_at=?
+            SET status=?, revoked_at=?, revoked_by=?, revocation_reason=?, updated_at=?
             WHERE id=?
             """,
-            (status, now, revoked_by, now, cert_id),
+            (status, now, revoked_by, revocation_reason, now, cert_id),
         )
     else:
         c.execute(
@@ -878,17 +1413,78 @@ def update_cert_status(conn, cert_id, status, revoked_by=None):
         )
 
 
-def validate_encrypted_pem(cert_row, pem_bytes, passphrase):
-    if cert_row["pem_hash"] and hash_bytes(pem_bytes) != cert_row["pem_hash"]:
-        return False, "El archivo no coincide con el certificado registrado.", None
+def revoke_certificate(conn, cert_id, revoked_by, revocation_reason):
+    update_cert_status(conn, cert_id, "revocado", revoked_by=revoked_by, revocation_reason=revocation_reason)
 
+
+def validate_encrypted_pem(cert_row, pem_bytes, passphrase, key_bytes=None):
+    custody_mode = cert_row["custody_mode"] or "server_bundle"
+
+    if cert_row["status"] == "revocado":
+        return False, "El certificado esta revocado.", None
+
+    if cert_row["status"] != "activo":
+        return False, "No hay un certificado activo. Debes configurarlo.", None
+
+    if custody_mode == "user_key":
+        if not key_bytes:
+            return False, "Debes adjuntar tu llave privada local.", None
+        if cert_row["pem_hash"] and hash_bytes(pem_bytes) != cert_row["pem_hash"]:
+            return False, "El archivo del certificado no coincide con el registro.", None
+    else:
+        if cert_row["pem_hash"] and hash_bytes(pem_bytes) != cert_row["pem_hash"]:
+            return False, "El archivo no coincide con el certificado registrado.", None
+
+    ca_key, ca_cert = _load_or_create_certificate_authority()
+    cert_bytes = _extract_pem_certificate(pem_bytes)
+    cert = None
+    if cert_bytes:
+        try:
+            cert = x509.load_pem_x509_certificate(cert_bytes)
+        except Exception:
+            return False, "El archivo PEM del certificado es invalido.", None
+
+    key_source = key_bytes if key_bytes is not None else pem_bytes
     try:
-        private_key = load_private_key_from_pem(pem_bytes, passphrase)
+        private_key = load_private_key_from_pem(key_source, passphrase)
     except Exception:
-        return False, "Passphrase invalida o PEM corrupto.", None
+        return False, "Passphrase invalida o llave PEM corrupta.", None
 
     public_bytes = serialize_public_key(private_key.public_key())
     public_fp = compute_public_fingerprint(public_bytes)
+
+    if cert:
+        if not _verify_certificate_signature(cert, ca_cert):
+            return False, "La firma del certificado no corresponde a la CA autorizada.", None
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert_not_valid_before = getattr(cert, "not_valid_before_utc", None)
+        cert_not_valid_after = getattr(cert, "not_valid_after_utc", None)
+        if cert_not_valid_before is None:
+            cert_not_valid_before = cert.not_valid_before.replace(tzinfo=datetime.timezone.utc)
+        if cert_not_valid_after is None:
+            cert_not_valid_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+
+        if cert_not_valid_before > now or cert_not_valid_after < now:
+            return False, "Tu certificado ha expirado. Debes reemitirlo.", None
+
+        cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        ou_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)
+        subject_cn = cn_attrs[0].value if cn_attrs else None
+        subject_ou = ou_attrs[0].value if ou_attrs else None
+
+        if subject_cn and subject_cn != cert_row["username"]:
+            return False, "El certificado no corresponde al usuario.", None
+
+        if subject_ou and subject_ou != cert_row["rol"]:
+            return False, "El certificado no corresponde al rol del usuario.", None
+
+        cert_fingerprint = hash_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        if cert_row["cert_fingerprint"] and cert_fingerprint != cert_row["cert_fingerprint"]:
+            return False, "La huella del certificado no coincide con el registro.", None
+
+        if not _certificate_public_key_fingerprint(cert) == public_fp:
+            return False, "La llave publica del certificado no coincide con la llave privada.", None
 
     if cert_row["public_fp"] and public_fp != cert_row["public_fp"]:
         return False, "El certificado no corresponde al usuario.", None
@@ -896,7 +1492,11 @@ def validate_encrypted_pem(cert_row, pem_bytes, passphrase):
     return True, None, public_fp
 
 
-def validate_certificate_for_user(conn, username, pem_bytes, passphrase):
+def validate_certificate_for_user(conn, username, pem_bytes, challenge, signature_bytes, purpose):
+    latest_cert = get_latest_certificate(conn, username)
+    if latest_cert and latest_cert["status"] == "revocado":
+        return False, "Tu certificado esta revocado. Debes reemitirlo.", None
+
     cert_row = get_active_certificate(conn, username)
     if not cert_row:
         return False, "No hay un certificado activo. Debes configurarlo.", None
@@ -905,7 +1505,14 @@ def validate_certificate_for_user(conn, username, pem_bytes, passphrase):
         update_cert_status(conn, cert_row["id"], "expirado")
         return False, "Tu certificado ha expirado. Debes reemitirlo.", None
 
-    ok, message, public_fp = validate_encrypted_pem(cert_row, pem_bytes, passphrase)
+    ok, message, public_fp = verify_certificate_challenge_response(
+        cert_row,
+        pem_bytes,
+        challenge,
+        signature_bytes,
+        purpose,
+        username,
+    )
     if not ok:
         return False, message, None
 
@@ -927,9 +1534,24 @@ def verify_action_certificate(action_label):
         flash(f"Se requiere certificado para firmar: {action_label}.")
         return False, None
 
-    passphrase = request.form.get("action_cert_passphrase", "")
-    if not passphrase:
-        flash("Se requiere la passphrase del certificado.")
+    challenge = request.form.get("action_challenge", "").strip()
+    challenge_row = session.get(_signature_challenge_key("action"))
+    if not challenge or not challenge_row or challenge_row.get("value") != challenge:
+        flash("El desafio de firma no es valido o ya expiró.")
+        return False, None
+
+    if challenge_row.get("username") and challenge_row.get("username") != session.get("user"):
+        flash("El desafio de firma no corresponde al usuario autenticado.")
+        return False, None
+
+    consume_signature_challenge("action")
+
+    signature_bytes = decode_signature_value(
+        request.form.get("action_signature", ""),
+        request.files.get("action_signature_file"),
+    )
+    if not signature_bytes:
+        flash("Se requiere la firma del desafio para firmar la accion.")
         return False, None
 
     conn = get_conn()
@@ -937,7 +1559,9 @@ def verify_action_certificate(action_label):
         conn,
         session.get("user"),
         cert_file.read(),
-        passphrase,
+        challenge,
+        signature_bytes,
+        action_label,
     )
     conn.commit()
     conn.close()
@@ -945,6 +1569,8 @@ def verify_action_certificate(action_label):
     if not ok:
         flash(message)
         return False, None
+
+    consume_signature_challenge("action")
 
     return True, public_fp
 
@@ -1091,6 +1717,75 @@ def certificado_setup():
     pending_cert = get_pending_certificate(conn, session.get("user"))
 
     if request.method == "POST":
+        csr_text = request.form.get("csr_pem", "").strip()
+        csr_file = request.files.get("csr_file")
+        if csr_file and csr_file.filename:
+            csr_file_bytes = csr_file.read()
+            if csr_file_bytes:
+                csr_text = csr_file_bytes.decode("utf-8", errors="ignore")
+
+        if csr_text:
+            try:
+                if pending_cert:
+                    issued_by = pending_cert["issued_by"] or session.get("user")
+                    issuer_fp = pending_cert["issuer_fingerprint"]
+                    cert_info = activate_pending_certificate_from_csr(
+                        conn,
+                        pending_cert["id"],
+                        session.get("user"),
+                        role,
+                        csr_text,
+                        issued_by,
+                        issuer_fp,
+                    )
+                else:
+                    cert_info = issue_user_certificate_from_csr(
+                        conn,
+                        session.get("user"),
+                        role,
+                        csr_text,
+                        session.get("user"),
+                        None,
+                    )
+            except ValueError as exc:
+                conn.close()
+                flash(str(exc))
+                return render_template("cert_setup.html")
+
+            if not cert_info:
+                conn.close()
+                flash("No fue posible emitir el certificado.")
+                return render_template("cert_setup.html")
+
+            c = conn.cursor()
+            c.execute(
+                "UPDATE usuarios SET cert_fingerprint=? WHERE username=?",
+                (cert_info["public_fp"], session.get("user")),
+            )
+            conn.commit()
+
+            session.pop("cert_setup_required", None)
+            log(session.get("user"), "Configuro su certificado desde CSR")
+            flash("Certificado emitido correctamente.")
+
+            c = conn.cursor()
+            c.execute(
+                "SELECT pem_path FROM certificados WHERE username=? AND status='activo' ORDER BY issued_at DESC, created_at DESC, id DESC LIMIT 1",
+                (session.get("user"),),
+            )
+            issued_row = c.fetchone()
+            conn.close()
+
+            if issued_row and issued_row["pem_path"] and os.path.exists(issued_row["pem_path"]):
+                return send_file(
+                    issued_row["pem_path"],
+                    as_attachment=True,
+                    download_name=f"{session.get('user')}.crt",
+                    mimetype="application/x-pem-file",
+                )
+
+            return redirect(role_home(role))
+
         passphrase = request.form.get("passphrase", "")
         passphrase_confirm = request.form.get("passphrase_confirm", "")
 
@@ -1237,9 +1932,17 @@ def can_delete_user(target_user):
     return True
 
 
+def render_login_page(error=None):
+    consume_signature_challenge("login")
+    return render_template("login.html", error=error)
+
+
 @app.route("/", methods=["GET", "POST"])
 def login():
     error = None
+
+    if request.method == "GET":
+        return render_login_page()
 
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -1250,7 +1953,7 @@ def login():
         if locked:
             lock_minutes = int((until - time.time()) // 60) + 1
             error = f"Cuenta bloqueada por intentos fallidos. Intenta en {lock_minutes} minutos."
-            return render_template("login.html", error=error)
+            return render_login_page(error)
 
         conn = get_conn()
         c = conn.cursor()
@@ -1294,30 +1997,44 @@ def login():
                     conn.commit()
                     conn.close()
                     error = "Tu certificado ha expirado. Solicita reemision."
-                    return render_template("login.html", error=error)
+                    return render_login_page(error)
 
                 cert_file = request.files.get("cert_file")
                 if not cert_file or not cert_file.filename:
                     conn.close()
                     error = "Este usuario requiere certificado digital (.pem)."
-                    return render_template("login.html", error=error)
+                    return render_login_page(error)
 
-                passphrase = request.form.get("cert_passphrase", "")
-                if not passphrase:
+                challenge = request.form.get("login_challenge", "").strip()
+                challenge_row = session.get(_signature_challenge_key("login"))
+                if not challenge or not challenge_row or challenge_row.get("value") != challenge:
                     conn.close()
-                    error = "Debes ingresar la passphrase del certificado."
-                    return render_template("login.html", error=error)
+                    error = "El desafio de firma no es valido o ya expiró."
+                    return render_login_page(error)
+
+                consume_signature_challenge("login")
+
+                signature_bytes = decode_signature_value(
+                    request.form.get("cert_signature", ""),
+                    request.files.get("cert_signature_file"),
+                )
+                if not signature_bytes:
+                    conn.close()
+                    error = "Debes proporcionar la firma del desafio."
+                    return render_login_page(error)
 
                 ok, message, _public_fp = validate_certificate_for_user(
                     conn,
                     user["username"],
                     cert_file.read(),
-                    passphrase,
+                    challenge,
+                    signature_bytes,
+                    "login",
                 )
                 if not ok:
                     conn.close()
                     error = message
-                    return render_template("login.html", error=error)
+                    return render_login_page(error)
 
                 conn.commit()
                 conn.close()
@@ -1334,7 +2051,7 @@ def login():
         _record_failed(identifier)
         error = "Usuario o contrasena incorrectos"
 
-    return render_template("login.html", error=error)
+    return render_login_page(error)
 
 
 @app.route("/dashboard")
@@ -1849,13 +2566,51 @@ def descargar_certificado(cert_id):
         flash("Archivo PEM cifrado no disponible.")
         return redirect("/usuarios")
 
-    filename = f"{cert['username']}.pem"
+    custody_mode = cert["custody_mode"] or "server_bundle"
+    filename = f"{cert['username']}.crt" if custody_mode == "user_key" else f"{cert['username']}.pem"
     return send_file(
         cert["pem_path"],
         as_attachment=True,
         download_name=filename,
         mimetype="application/x-pem-file",
     )
+
+
+@app.route("/certificado/<int:cert_id>/revocar", methods=["POST"])
+def revocar_certificado(cert_id):
+    if not require_role("admin"):
+        return redirect("/")
+
+    ok, _ = verify_action_certificate("revocacion de certificado")
+    if not ok:
+        return redirect("/usuarios")
+
+    motivo = request.form.get("revocation_reason", "").strip()
+    if not motivo:
+        flash("Debes indicar un motivo para revocar el certificado.")
+        return redirect("/usuarios")
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM certificados WHERE id=?", (cert_id,))
+    cert = c.fetchone()
+    if not cert:
+        conn.close()
+        flash("Certificado no encontrado.")
+        return redirect("/usuarios")
+
+    if cert["status"] == "revocado":
+        conn.close()
+        flash("El certificado ya estaba revocado.")
+        return redirect("/usuarios")
+
+    revoke_certificate(conn, cert_id, session.get("user"), motivo)
+    conn.commit()
+    conn.close()
+
+    log(session.get("user"), f"Revoco certificado de {cert['username']}: {motivo}")
+    flash("Certificado revocado correctamente.")
+    return redirect("/usuarios")
 
 
 @app.route("/logout")
