@@ -206,8 +206,101 @@ Elija modo:
 
 El sistema genera/firma el certificado y redirige al dashboard.
 
+### Setup de certificado por CSR (flujo recomendado y detallado)
+
+Esta es la forma recomendada para cuentas nuevas (`admin`/`coordinador`) porque la clave privada se genera y queda solo en el equipo del usuario.
+
+**Objetivo de seguridad**
+- El servidor recibe solo la CSR (clave publica + metadatos firmados).
+- La clave privada **no** viaja al servidor.
+- Se evita exponer la privada en archivos del sistema, backups o logs del servidor.
+
+**Campos esperados por el backend**
+- `CN` (Common Name): debe ser exactamente el `username`.
+- `OU` (Organizational Unit): debe coincidir con el rol interno:
+	- `admin`
+	- `coordinador`
+
+Si no coinciden, la app rechazara la CSR.
+
+**Paso A: Generar clave privada local (usuario final)**
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -aes-256-cbc -out coord_csr_demo.key.pem
+```
+
+- Este comando pedira una passphrase local para proteger la clave privada.
+- Esa passphrase la conoce solo el usuario.
+
+**Paso B: Generar CSR con esa clave**
+
+```bash
+openssl req -new -key coord_csr_demo.key.pem -out coord_csr_demo.csr.pem -sha256 -subj "/C=MX/O=Casa Monarca/OU=coordinador/CN=coord_csr_demo"
+```
+
+Ejemplos:
+- Para admin: `OU=admin`
+- Para coordinador: `OU=coordinador`
+
+**Paso C: Verificar CSR antes de subirla**
+
+```bash
+openssl req -in coord_csr_demo.csr.pem -noout -text
+```
+
+Validar visualmente:
+- Subject contiene `CN=coord_csr_demo`
+- Subject contiene `OU=coordinador`
+- Algoritmo y clave son correctos
+
+**Paso D: Cargar CSR en la pantalla de setup**
+
+En `/certificado/setup`:
+- Opción 1: pegar el texto PEM en **"CSR PEM o texto de la solicitud"**
+- Opción 2: subir **Archivo CSR** (`.csr` o `.pem`)
+
+Luego presionar **Generar certificado**.
+
+**Resultado esperado**
+- El servidor firma la clave publica de la CSR.
+- El usuario recibe el certificado emitido (`.crt`/`.pem`).
+- La clave privada sigue local en `coord_csr_demo.key.pem`.
+
+**Paso E: Login challenge-response usando la clave local**
+
+En login:
+1. Copiar `Desafio a firmar`
+2. Firmar con la clave privada local
+3. Enviar firma (Base64 o binaria) + certificado emitido
+
+Ejemplo (macOS/Linux):
+
+```bash
+payload='CasaMonarca|login|coord_csr_demo|<CHALLENGE>'
+printf '%s' "$payload" | openssl dgst -sha256 -sign coord_csr_demo.key.pem -out /tmp/coord_login.sig
+base64 -i /tmp/coord_login.sig | tr -d '\n'
+```
+
+Notas:
+- Si la clave privada fue cifrada, OpenSSL pedira la passphrase local.
+- Puedes subir `/tmp/coord_login.sig` como archivo binario en lugar de pegar Base64.
+
+**Checklist rapido para presentaciones/demo**
+- [ ] Usuario nuevo creado por admin con firma de accion
+- [ ] Usuario cambia contraseña obligatoria
+- [ ] Usuario genera clave privada local
+- [ ] Usuario genera CSR con `CN`/`OU` correctos
+- [ ] Usuario carga CSR en `/certificado/setup`
+- [ ] Certificado emitido y descargado
+- [ ] Login exitoso con challenge-response y firma local
+
+**Qué NO hacer**
+- No compartir la clave privada por chat/correo.
+- No almacenar la privada en el servidor.
+- No reutilizar passphrases débiles o compartidas.
+
 **Paso 8: Login con certificado (challenge-response)**
-El nuevo usuario now accede con el flujo completo:
+El nuevo usuario accede con el flujo completo:
 - Usuario: `nuevo_admin`
 - Contraseña: `NuevoAdminX2026UpdatedV2!` (la nueva)
 - Certificado: `certs/nuevo_admin.pem` (recién generado)
@@ -216,8 +309,10 @@ El nuevo usuario now accede con el flujo completo:
 ```bash
 # COMANDO PARA LOGIN (propósito: login)
 payload='CasaMonarca|login|nuevo_admin|<CHALLENGE>'
-printf '%s' "$payload" | openssl dgst -sha256 -sign nuevo_admin_demo.key -passin pass:CertSetupPass2026! | base64 | tr -d '\n'
+printf '%s' "$payload" | openssl dgst -sha256 -sign nuevo_admin.key.pem | base64 | tr -d '\n'
 ```
+
+Si usas una clave demo legacy cifrada, agrega `-passin pass:<PASSPHRASE>` al comando de firma.
 
 **Resumen de propósitos por operación**
 
