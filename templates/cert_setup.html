@@ -104,18 +104,26 @@ button {
             Si adjuntas una CSR, el servidor solo firmara la clave publica y te devolvera el certificado; tu llave privada seguira en tu equipo. Este es el camino normal para cuentas nuevas.
         </div>
 
+        {% if legacy_bundle_mode %}
         <label>Passphrase</label>
         <input type="password" name="passphrase">
 
         <label>Confirmar passphrase</label>
         <input type="password" name="passphrase_confirm">
+        {% endif %}
 
         <button type="submit">Generar certificado</button>
     </form>
 
+    {% if legacy_bundle_mode %}
     <div class="note">
         El modo legado sigue generando un bundle cifrado (AES-256-CBC) solo para cuentas antiguas. En modo CSR, la clave privada no se genera en el servidor.
     </div>
+    {% else %}
+    <div class="note">
+        Para cuentas nuevas usa una CSR: ese es el flujo esperado y mantiene la clave privada fuera del servidor.
+    </div>
+    {% endif %}
 </div>
 </body>
 </html>

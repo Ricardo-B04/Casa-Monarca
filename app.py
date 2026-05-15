@@ -1716,6 +1716,13 @@ def certificado_setup():
 
     pending_cert = get_pending_certificate(conn, session.get("user"))
 
+    legacy_bundle_mode = bool(
+        pending_cert and (pending_cert["custody_mode"] or "server_bundle") == "server_bundle"
+    )
+
+    def render_setup_page():
+        return render_template("cert_setup.html", legacy_bundle_mode=legacy_bundle_mode)
+
     if request.method == "POST":
         csr_text = request.form.get("csr_pem", "").strip()
         csr_file = request.files.get("csr_file")
@@ -1750,12 +1757,12 @@ def certificado_setup():
             except ValueError as exc:
                 conn.close()
                 flash(str(exc))
-                return render_template("cert_setup.html")
+                return render_setup_page()
 
             if not cert_info:
                 conn.close()
                 flash("No fue posible emitir el certificado.")
-                return render_template("cert_setup.html")
+                return render_setup_page()
 
             c = conn.cursor()
             c.execute(
@@ -1789,7 +1796,7 @@ def certificado_setup():
         if pending_cert and (pending_cert["custody_mode"] or "user_key") == "user_key":
             flash("Este certificado pendiente requiere una CSR. Genera la CSR en tu equipo y vuelve a cargarla.")
             conn.close()
-            return render_template("cert_setup.html")
+            return render_setup_page()
 
         passphrase = request.form.get("passphrase", "")
         passphrase_confirm = request.form.get("passphrase_confirm", "")
@@ -1797,12 +1804,12 @@ def certificado_setup():
         if not passphrase or len(passphrase) < 10:
             flash("La passphrase debe tener al menos 10 caracteres.")
             conn.close()
-            return render_template("cert_setup.html")
+            return render_setup_page()
 
         if passphrase != passphrase_confirm:
             flash("Las passphrases no coinciden.")
             conn.close()
-            return render_template("cert_setup.html")
+            return render_setup_page()
 
         if pending_cert:
             issued_by = pending_cert["issued_by"] or session.get("user")
@@ -1829,7 +1836,7 @@ def certificado_setup():
         if not cert_info:
             conn.close()
             flash("No fue posible emitir el certificado.")
-            return render_template("cert_setup.html")
+            return render_setup_page()
 
         c = conn.cursor()
         c.execute(
@@ -1845,7 +1852,7 @@ def certificado_setup():
         return redirect(role_home(role))
 
     conn.close()
-    return render_template("cert_setup.html")
+    return render_setup_page()
 
 
 @app.route("/password/update", methods=["GET", "POST"])
