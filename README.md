@@ -140,6 +140,93 @@ base64 -i /tmp/cm_login.sig | tr -d '\n'
 - Sustituye `admin_cont` y `admin_cont_demo.key` por `admin_prod` o `coord_admin` cuando corresponda.
 - La contraseña que debe ingresarse en el login es la de la cuenta semilla, no la passphrase de la llave demo.
 
+### Creación de nuevo usuario Admin con certificado (flujo completo)
+
+Para crear un nuevo usuario con rol Admin o Coordinador, debe hacerlo un admin existente autorizado con su certificado y firma. El proceso es:
+
+**Paso 1: Login del admin existente**
+Acceda como admin autorizado (ej: `admin_prod`) usando el flujo de challenge-response descrito arriba.
+
+**Paso 2: Navegar a Gestion de usuarios**
+Una vez logueado, haga clic en **Usuarios** → **Crear usuario**.
+
+**Paso 3: Rellenar formulario y firmar**
+El formulario requiere:
+- **Usuario**: nombre único (ej: `nuevo_admin`)
+- **Contraseña**: contraseña fuerte (ej: `NuevoAdminX2026!`)
+- **Rol**: seleccionar `Administrador (CRUD)` o `Coordinador (CRU)`
+- **Certificado del admin para firmar**: cargar el `.pem` del admin actual (ej: `certs/admin_prod.pem`)
+- **Firma del desafío**: **IMPORTANTE** – aquí cambia respecto al login
+
+**⚠️ DIFERENCIA CLAVE EN LA FIRMA**
+
+A diferencia del login, la firma para crear un usuario debe usar el propósito `"creacion de usuario"` en lugar de `"login"`.
+
+**Comando incorrecto (para login):**
+```bash
+payload='CasaMonarca|login|admin_prod|<CHALLENGE>'
+```
+
+**Comando correcto (para crear usuario):**
+```bash
+payload='CasaMonarca|creacion de usuario|admin_prod|<CHALLENGE>'
+printf '%s' "$payload" | openssl dgst -sha256 -sign admin_prod_demo.key -passin pass:AdminProdX2026! | base64 | tr -d '\n'
+```
+
+Note que:
+- El propósito cambió de `login` a `creacion de usuario`
+- La contraseña de la llave demo es `AdminProdX2026!` (para `admin_prod`), `AdminContX2026!` (para `admin_cont`), etc.
+- Copie el resultado Base64 en el campo **Firma Base64** del formulario
+
+**Paso 4: Crear usuario**
+Haga clic en **Guardar usuario**. El sistema:
+- Verifica la firma del certificado admin
+- Crea el nuevo usuario con estado `must_change_password=1`
+- Crea un certificado **pendiente** asociado
+
+**Paso 5: Primer login del nuevo usuario**
+El nuevo usuario intenta loguear:
+- Usuario: `nuevo_admin`
+- Contraseña: `NuevoAdminX2026!` (la que seleccionó en Paso 3)
+- **Sin certificado** (aún pendiente)
+
+El sistema detecta que es admin sin certificado activo y redirige a **Actualizar contraseña** (porque es nuevo).
+
+**Paso 6: Cambio obligatorio de contraseña**
+El nuevo usuario debe actualizar su contraseña (mismo formato fuerte). Ejemplo:
+- Contraseña actual: `NuevoAdminX2026!`
+- Nueva contraseña: `NuevoAdminX2026UpdatedV2!`
+- Confirmar: `NuevoAdminX2026UpdatedV2!`
+
+**Paso 7: Configuración de certificado**
+Tras actualizar contraseña, redirige a **Configurar certificado** (`/certificado/setup`).
+Elija modo:
+- **Modo legacy (passphrase)**: ingrese una passphrase (ej: `CertSetupPass2026!`), confirme, y haga clic **Generar certificado**.
+- **Modo moderno (CSR)**: si tiene una CSR generada localmente, péguala o cargue el archivo.
+
+El sistema genera/firma el certificado y redirige al dashboard.
+
+**Paso 8: Login con certificado (challenge-response)**
+El nuevo usuario now accede con el flujo completo:
+- Usuario: `nuevo_admin`
+- Contraseña: `NuevoAdminX2026UpdatedV2!` (la nueva)
+- Certificado: `certs/nuevo_admin.pem` (recién generado)
+- Firma del desafío: **aquí es `login` de nuevo**
+
+```bash
+# COMANDO PARA LOGIN (propósito: login)
+payload='CasaMonarca|login|nuevo_admin|<CHALLENGE>'
+printf '%s' "$payload" | openssl dgst -sha256 -sign nuevo_admin_demo.key -passin pass:CertSetupPass2026! | base64 | tr -d '\n'
+```
+
+**Resumen de propósitos por operación**
+
+| Operación | Propósito | Ejemplo de payload |
+|-----------|-----------|-------------------|
+| Login | `login` | `CasaMonarca\|login\|nuevo_admin\|{CHALLENGE}` |
+| Crear usuario | `creacion de usuario` | `CasaMonarca\|creacion de usuario\|admin_prod\|{CHALLENGE}` |
+| Otras acciones admin | `{descripcion_accion}` | `CasaMonarca\|{descripcion}\|{username}\|{CHALLENGE}` |
+
 5. Ejemplo breve de flujo completo:
 - Abrir el login, copiar el desafio, firmarlo, seleccionar el certificado X.509 y entrar.
 - Usuario crea expediente -> Usuario canaliza -> Operativo canaliza -> Coordinador valida -> Admin cierra.
