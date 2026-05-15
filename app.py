@@ -1266,7 +1266,7 @@ def create_pending_certificate(conn, username, role, issued_by, issuer_fingerpri
             "pendiente",
             now,
             now,
-            "server_bundle",
+            "user_key",
         ),
     )
     return c.lastrowid
@@ -1785,6 +1785,11 @@ def certificado_setup():
                 )
 
             return redirect(role_home(role))
+
+        if pending_cert and (pending_cert["custody_mode"] or "user_key") == "user_key":
+            flash("Este certificado pendiente requiere una CSR. Genera la CSR en tu equipo y vuelve a cargarla.")
+            conn.close()
+            return render_template("cert_setup.html")
 
         passphrase = request.form.get("passphrase", "")
         passphrase_confirm = request.form.get("passphrase_confirm", "")
