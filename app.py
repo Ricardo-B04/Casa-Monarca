@@ -2529,7 +2529,46 @@ def logs():
     data = c.fetchall()
     conn.close()
 
-    return render_template("logs.html", logs=data)
+    # Agrupar logs por fecha
+    logs_by_date = {}
+    unique_users = set()
+    unique_actions_set = set()
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    events_today = 0
+
+    for log in data:
+        fecha_str = log['fecha']
+        fecha_date = fecha_str[:10]  # YYYY-MM-DD
+        hora = fecha_str[11:19]  # HH:MM:SS
+
+        if fecha_date not in logs_by_date:
+            logs_by_date[fecha_date] = []
+        
+        logs_by_date[fecha_date].append({
+            'hora': hora,
+            'usuario': log['usuario'],
+            'accion': log['accion'],
+            'fecha_completa': fecha_str
+        })
+
+        unique_users.add(log['usuario'])
+        unique_actions_set.add(log['accion'])
+        
+        if fecha_date == today:
+            events_today += 1
+
+    # Ordenar fechas descendentes (más recientes primero)
+    sorted_dates = sorted(logs_by_date.keys(), reverse=True)
+
+    return render_template(
+        "logs.html",
+        logs_by_date=logs_by_date,
+        sorted_dates=sorted_dates,
+        total_events=len(data),
+        events_today=events_today,
+        unique_users=len(unique_users),
+        unique_actions=list(sorted(unique_actions_set))
+    )
 
 
 @app.route("/logs/clear", methods=["POST"])

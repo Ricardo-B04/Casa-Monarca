@@ -2,116 +2,401 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Bitacora</title>
+<title>Bitácora | Casa Monarca</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-body {
-    margin: 0;
-    font-family: "Segoe UI", sans-serif;
-    background: #f4f6fb;
+/* Extensiones de estilo para bitácora */
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-xl);
 }
 
-.top {
-    background: #131b2e;
-    color: white;
-    padding: 14px 20px;
-    display: flex;
-    justify-content: space-between;
+.summary-card {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    text-align: center;
+    box-shadow: var(--shadow-sm);
 }
 
-.top a {
-    color: white;
-    text-decoration: none;
-    margin-left: 10px;
+.summary-card strong {
+    display: block;
+    font-size: 28px;
+    color: var(--color-accent);
+    margin-bottom: var(--spacing-sm);
 }
 
-.wrap {
-    max-width: 980px;
-    margin: 20px auto;
-    padding: 0 16px;
-}
-
-.box {
-    background: white;
-    border: 1px solid #dbe3ef;
-    border-radius: 12px;
-    padding: 14px;
-}
-
-.toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-}
-
-button {
-    border: 0;
-    border-radius: 8px;
-    padding: 8px 11px;
-    background: #8f3219;
-    color: white;
-    cursor: pointer;
-}
-
-input[type="password"],
-input[type="file"] {
-    border: 1px solid #d1d7e3;
-    border-radius: 8px;
-    padding: 6px;
+.summary-card label {
+    display: block;
     font-size: 12px;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
-.row {
-    border-bottom: 1px solid #edf1f8;
-    padding: 10px 0;
+.filter-section {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-xl);
+    flex-wrap: wrap;
+}
+
+.filter-section input,
+.filter-section select,
+.filter-section button {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: 14px;
+    background: var(--color-white);
+    color: var(--color-text);
+}
+
+.filter-section input::placeholder {
+    color: var(--color-text-muted);
+}
+
+.filter-section button {
+    border: none;
+    background: var(--color-secondary);
+    color: var(--color-white);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.filter-section button:hover {
+    background: var(--color-primary);
+}
+
+.logs-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.log-group {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+
+.log-date-header {
+    background: var(--color-secondary);
+    color: var(--color-white);
+    padding: var(--spacing-md) var(--spacing-lg);
+    font-weight: 600;
     font-size: 14px;
 }
 
-.row:last-child {
-    border-bottom: 0;
+.log-entry {
+    display: flex;
+    align-items: flex-start;
+    padding: var(--spacing-md) var(--spacing-lg);
+    border-bottom: 1px solid var(--color-border);
+    gap: var(--spacing-md);
 }
 
-.meta {
-    color: #667287;
-    font-size: 12px;
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-time {
+    min-width: 70px;
+    color: var(--color-text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: "Monaco", "Courier New", monospace;
+}
+
+.log-content {
+    flex: 1;
+}
+
+.log-user {
+    font-weight: 600;
+    color: var(--color-accent);
+    margin-right: var(--spacing-sm);
+}
+
+.log-action {
+    color: var(--color-text);
+    font-size: 14px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: var(--spacing-2xl);
+    color: var(--color-text-muted);
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+}
+
+.accordion-item {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-top: var(--spacing-lg);
+}
+
+.accordion-header {
+    background: var(--color-secondary);
+    color: var(--color-white);
+    padding: var(--spacing-md) var(--spacing-lg);
+    cursor: pointer;
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s;
+}
+
+.accordion-header:hover {
+    background: #3a4558;
+}
+
+.accordion-header.active {
+    background: var(--color-accent);
+}
+
+.accordion-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+    background: var(--color-light);
+}
+
+.accordion-body.active {
+    max-height: 500px;
+}
+
+.accordion-content {
+    padding: var(--spacing-lg);
+}
+
+.clear-form {
+    display: grid;
+    gap: var(--spacing-md);
+}
+
+.form-group {
+    display: grid;
+    gap: var(--spacing-sm);
+}
+
+.form-group label {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--color-text);
+}
+
+.form-group input,
+.form-group button {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    font-size: 14px;
+}
+
+.form-group button {
+    border: none;
+    background: var(--color-danger);
+    color: var(--color-white);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.form-group button:hover {
+    background: #c82333;
+}
+
+@media (max-width: 768px) {
+    .summary-cards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .filter-section {
+        flex-direction: column;
+    }
+    
+    .filter-section input,
+    .filter-section select,
+    .filter-section button {
+        width: 100%;
+    }
+    
+    .log-entry {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+    }
 }
 </style>
 </head>
 <body>
 <div class="top">
-    <div>Casa Monarca | Bitacora del sistema</div>
+    <div>Casa Monarca | Bitácora del Sistema</div>
     <div>
         <a href="/dashboard">Dashboard</a>
         <a href="/admin">Panel Admin</a>
         <a href="/usuarios">Usuarios</a>
-        <a href="/logout">Cerrar sesion</a>
+        <a href="/logout">Cerrar sesión</a>
     </div>
 </div>
 
 <div class="wrap">
-    <div class="box">
-        <div class="toolbar">
-            <h2 style="margin:0;">Eventos registrados</h2>
-            <form method="POST" action="/logs/clear" enctype="multipart/form-data" onsubmit="return confirm('Se limpiara toda la bitacora. Continuar?');">
-                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                <button type="submit">Limpiar bitacora</button>
-            </form>
+    <!-- SUMMARY CARDS -->
+    <div class="summary-cards">
+        <div class="summary-card">
+            <strong>{{ total_events }}</strong>
+            <label>Eventos Totales</label>
         </div>
+        <div class="summary-card">
+            <strong>{{ events_today }}</strong>
+            <label>Eventos Hoy</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ unique_users }}</strong>
+            <label>Usuarios Únicos</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ unique_actions|length }}</strong>
+            <label>Tipos de Acciones</label>
+        </div>
+    </div>
 
-        {% if logs %}
-            {% for l in logs %}
-                <div class="row">
-                    <strong>{{ l['usuario'] }}</strong> - {{ l['accion'] }}
-                    <div class="meta">{{ l['fecha'] }}</div>
+    <!-- FILTROS -->
+    <div class="filter-section">
+        <input type="text" id="filterUsuario" placeholder="Filtrar por usuario..." style="flex: 1; min-width: 150px;">
+        <select id="filterAccion" style="flex: 1; min-width: 150px;">
+            <option value="">Filtrar por acción...</option>
+            {% for accion in unique_actions %}
+                <option value="{{ accion }}">{{ accion }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltros()">Limpiar filtros</button>
+    </div>
+
+    <!-- BITÁCORA AGRUPADA POR DÍA -->
+    {% if sorted_dates %}
+        <div class="logs-container" id="logsContainer">
+            {% for fecha_date in sorted_dates %}
+                <div class="log-group" data-fecha="{{ fecha_date }}">
+                    <div class="log-date-header">
+                        {{ fecha_date }}
+                    </div>
+                    {% for entry in logs_by_date[fecha_date] %}
+                        <div class="log-entry" data-usuario="{{ entry['usuario']|lower }}" data-accion="{{ entry['accion']|lower }}">
+                            <div class="log-time">{{ entry['hora'] }}</div>
+                            <div class="log-content">
+                                <span class="log-user">{{ entry['usuario'] }}</span>
+                                <span class="log-action">{{ entry['accion'] }}</span>
+                            </div>
+                        </div>
+                    {% endfor %}
                 </div>
             {% endfor %}
-        {% else %}
-            <p>No hay eventos.</p>
-        {% endif %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No hay eventos registrados en la bitácora.</p>
+        </div>
+    {% endif %}
+
+    <!-- ACCIÓN: LIMPIAR BITÁCORA (EN ACCORDION) -->
+    <div class="accordion-item">
+        <div class="accordion-header" onclick="toggleAccordion(event)">
+            <span>⚠️ Acciones Avanzadas - Limpiar Bitácora</span>
+            <span>▼</span>
+        </div>
+        <div class="accordion-body">
+            <div class="accordion-content">
+                <p style="color: var(--color-text-muted); margin-bottom: var(--spacing-lg);">
+                    Esta acción eliminará <strong>todos</strong> los eventos de la bitácora. Requiere firma digital.
+                </p>
+                <form method="POST" action="/logs/clear" enctype="multipart/form-data" class="clear-form" onsubmit="return confirm('Se eliminará TODA la bitácora. ¿Continuar?');">
+                    <div class="form-group">
+                        <label>Certificado Digital</label>
+                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Desafío</label>
+                        <input type="text" value="{{ action_signature_challenge }}" readonly style="background: #f0f0f0;">
+                        <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Firma (Base64)</label>
+                        <input type="text" name="action_signature" placeholder="Pega la firma en Base64 aquí" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>O Archivo de Firma (Binario)</label>
+                        <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
+                    </div>
+                    
+                    <div class="form-group">
+                        <button type="submit">Limpiar Bitácora</button>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
+
+<script>
+function toggleAccordion(event) {
+    const header = event.currentTarget;
+    const body = header.nextElementSibling;
+    header.classList.toggle('active');
+    body.classList.toggle('active');
+}
+
+function limpiarFiltros() {
+    document.getElementById('filterUsuario').value = '';
+    document.getElementById('filterAccion').value = '';
+    filtrarLogs();
+}
+
+function filtrarLogs() {
+    const usuario = document.getElementById('filterUsuario').value.toLowerCase();
+    const accion = document.getElementById('filterAccion').value.toLowerCase();
+    
+    const entries = document.querySelectorAll('.log-entry');
+    let visibleCount = 0;
+    
+    entries.forEach(entry => {
+        const usuarioText = entry.dataset.usuario;
+        const accionText = entry.dataset.accion;
+        
+        const usuarioMatch = usuario === '' || usuarioText.includes(usuario);
+        const accionMatch = accion === '' || accionText === accion;
+        
+        if (usuarioMatch && accionMatch) {
+            entry.style.display = 'flex';
+            visibleCount++;
+        } else {
+            entry.style.display = 'none';
+        }
+    });
+    
+    // Ocultar grupos vacíos
+    const groups = document.querySelectorAll('.log-group');
+    groups.forEach(group => {
+        const visibleEntries = group.querySelectorAll('.log-entry[style="display: flex"]');
+        group.style.display = visibleEntries.length > 0 ? 'block' : 'none';
+    });
+}
+
+document.getElementById('filterUsuario').addEventListener('input', filtrarLogs);
+document.getElementById('filterAccion').addEventListener('change', filtrarLogs);
+</script>
 </body>
 </html>
