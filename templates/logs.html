@@ -91,6 +91,38 @@
     padding: var(--spacing-md) var(--spacing-lg);
     font-weight: 600;
     font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s;
+    user-select: none;
+}
+
+.log-date-header:hover {
+    background: #3a4558;
+}
+
+.log-date-header .toggle-icon {
+    font-size: 12px;
+    transition: transform 0.2s;
+    display: inline-block;
+}
+
+.log-date-header.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+}
+
+.log-group-body {
+    max-height: 10000px;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+}
+
+.log-group-body.collapsed {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-in;
 }
 
 .log-entry {
@@ -287,19 +319,22 @@
     {% if sorted_dates %}
         <div class="logs-container" id="logsContainer">
             {% for fecha_date in sorted_dates %}
-                <div class="log-group" data-fecha="{{ fecha_date }}">
-                    <div class="log-date-header">
-                        {{ fecha_date }}
+                <div class="log-group" data-fecha="{{ fecha_date }}" data-index="{{ loop.index }}">
+                    <div class="log-date-header" onclick="toggleLogGroup(event)">
+                        <span>{{ fecha_date }}</span>
+                        <span class="toggle-icon">▼</span>
                     </div>
-                    {% for entry in logs_by_date[fecha_date] %}
-                        <div class="log-entry" data-usuario="{{ entry['usuario']|lower }}" data-accion="{{ entry['accion']|lower }}">
-                            <div class="log-time">{{ entry['hora'] }}</div>
-                            <div class="log-content">
-                                <span class="log-user">{{ entry['usuario'] }}</span>
-                                <span class="log-action">{{ entry['accion'] }}</span>
+                    <div class="log-group-body">
+                        {% for entry in logs_by_date[fecha_date] %}
+                            <div class="log-entry" data-usuario="{{ entry['usuario']|lower }}" data-accion="{{ entry['accion']|lower }}">
+                                <div class="log-time">{{ entry['hora'] }}</div>
+                                <div class="log-content">
+                                    <span class="log-user">{{ entry['usuario'] }}</span>
+                                    <span class="log-action">{{ entry['accion'] }}</span>
+                                </div>
                             </div>
-                        </div>
-                    {% endfor %}
+                        {% endfor %}
+                    </div>
                 </div>
             {% endfor %}
         </div>
@@ -352,6 +387,7 @@
 </div>
 
 <script>
+// Toggle para accordeones de "Limpiar Bitácora"
 function toggleAccordion(event) {
     const header = event.currentTarget;
     const body = header.nextElementSibling;
@@ -359,12 +395,38 @@ function toggleAccordion(event) {
     body.classList.toggle('active');
 }
 
+// Toggle para grupos de fechas en la bitácora
+function toggleLogGroup(event) {
+    const header = event.currentTarget;
+    const body = header.nextElementSibling;
+    header.classList.toggle('collapsed');
+    body.classList.toggle('collapsed');
+}
+
+// Inicializar: expandir solo los últimos 3 días, colapsar el resto
+function initializeLogGroups() {
+    const groups = document.querySelectorAll('.log-group');
+    groups.forEach(group => {
+        const index = parseInt(group.dataset.index);
+        // Expandir si está en los últimos 3 (índices 1, 2, 3)
+        // Colapsar si es mayor que 3
+        if (index > 3) {
+            const header = group.querySelector('.log-date-header');
+            const body = group.querySelector('.log-group-body');
+            header.classList.add('collapsed');
+            body.classList.add('collapsed');
+        }
+    });
+}
+
+// Limpiar filtros
 function limpiarFiltros() {
     document.getElementById('filterUsuario').value = '';
     document.getElementById('filterAccion').value = '';
     filtrarLogs();
 }
 
+// Filtrar logs por usuario y acción
 function filtrarLogs() {
     const usuario = document.getElementById('filterUsuario').value.toLowerCase();
     const accion = document.getElementById('filterAccion').value.toLowerCase();
@@ -387,7 +449,7 @@ function filtrarLogs() {
         }
     });
     
-    // Ocultar grupos vacíos
+    // Ocultar grupos sin eventos visibles
     const groups = document.querySelectorAll('.log-group');
     groups.forEach(group => {
         const visibleEntries = group.querySelectorAll('.log-entry[style="display: flex"]');
@@ -395,8 +457,12 @@ function filtrarLogs() {
     });
 }
 
+// Event listeners para filtros
 document.getElementById('filterUsuario').addEventListener('input', filtrarLogs);
 document.getElementById('filterAccion').addEventListener('change', filtrarLogs);
+
+// Inicializar acordeones al cargar la página
+document.addEventListener('DOMContentLoaded', initializeLogGroups);
 </script>
 </body>
 </html>
