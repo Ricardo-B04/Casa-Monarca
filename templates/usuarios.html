@@ -1,285 +1,504 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<title>Usuarios y Roles</title>
-<style>
-body {
-    margin: 0;
-    font-family: "Segoe UI", sans-serif;
-    background: #f4f6fa;
-}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Usuarios | Casa Monarca</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* Summary cards */
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--spacing-lg);
+            margin-bottom: var(--spacing-2xl);
+        }
 
-.top {
-    background: #161d2f;
-    color: white;
-    padding: 14px 20px;
-    display: flex;
-    justify-content: space-between;
-}
+        .summary-card {
+            background: var(--color-white);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-lg);
+            padding: var(--spacing-lg);
+            text-align: center;
+            box-shadow: var(--shadow-sm);
+            transition: all 0.2s;
+        }
 
-.top a {
-    color: white;
-    text-decoration: none;
-    margin-left: 10px;
-}
+        .summary-card:hover {
+            box-shadow: var(--shadow-md);
+            transform: translateY(-2px);
+        }
 
-.wrap {
-    max-width: 1180px;
-    margin: 20px auto;
-    padding: 0 16px;
-}
+        .summary-card-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--color-accent);
+            margin-bottom: var(--spacing-sm);
+        }
 
-.grid {
-    display: grid;
-    gap: 14px;
-    grid-template-columns: 1.2fr 1fr;
-}
+        .summary-card-label {
+            font-size: 13px;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
 
-.box {
-    background: white;
-    border: 1px solid #dbe2ef;
-    border-radius: 12px;
-    padding: 14px;
-}
+        /* User row styling */
+        .user-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: var(--spacing-lg);
+            border-bottom: 1px solid var(--color-border);
+            transition: background 0.2s;
+        }
 
-.table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-}
+        .user-row:last-child {
+            border-bottom: none;
+        }
 
-.table th, .table td {
-    text-align: left;
-    border-bottom: 1px solid #ecf0f7;
-    padding: 8px 6px;
-}
+        .user-row:hover {
+            background: #f9fafb;
+        }
 
-.table th {
-    font-size: 13px;
-    color: #5b677d;
-}
+        .user-info {
+            flex: 1;
+        }
 
-input, select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 9px;
-    border-radius: 8px;
-    border: 1px solid #cfd7e6;
-    margin-bottom: 10px;
-}
+        .user-name {
+            font-weight: 600;
+            color: var(--color-text);
+            margin-bottom: var(--spacing-xs);
+        }
 
-button {
-    border: 0;
-    border-radius: 8px;
-    background: #8f3219;
-    color: white;
-    padding: 9px 12px;
-    cursor: pointer;
-}
+        .user-meta {
+            font-size: 12px;
+            color: var(--color-text-muted);
+            display: flex;
+            gap: var(--spacing-lg);
+            flex-wrap: wrap;
+        }
 
-.log-row {
-    border-bottom: 1px solid #edf0f5;
-    padding: 8px 0;
-    font-size: 13px;
-}
+        .user-badges {
+            display: flex;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+            margin-top: var(--spacing-sm);
+        }
 
-.log-row:last-child {
-    border-bottom: 0;
-}
+        .user-actions {
+            display: flex;
+            gap: var(--spacing-sm);
+            justify-content: flex-end;
+            flex-shrink: 0;
+        }
 
-.helper {
-    color: #6a7382;
-    font-size: 12px;
-    margin-top: -8px;
-    margin-bottom: 8px;
-}
+        /* Logs section */
+        .log-item {
+            border-bottom: 1px solid var(--color-border);
+            padding: var(--spacing-md) 0;
+            font-size: 12px;
+        }
 
-@media (max-width: 980px) {
-    .grid {
-        grid-template-columns: 1fr;
-    }
-}
-</style>
+        .log-item:last-child {
+            border-bottom: none;
+        }
+
+        .log-timestamp {
+            color: var(--color-text-muted);
+            font-weight: 500;
+        }
+
+        .log-user {
+            font-weight: 600;
+            color: var(--color-accent);
+        }
+
+        .log-action {
+            color: var(--color-text);
+        }
+
+        /* Status indicator */
+        .cert-status {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--spacing-xs);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .cert-status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .cert-status-dot.active {
+            background: var(--color-success);
+        }
+
+        .cert-status-dot.warning {
+            background: var(--color-warning);
+        }
+
+        .cert-status-dot.danger {
+            background: var(--color-danger);
+        }
+
+        .cert-status-dot.pending {
+            background: var(--color-info);
+        }
+
+        /* Certificate table styling */
+        .cert-table-container {
+            overflow-x: auto;
+        }
+
+        .cert-table {
+            width: 100%;
+            font-size: 13px;
+        }
+
+        .cert-table th {
+            background: #f9f9fc;
+            padding: var(--spacing-md);
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--color-text-muted);
+            border-bottom: 2px solid var(--color-border);
+        }
+
+        .cert-table td {
+            padding: var(--spacing-md);
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .cert-table tbody tr:hover {
+            background: #f9fafb;
+        }
+
+        /* Form layout improvements */
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--spacing-lg);
+        }
+
+        @media (max-width: 768px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .user-row {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: var(--spacing-md);
+            }
+
+            .user-actions {
+                width: 100%;
+                justify-content: flex-start;
+            }
+
+            .summary-cards {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+        }
+    </style>
 </head>
 <body>
-<div class="top">
-    <div>Casa Monarca | Gestion de usuarios</div>
-    <div>
-        <a href="/dashboard">Dashboard</a>
-        <a href="/admin">Panel Admin</a>
-        <a href="/logs">Bitacora</a>
-        <a href="/logout">Cerrar sesion</a>
+    <!-- HEADER -->
+    <div class="top">
+        <div>Casa Monarca | Gestión de Usuarios</div>
+        <div>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/admin">Panel Admin</a>
+            <a href="/logs">Bitácora</a>
+            <a href="/logout">Cerrar Sesión</a>
+        </div>
     </div>
-</div>
 
-<div class="wrap">
-    {% with messages = get_flashed_messages() %}
-        {% if messages %}
-            <div class="box" style="background:#eef8ff; border-color:#b8d5ed; margin-bottom:14px;">{{ messages[0] }}</div>
-        {% endif %}
-    {% endwith %}
+    <!-- MAIN CONTENT -->
+    <div class="wrap">
+        <!-- FLASH MESSAGES -->
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="alert alert-info">
+                    {{ messages[0] }}
+                </div>
+            {% endif %}
+        {% endwith %}
 
-    <div class="grid">
-        <div class="box">
-            <h2 style="margin-top:0;">Usuarios activos</h2>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Usuario</th>
-                        <th>Rol</th>
-                        <th>Area</th>
-                        <th>Contingencia</th>
-                        <th>Accion</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for u in lista_usuarios %}
-                        <tr>
-                            <td>{{ u['id'] }}</td>
-                            <td>{{ u['username'] }}</td>
-                            <td>{{ role_labels.get(u['rol'], u['rol']) }}</td>
-                            <td>{{ u['area'] or '-' }}</td>
-                            <td>{{ 'Si' if u['is_contingency'] == 1 else 'No' }}</td>
-                            <td>
-                                <form method="POST" action="/eliminar-usuario/{{ u['id'] }}" enctype="multipart/form-data" onsubmit="return confirm('Se eliminara el usuario. Continuar?');">
-                                    <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
-                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                    <input type="password" name="action_cert_passphrase" placeholder="Passphrase" required>
-                                    <button type="submit" style="background:#44506a;">Eliminar</button>
-                                </form>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <!-- SUMMARY CARDS -->
+        <div class="summary-cards">
+            <div class="summary-card">
+                <div class="summary-card-value">{{ lista_usuarios|length }}</div>
+                <div class="summary-card-label">Usuarios Totales</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-value">{{ lista_usuarios|selectattr('rol', 'equalto', 'admin')|list|length }}</div>
+                <div class="summary-card-label">Administradores</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-value">{{ lista_usuarios|selectattr('rol', 'equalto', 'coordinador')|list|length }}</div>
+                <div class="summary-card-label">Coordinadores</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-value">{{ certificados|selectattr('status', 'equalto', 'activo')|list|length }}</div>
+                <div class="summary-card-label">Certificados Activos</div>
+            </div>
         </div>
 
-        <div class="box">
-            <h2 style="margin-top:0;">Crear usuario</h2>
-            <form method="POST" enctype="multipart/form-data">
-                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
-                <label>Usuario</label>
-                <input name="username" required>
-
-                <label>Contrasena</label>
-                <input type="password" name="password" required>
-
-                <label>Rol</label>
-                <select name="rol" id="rol-select" onchange="toggleArea()">
-                    <option value="usuario">Usuario (C)</option>
-                    <option value="operativo">Operativo (CR)</option>
-                    <option value="coordinador">Coordinador (CRU)</option>
-                    <option value="admin">Administrador (CRUD)</option>
-                </select>
-
-                <div id="area-wrap" style="display:none;">
-                    <label>Area de coordinacion</label>
-                    <select name="area">
-                        {% for area in coordinator_areas %}
-                            <option value="{{ area }}">{{ area }}</option>
-                        {% endfor %}
-                    </select>
+        <div class="grid-2col">
+            <!-- SECCIÓN IZQUIERDA: USUARIOS Y FORMULARIO -->
+            <div>
+                <!-- TABLA DE USUARIOS -->
+                <div class="box">
+                    <h2>Usuarios Activos</h2>
+                    {% if lista_usuarios %}
+                        <div>
+                            {% for u in lista_usuarios %}
+                                <div class="user-row">
+                                    <div class="user-info">
+                                        <div class="user-name">{{ u['username'] }}</div>
+                                        <div class="user-meta">
+                                            <span>ID: {{ u['id'] }}</span>
+                                            {% if u['area'] %}<span>Área: {{ u['area'] }}</span>{% endif %}
+                                            {% if u['is_contingency'] == 1 %}<span>🔄 Contingencia</span>{% endif %}
+                                        </div>
+                                        <div class="user-badges">
+                                            <span class="badge badge-{{ u['rol'] }}">{{ role_labels.get(u['rol'], u['rol'])|upper }}</span>
+                                            {% if u['must_change_password'] == 1 %}
+                                                <span class="badge badge-warning">⚠ Cambiar Contraseña</span>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <div class="user-actions">
+                                        <form method="POST" action="/eliminar-usuario/{{ u['id'] }}" style="margin:0;" onsubmit="return confirm('Se eliminará este usuario. ¿Continuar?');">
+                                            <input type="hidden" name="csrf_token" value="{{ session.get('csrf_token', '') }}">
+                                            <button type="submit" class="btn btn-danger btn-sm">Eliminar</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="text-muted text-center" style="padding: var(--spacing-lg);">No hay usuarios registrados.</p>
+                    {% endif %}
                 </div>
 
-                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                <label>Certificado del admin para firmar</label>
-                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                <div class="helper">Desafio actual: <span style="font-family:monospace;">{{ action_signature_challenge }}</span></div>
-                <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                <div class="helper">Firma el desafio con tu clave privada local. El servidor solo necesita el certificado y la firma.</div>
+                <!-- CREAR USUARIO FORMULARIO -->
+                <div class="box" style="margin-top: var(--spacing-lg);">
+                    <h2>Crear Nuevo Usuario</h2>
+                    <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="{{ session.get('csrf_token', '') }}">
 
-                <label>
-                    <input type="checkbox" name="is_contingency" value="1" style="width:auto; margin-right:6px;">
-                    Cuenta de contingencia
-                </label>
+                        <!-- RUTA RÁPIDA: Datos básicos -->
+                        <div class="form-group">
+                            <label>Nombre de Usuario</label>
+                            <input type="text" name="username" required placeholder="Ej: juan_gonzalez">
+                        </div>
 
-                <div class="helper">Admins y coordinadores deben configurar su certificado al iniciar sesion.</div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Contraseña</label>
+                                <input type="password" name="password" required placeholder="Contraseña fuerte">
+                                <div class="helper">Mín. 8 caracteres, incluir mayúsculas, minúsculas, números y símbolos.</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Rol</label>
+                                <select name="rol" id="rol-select" onchange="toggleArea();" required>
+                                    <option value="">-- Seleccionar Rol --</option>
+                                    <option value="usuario">Usuario (Crear)</option>
+                                    <option value="operativo">Operativo (Crear, Leer)</option>
+                                    <option value="coordinador">Coordinador (Crear, Leer, Actualizar)</option>
+                                    <option value="admin">Administrador (Todo)</option>
+                                </select>
+                            </div>
+                        </div>
 
-                <button type="submit">Guardar usuario</button>
-            </form>
+                        <!-- Área de Coordinación (solo si rol=coordinador) -->
+                        <div id="area-wrap" style="display: none;" class="form-group">
+                            <label>Área de Coordinación</label>
+                            <select name="area">
+                                <option value="">-- Seleccionar Área --</option>
+                                {% for area in coordinator_areas %}
+                                    <option value="{{ area }}">{{ area }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
 
-            <hr style="margin:18px 0; border:0; border-top:1px solid #eceff5;">
-            <h3 style="margin:0 0 8px;">Ultimos eventos</h3>
-            {% for l in lista_logs[:12] %}
-                <div class="log-row">{{ l['fecha'] }} | <strong>{{ l['usuario'] }}</strong> | {{ l['accion'] }}</div>
-            {% endfor %}
+                        <!-- CONFIGURACIÓN AVANZADA (Accordion) -->
+                        <div class="accordion-item" style="margin-top: var(--spacing-lg);">
+                            <div class="accordion-header" onclick="toggleAccordion(this)">
+                                <span class="accordion-toggle">⚙️ Configuración Avanzada</span>
+                            </div>
+                            <div class="accordion-body">
+                                <!-- Contingencia -->
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; margin-bottom: var(--spacing-md);">
+                                        <input type="checkbox" name="is_contingency" value="1" style="width: auto; margin-right: var(--spacing-sm);">
+                                        <span>Marcar como cuenta de contingencia</span>
+                                    </label>
+                                    <div class="helper">Las cuentas de contingencia son de respaldo para acceso en casos de emergencia.</div>
+                                </div>
+
+                                <hr class="divider">
+
+                                <!-- Certificado y Firma (solo para admin/coordinador) -->
+                                <div id="cert-section" style="display: none;">
+                                    <h3>Certificado Digital (Requerido para Admin/Coordinador)</h3>
+                                    <div class="form-group">
+                                        <label>Tu Certificado</label>
+                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" id="cert-file">
+                                        <div class="helper">Archivo .pem o .crt de tu certificado digital.</div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>Desafío a Firmar</label>
+                                        <input type="text" value="{{ action_signature_challenge }}" readonly style="background: #f9f9fc; color: #999;">
+                                        <div class="helper">Firma este valor con tu clave privada local.</div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>Firma del Desafío (Base64)</label>
+                                        <input type="text" name="action_signature" placeholder="Pegar firma en Base64 aquí">
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>O Archivo de Firma (Binario)</label>
+                                        <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
+                                        <div class="helper">Alternativamente, sube el archivo binario de la firma.</div>
+                                    </div>
+
+                                    <div class="alert alert-info">
+                                        <strong>Nota:</strong> Para admin/coordinador es obligatorio firmar esta creación con tu certificado para confirmar tu identidad.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- BOTÓN SUBMIT -->
+                        <div style="margin-top: var(--spacing-lg); display: flex; gap: var(--spacing-md);">
+                            <button type="submit" class="btn btn-primary btn-block">Crear Usuario</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- SECCIÓN DERECHA: LOGS -->
+            <div class="box">
+                <h2>Eventos Recientes</h2>
+                {% if lista_logs %}
+                    <div>
+                        {% for l in lista_logs[:20] %}
+                            <div class="log-item">
+                                <div class="log-timestamp">{{ l['fecha'] }}</div>
+                                <div>
+                                    <span class="log-user">{{ l['usuario'] }}</span>
+                                    <span class="log-action">{{ l['accion'] }}</span>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="text-muted text-center" style="padding: var(--spacing-lg);">No hay eventos registrados.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- SECCIÓN CERTIFICADOS -->
+        <div class="box" style="margin-top: var(--spacing-lg);">
+            <h2>Certificados Digitales</h2>
+            {% if certificados %}
+                <div class="cert-table-container">
+                    <table class="cert-table">
+                        <thead>
+                            <tr>
+                                <th>Usuario</th>
+                                <th>Rol</th>
+                                <th>Estado</th>
+                                <th>Emitido en</th>
+                                <th>Expira en</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for c in certificados %}
+                                {% set cert_class = 'active' if c['status'] == 'activo' else ('warning' if c['status'] == 'pendiente' else 'danger') %}
+                                <tr>
+                                    <td><strong>{{ c['username'] }}</strong></td>
+                                    <td><span class="badge badge-{{ c['rol'] }}">{{ role_labels.get(c['rol'], c['rol'])|upper }}</span></td>
+                                    <td>
+                                        <span class="cert-status">
+                                            <span class="cert-status-dot {{ cert_class }}"></span>
+                                            {{ c['status']|upper }}
+                                        </span>
+                                    </td>
+                                    <td><small>{{ c['issued_at'] or '-' }}</small></td>
+                                    <td><small>{{ c['expires_at'] or '-' }}</small></td>
+                                    <td>
+                                        <div style="display: flex; gap: var(--spacing-sm);">
+                                            {% if c['status'] == 'activo' %}
+                                                <form method="POST" action="/certificado/{{ c['id'] }}/descargar" enctype="multipart/form-data" style="display: inline;">
+                                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="display:none;" id="cert-file-{{ c['id'] }}" onchange="this.form.submit();">
+                                                    <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('cert-file-{{ c['id'] }}').click();">Descargar</button>
+                                                </form>
+                                                <form method="POST" action="/certificado/{{ c['id'] }}/revocar" enctype="multipart/form-data" style="display: inline;">
+                                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                                                    <input type="hidden" name="revocation_reason" value="Revocación manual por admin">
+                                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="display:none;" id="revoke-file-{{ c['id'] }}" onchange="this.form.submit();">
+                                                    <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('revoke-file-{{ c['id'] }}').click();">Revocar</button>
+                                                </form>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted text-center" style="padding: var(--spacing-lg);">No hay certificados registrados.</p>
+            {% endif %}
+            <div class="helper" style="margin-top: var(--spacing-lg);">
+                Certificados emitidos por la CA interna. Los certificados activos se pueden descargar o revocar. Los certificados expirados o revocados se muestran con fines de auditoría.
+            </div>
         </div>
     </div>
 
-    <div class="box" style="margin-top:14px;">
-        <h2 style="margin-top:0;">Certificados</h2>
-        {% if certificados %}
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Usuario</th>
-                        <th>Rol</th>
-                        <th>Emitido por</th>
-                        <th>Emitido en</th>
-                        <th>Expira</th>
-                        <th>Estado</th>
-                        <th>Hash PEM</th>
-                        <th>Huella publica</th>
-                        <th>Huella cert.</th>
-                        <th>Serial</th>
-                        <th>Revocacion</th>
-                        <th>Accion</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for c in certificados %}
-                        <tr>
-                            <td>{{ c['username'] }}</td>
-                            <td>{{ role_labels.get(c['rol'], c['rol']) }}</td>
-                            <td>{{ c['issued_by'] or '-' }} ({{ c['issuer_short'] }})</td>
-                            <td>{{ c['issued_at'] or '-' }}</td>
-                            <td>{{ c['expires_at'] or '-' }}</td>
-                            <td>{{ c['status'] }}</td>
-                            <td>{{ c['hash_short'] }}</td>
-                            <td>{{ c['public_short'] }}</td>
-                            <td>{{ (c['cert_fingerprint'] or '-')[:12] }}</td>
-                            <td>{{ c['cert_serial'] or '-' }}</td>
-                            <td>{{ c['revocation_reason'] or '-' }}</td>
-                            <td>
-                                <form method="POST" action="/certificado/{{ c['id'] }}/descargar" enctype="multipart/form-data">
-                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="width:170px;">
-                                    <input type="text" name="action_signature" placeholder="Firma Base64" required style="width:170px;">
-                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat" style="width:170px;">
-                                    <button type="submit" style="background:#44506a;">Descargar</button>
-                                </form>
-                                {% if c['status'] == 'activo' %}
-                                <form method="POST" action="/certificado/{{ c['id'] }}/revocar" enctype="multipart/form-data" style="margin-top:8px;">
-                                    <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                                    <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required style="width:170px;">
-                                    <input type="text" name="action_signature" placeholder="Firma Base64" required style="width:170px;">
-                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat" style="width:170px;">
-                                    <input type="text" name="revocation_reason" placeholder="Motivo de revocacion" required style="width:220px; margin-top:6px;">
-                                    <button type="submit" style="background:#8f3219;">Revocar</button>
-                                </form>
-                                {% endif %}
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p>No hay certificados registrados.</p>
-        {% endif %}
-        <div class="helper">Los certificados incluyen una firma de la CA interna y se guardan cifrados con passphrase en la carpeta certs.</div>
-    </div>
-</div>
+    <!-- SCRIPTS -->
+    <script>
+        function toggleArea() {
+            var rol = document.getElementById('rol-select').value;
+            var areaWrap = document.getElementById('area-wrap');
+            var certSection = document.getElementById('cert-section');
+            
+            // Mostrar área si rol es coordinador
+            areaWrap.style.display = (rol === 'coordinador') ? 'block' : 'none';
+            
+            // Mostrar certificado si es admin o coordinador
+            certSection.style.display = (rol === 'admin' || rol === 'coordinador') ? 'block' : 'none';
+        }
 
-<script>
-function toggleArea() {
-    var rol = document.getElementById('rol-select').value;
-    document.getElementById('area-wrap').style.display = rol === 'coordinador' ? 'block' : 'none';
-}
-toggleArea();
-</script>
-
+        function toggleAccordion(header) {
+            var body = header.nextElementSibling;
+            var isActive = body.classList.contains('active');
+            
+            // Cerrar todos los otros accordions (opcional)
+            // document.querySelectorAll('.accordion-body.active').forEach(el => {
+            //     el.classList.remove('active');
+            //     el.previousElementSibling.classList.remove('active');
+            // });
+            
+            // Toggle el actual
+            body.classList.toggle('active');
+            header.classList.toggle('active');
+        }
+    </script>
 </body>
 </html>
