@@ -2560,13 +2560,16 @@ def logs():
     # Ordenar fechas descendentes (más recientes primero)
     sorted_dates = sorted(logs_by_date.keys(), reverse=True)
 
+    unique_users_list = sorted(list(unique_users))
+
     return render_template(
         "logs.html",
         logs_by_date=logs_by_date,
         sorted_dates=sorted_dates,
         total_events=len(data),
         events_today=events_today,
-        unique_users=len(unique_users),
+        unique_users_count=len(unique_users),
+        unique_users_list=unique_users_list,
         unique_actions=list(sorted(unique_actions_set))
     )
 

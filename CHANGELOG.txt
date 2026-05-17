@@ -144,17 +144,7 @@ Política de certificación y revocación
 - Reemisión: solo si el certificado está expirado o revocado; siempre genera nuevo serial y nueva huella pública.
 - Evidencia: cada cambio de estado debe quedar en logs y ser visible desde la UI administrativa.
 
-Sprint 2.5 — Evolución a Hardware-backed PKI (Transición)
-- Inquietudes principales:
-  - El flujo de Challenge-Response manual resulta ineficiente y propenso a errores humanos para roles administrativos.
-  - La necesidad de una separación clara entre la gestión de identidades y la gestión de activos criptográficos.
-  - Riesgo de extracción de claves privadas si residen en el sistema de archivos del cliente.
-- Mejoras urgentes a implementar:
-  - Reemplazar el flujo manual por el estándar WebAuthn (FIDO2) para autenticación y firma de acciones sensibles.
-  - Implementar "Hardware-backed Security": Asegurar que las claves privadas de Admins y Coordinadores nunca abandonen el token físico.
-  - Rediseñar la interfaz de administración: Separar la "Gestión de Usuarios" de la "Lista Maestra de Certificados" para reducir carga cognitiva.
-  - Vincular certificados X.509 públicos en base de datos con las llaves públicas de los dispositivos de hardware registrados.
-  - Automatización del proceso de desafío: El sistema debe detectar la llave y solicitar interacción física (touch/PIN) de forma nativa en el navegador.
+
 
 Sprint 3 — Mantenibilidad, tests y documentación (2 semanas)
 - Inquietudes principales:

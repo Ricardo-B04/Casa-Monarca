@@ -160,6 +160,10 @@
     font-size: 14px;
 }
 
+.hidden {
+    display: none !important;
+}
+
 .empty-state {
     text-align: center;
     padding: var(--spacing-2xl);
@@ -305,11 +309,17 @@
 
     <!-- FILTROS -->
     <div class="filter-section">
-        <input type="text" id="filterUsuario" placeholder="Filtrar por usuario..." style="flex: 1; min-width: 150px;">
+        <input list="usersList" type="text" id="filterUsuario" placeholder="Filtrar por usuario..." style="flex: 1; min-width: 150px;">
+        <datalist id="usersList">
+            {% for u in unique_users_list %}
+                <option value="{{ u }}"></option>
+            {% endfor %}
+        </datalist>
+
         <select id="filterAccion" style="flex: 1; min-width: 150px;">
             <option value="">Filtrar por acción...</option>
             {% for accion in unique_actions %}
-                <option value="{{ accion }}">{{ accion }}</option>
+                <option value="{{ accion|lower }}">{{ accion }}</option>
             {% endfor %}
         </select>
         <button class="btn btn-secondary btn-sm" onclick="limpiarFiltros()">Limpiar filtros</button>
@@ -432,27 +442,24 @@ function filtrarLogs() {
     const accion = document.getElementById('filterAccion').value.toLowerCase();
     
     const entries = document.querySelectorAll('.log-entry');
-    let visibleCount = 0;
-    
     entries.forEach(entry => {
-        const usuarioText = entry.dataset.usuario;
-        const accionText = entry.dataset.accion;
-        
+        const usuarioText = (entry.dataset.usuario || '').toLowerCase();
+        const accionText = (entry.dataset.accion || '').toLowerCase();
+
         const usuarioMatch = usuario === '' || usuarioText.includes(usuario);
-        const accionMatch = accion === '' || accionText === accion;
-        
+        const accionMatch = accion === '' || accionText.includes(accion);
+
         if (usuarioMatch && accionMatch) {
-            entry.style.display = 'flex';
-            visibleCount++;
+            entry.classList.remove('hidden');
         } else {
-            entry.style.display = 'none';
+            entry.classList.add('hidden');
         }
     });
-    
+
     // Ocultar grupos sin eventos visibles
     const groups = document.querySelectorAll('.log-group');
     groups.forEach(group => {
-        const visibleEntries = group.querySelectorAll('.log-entry[style="display: flex"]');
+        const visibleEntries = group.querySelectorAll('.log-entry:not(.hidden)');
         group.style.display = visibleEntries.length > 0 ? 'block' : 'none';
     });
 }
