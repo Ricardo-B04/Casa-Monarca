@@ -3906,3 +3906,344 @@ grep "CRITICAL\|500" logs/error.log
 ```
 
 ---
+
+## Pruebas
+
+### Tipos de tests
+
+#### 1. Tests unitarios (Unit Tests)
+
+**Propósito:** Validar funciones individuales en aislamiento.
+
+**Cobertura:**
+- Hashing de contraseñas (Argon2)
+- Validación de emails
+- Cálculo de huellas SHA-256
+- Generación de desafíos UUID
+- Lógica de rate-limiting
+
+**Ejemplo:**
+```python
+# tests/test_password_security.py
+import pytest
+from werkzeug.security import generate_password_hash, check_password_hash
+from argon2.low_level import hash_secret, Type
+
+def test_password_hashing():
+    """Test que hash de contraseña es verificable."""
+    password = "SecurePass123!"
+    hash_pwd = generate_password_hash(password, method='pbkdf2')
+    assert check_password_hash(hash_pwd, password)
+
+def test_weak_password_rejected():
+    """Test que contraseña débil es rechazada."""
+    weak_passwords = ["123456", "password", "admin123"]
+    for pwd in weak_passwords:
+        assert is_weak_password(pwd)
+
+def test_login_attempts_reset():
+    """Test que intentos de login se resetean."""
+    record = LoginAttempts(username="test", intentos=3)
+    reset_login_attempts(record)
+    assert record.intentos == 0
+    assert record.locked_until is None
+```
+
+**Ejecución:**
+```bash
+PYTHONPATH=. pytest tests/test_password_security.py -v
+```
+
+#### 2. Tests de integración (Integration Tests)
+
+**Propósito:** Validar flujos completos entre módulos (autenticación, BD, lógica).
+
+**Cobertura:**
+- Flujo de login (usuario + contraseña)
+- Flujo de login con certificado + firma
+- Creación y canalización de expedientes
+- Generación y revocación de certificados
+- Operaciones de backup/restore
+
+**Ejemplo:**
+```python
+# tests/test_integration.py
+import pytest
+from app import app, db
+from database import create_tables, add_user, get_user
+
+@pytest.fixture
+def client():
+    """Fixture para cliente de prueba."""
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        with app.app_context():
+            create_tables()
+            yield client
+
+def test_login_flow(client):
+    """Test flujo completo de login."""
+    # 1. Crear usuario
+    add_user("test_user", "TestPass123!", "usuario")
+    
+    # 2. Login exitoso
+    response = client.post('/login',
+        data={"username": "test_user", "password": "TestPass123!"})
+    assert response.status_code == 200
+    assert response.json['status'] == 'success'
+    
+    # 3. Acceder a dashboard (requiere sesión)
+    response = client.get('/dashboard')
+    assert response.status_code == 200
+
+def test_crear_expediente_unauthorized(client):
+    """Test que usuario no autenticado no puede crear."""
+    response = client.post('/expediente/crear',
+        json={"titulo": "Test"})
+    assert response.status_code == 401
+```
+
+**Ejecución:**
+```bash
+PYTHONPATH=. pytest tests/test_integration.py -v
+```
+
+#### 3. Tests de seguridad (Security Tests)
+
+**Propósito:** Validar controles de seguridad (RBAC, SSL, CSRF, rate-limiting).
+
+**Cobertura:**
+- Autenticación obligatoria en endpoints protegidos
+- Validación de roles (admin, coordinador, operativo, usuario)
+- CSRF token en formularios
+- Rate-limiting en login
+- Validación de certificados (CA, expiración, revocación)
+- Hashing de contraseñas con salt
+
+**Ejemplo:**
+```python
+# tests/test_security.py
+import pytest
+
+def test_rbac_admin_only(client, auth_user):
+    """Test que solo admin accede a /admin/usuarios."""
+    # 1. Usuario normal intenta acceder
+    client.post('/login', data={"username": "user", "password": "Pass123!"})
+    response = client.get('/admin/usuarios')
+    assert response.status_code == 403
+    
+    # 2. Admin accede exitosamente
+    client.post('/login', data={"username": "admin", "password": "Pass123!"})
+    response = client.get('/admin/usuarios')
+    assert response.status_code == 200
+
+def test_rate_limiting(client):
+    """Test que usuario se bloquea tras 5 intentos fallidos."""
+    for i in range(5):
+        response = client.post('/login',
+            data={"username": "test", "password": "wrong"})
+        assert response.status_code == 401
+    
+    # 6to intento debe estar bloqueado
+    response = client.post('/login',
+        data={"username": "test", "password": "correct"})
+    assert response.status_code == 423  # Locked
+
+def test_certificate_validation(client):
+    """Test que certificado expirado es rechazado."""
+    # Crear certificado con expiración pasada
+    old_cert = create_expired_certificate("test_user")
+    
+    response = client.post('/login',
+        data={"username": "test_user", "password": "Pass123!",
+              "certificate_pem": old_cert})
+    assert response.status_code == 401
+    assert "expirado" in response.json['message'].lower()
+```
+
+**Ejecución:**
+```bash
+PYTHONPATH=. pytest tests/test_security.py -v
+```
+
+#### 4. Tests de carga (Load Tests - opcional)
+
+**Propósito:** Validar rendimiento bajo carga.
+
+**Herramienta:** `locust` (opcional, instalar con `pip install locust`)
+
+**Ejemplo:**
+```python
+# tests/locustfile.py
+from locust import HttpUser, task, between
+
+class CasaMonarcaUser(HttpUser):
+    wait_time = between(1, 3)
+    
+    @task(3)
+    def login(self):
+        self.client.post("/login",
+            data={"username": "user", "password": "Pass123!"})
+    
+    @task(1)
+    def dashboard(self):
+        self.client.get("/dashboard")
+
+# Ejecutar: locust -f tests/locustfile.py --host=http://localhost:5000
+```
+
+### Cómo ejecutarlos
+
+#### Setup inicial
+
+```bash
+# 1. Activar entorno virtual
+source .venv/bin/activate
+
+# 2. Instalar pytest
+pip install pytest pytest-cov
+
+# 3. Crear directorio de tests (si no existe)
+mkdir -p tests
+```
+
+#### Ejecutar todos los tests
+
+```bash
+# Ejecutar todos los tests
+PYTHONPATH=. pytest -v
+
+# Con reporte de cobertura
+PYTHONPATH=. pytest --cov=. --cov-report=html
+
+# Ver reporte HTML
+open htmlcov/index.html
+```
+
+#### Ejecutar tests específicos
+
+```bash
+# Solo tests de password
+PYTHONPATH=. pytest tests/test_password_security.py -v
+
+# Solo tests de integración
+PYTHONPATH=. pytest tests/test_integration.py -v
+
+# Solo tests de seguridad
+PYTHONPATH=. pytest tests/test_security.py -v
+
+# Un test específico
+PYTHONPATH=. pytest tests/test_password_security.py::test_weak_password_rejected -v
+
+# Tests que coincidan con patrón
+PYTHONPATH=. pytest -k "login" -v
+```
+
+#### Opciones útiles de pytest
+
+```bash
+# Mostrar salida (print statements)
+PYTHONPATH=. pytest -v -s
+
+# Parar en primer error
+PYTHONPATH=. pytest -x
+
+# Parar después de N errores
+PYTHONPATH=. pytest --maxfail=3
+
+# Ejecutar en paralelo (instalar pytest-xdist)
+PYTHONPATH=. pytest -n auto
+
+# Listar tests sin ejecutarlos
+PYTHONPATH=. pytest --collect-only
+
+# Ejecutar con markers (tests lentos, rápidos)
+PYTHONPATH=. pytest -m "not slow"
+```
+
+#### Cobertura de código
+
+```bash
+# Generar reporte HTML de cobertura
+PYTHONPATH=. pytest --cov=. --cov-report=html tests/
+
+# Ver cobertura por módulo
+PYTHONPATH=. pytest --cov=. --cov-report=term-missing
+
+# Excluir archivos de cobertura
+PYTHONPATH=. pytest --cov=. --cov-report=html \
+  --cov-config=.coveragerc
+```
+
+#### Archivo .coveragerc (excluir archivos)
+
+```ini
+[run]
+omit =
+    .venv/*
+    tests/*
+    setup.py
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+```
+
+#### Ejemplo: Ejecutar tests con Jenkins/CI
+
+```bash
+#!/bin/bash
+# .gitlab-ci.yml o similar
+
+test:
+  stage: test
+  script:
+    - python -m venv venv
+    - source venv/bin/activate
+    - pip install -r requirements.txt pytest pytest-cov
+    - PYTHONPATH=. pytest --cov=. --cov-report=xml --cov-report=html
+  artifacts:
+    paths:
+      - htmlcov/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+```
+
+#### Checklist de tests antes de desplegar
+
+```bash
+#!/bin/bash
+# tests/pre_deploy.sh
+
+set -e
+
+echo "=== Tests de Seguridad ==="
+PYTHONPATH=. pytest tests/test_security.py -v
+
+echo "=== Tests de Integración ==="
+PYTHONPATH=. pytest tests/test_integration.py -v
+
+echo "=== Tests Unitarios ==="
+PYTHONPATH=. pytest tests/test_password_security.py -v
+
+echo "=== Cobertura ==="
+PYTHONPATH=. pytest --cov=. --cov-report=term-missing \
+  --cov-fail-under=80  # Fallar si cobertura < 80%
+
+echo "✅ Todos los tests pasaron"
+```
+
+**Ejecutar:**
+```bash
+chmod +x tests/pre_deploy.sh
+./tests/pre_deploy.sh
+```
+
+---
