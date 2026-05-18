@@ -23,28 +23,34 @@ Aplicación web en Flask para gestionar expedientes y su canalización por nivel
 ## Instalación
 
 1. Clonar o descargar el repositorio.
+
 2. Acceder a la carpeta del proyecto.
+
 3. Crear entorno virtual (si no existe):
 
-```bash
-python3 -m venv .venv
-```
+   ```bash
+   python3 -m venv .venv
+   ```
 
 4. Activar el entorno virtual:
-   - **macOS/Linux:**
+
+   **macOS/Linux:**
+
    ```bash
    source .venv/bin/activate
    ```
-   - **Windows (PowerShell):**
+
+   **Windows (PowerShell):**
+
    ```powershell
    .venv\Scripts\Activate.ps1
    ```
 
 5. Instalar dependencias:
 
-```bash
-.venv/bin/python -m pip install flask cryptography werkzeug
-```
+   ```bash
+   .venv/bin/python -m pip install flask cryptography werkzeug
+   ```
 
 ## Configuración
 
@@ -61,9 +67,9 @@ python3 -m venv .venv
 
 1. **Ejecutar la aplicación:**
 
-```bash
-.venv/bin/python app.py
-```
+   ```bash
+   .venv/bin/python app.py
+   ```
 
 2. **Acceder en navegador:** `http://127.0.0.1:5000`
 
@@ -132,33 +138,42 @@ Intentoa2/
 ¿Cómo colaborar con el proyecto?
 
 1. **Obtener el código:** clonar o descargar el repositorio.
+
 2. **Familiarizarse:** revisar este README, la estructura del proyecto y ejecutar pruebas locales.
+
 3. **Crear rama de trabajo:** usar nombre descriptivo (ej: `feature/validacion-mejorada` o `fix/login-timeout`).
+
 4. **Desarrollar:** hacer cambios pequeños y enfocados.
+
 5. **Probar localmente:**
    - Login con diferentes roles.
    - Flujo completo de expediente.
    - Comandos de backup/restore.
+
 6. **Actualizar documentación:** modificar README, TODO o CHANGELOG si corresponde.
+
 7. **Enviar PR:** describir claramente el objetivo y pruebas realizadas.
 
 ## Pruebas básicas
 
 - **Verificar sintaxis Python:**
-  ```bash
-  .venv/bin/python -m py_compile app.py
-  ```
+
+```bash
+.venv/bin/python -m py_compile app.py
+```
 
 - **Ejecutar suite de tests:**
-  ```bash
-  PYTHONPATH=. .venv/bin/pytest -q
-  ```
+
+```bash
+PYTHONPATH=. .venv/bin/pytest -q
+```
 
 - **Prueba manual de arranque:**
-  ```bash
-  .venv/bin/python app.py
-  # Verificar que la app está disponible en http://127.0.0.1:5000
-  ```
+
+```bash
+.venv/bin/python app.py
+# Verificar que la app está disponible en http://127.0.0.1:5000
+```
 
 - **Validación mínima:** login con al menos un rol operativo y un rol administrativo; avanzar un expediente por todo el flujo; revisar bitácora.
 

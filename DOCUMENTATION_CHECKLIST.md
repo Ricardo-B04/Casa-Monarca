@@ -29,7 +29,7 @@ Estado actual: Primera etapa completada — preparar documentación para entrega
 - [x] `docs/sdk_draft.md` (borrador)
 
 ## Tareas pendientes
-- [ ] Rellenar `DEVELOPERS.md` con nombres y contactos reales
+- [x] Rellenar `DEVELOPERS.md` con nombres y contactos reales
 - [ ] Expandir y enriquecer borradores en `docs/` (agregar ejemplos, comandos, capturas)
 - [ ] Revisar y comentar código fuente (`app.py`, `database.py`, etc.)
 - [ ] Completar pruebas básicas y documentar resultados
