@@ -364,6 +364,223 @@ pytest-cov==4.1.0
 
 ---
 
+## Estructura del Proyecto
+
+### Organización de carpetas
+
+```
+Intentoa2/                          # Raíz del proyecto
+│
+├── app.py                          # Aplicación principal Flask
+│                                   # - Rutas (endpoints)
+│                                   # - Lógica de negocio
+│                                   # - Gestión de sesiones
+│                                   # - Validación de roles (RBAC)
+│                                   # - Verificación de firmas
+│
+├── database.py                     # Módulo de datos
+│                                   # - Esquema SQLite
+│                                   # - Funciones de ORM local
+│                                   # - Inicialización de BD
+│
+├── generate_key.py                 # Script auxiliar
+│                                   # - Genera/regenera key.key (cifrado)
+│
+├── database.db                     # Base de datos SQLite (generado al iniciar)
+├── key.key                         # Clave de cifrado AES-256 (generado)
+│
+├── README.md                       # Documentación principal (resumida)
+├── LICENSE                         # Licencia MIT
+├── CONTRIBUTING.md                 # Guía de contribuciones
+├── DEVELOPERS.md                   # Datos de desarrolladores
+├── DOCUMENTATION_CHECKLIST.md      # Progreso de documentación
+│
+├── templates/                      # Vistas HTML (Jinja2)
+│   ├── login.html                  # Formulario de login + desafío
+│   ├── dashboard.html              # Panel principal de usuario
+│   ├── survey.html                 # Creación/edición de expediente
+│   ├── colaborador.html            # Panel para usuario operativo
+│   ├── admin.html                  # Panel para administrador
+│   ├── usuarios.html               # Gestión de usuarios (admin)
+│   ├── logs.html                   # Bitácora de eventos
+│   ├── password_update.html        # Cambio de contraseña
+│   └── cert_setup.html             # Setup de certificado
+│
+├── static/                         # Recursos estáticos
+│   └── style.css                   # Estilos CSS (diseño responsive)
+│
+├── certs/                          # Certificados X.509 (desarrollo)
+│   ├── ca_cert.pem                 # Certificado de la CA local
+│   ├── ca_key.pem                  # Clave privada de la CA
+│   ├── admin_prod.pem              # Certificado demo para admin_prod
+│   ├── admin_cont.pem              # Certificado demo para admin_cont
+│   └── coord_admin.pem             # Certificado demo para coord_admin
+│
+├── tools/                          # Scripts auxiliares
+│   ├── backup_db.py                # Genera backup cifrado de database.db
+│   └── restore_db.py               # Restaura backup cifrado
+│
+├── tests/                          # Tests automatizados
+│   └── test_password_security.py   # Tests de login lockout, hashing
+│
+├── docs/                           # Documentación de entrega (borradores)
+│   ├── user_manual_draft.md        # Manual de usuario (Markdown)
+│   ├── technical_report_draft.md   # Reporte técnico (Markdown)
+│   ├── executive_report_draft.md   # Reporte ejecutivo (Markdown)
+│   └── sdk_draft.md                # Este documento (SDK)
+│
+├── .venv/                          # Entorno virtual Python (no en git)
+├── .gitignore                      # Patrones ignorados por git
+├── __pycache__/                    # Cache de Python (no en git)
+└── TODO.txt                        # Lista de tareas pendientes
+```
+
+### Descripción de módulos principales
+
+#### `app.py` — Aplicación principal Flask
+
+**Responsabilidades:**
+- Inicializar aplicación Flask y configuración.
+- Definir rutas (endpoints) para login, dashboard, expedientes, usuarios, certificados, bitácora.
+- Implementar lógica de autenticación (password + challenge-response con certificados).
+- Validar roles y permisos (RBAC) en cada endpoint.
+- Gestionar sesiones de usuario.
+- Manejar generación y validación de certificados X.509.
+
+**Funciones clave:**
+- `init_app()` — Inicializa la aplicación con configuración.
+- `create_tables()` — Crea esquema de BD en primer arranque.
+- `verify_certificate()` — Valida certificado X.509 del usuario.
+- `verify_signature()` — Verifica firma digital (challenge-response).
+- `require_login()` — Decorador para rutas autenticadas.
+- `require_role(role)` — Decorador para validar rol requerido.
+- `log_event()` — Registra evento en bitácora.
+
+**Endpoints principales:**
+- `GET /login` — Obtener desafío y formulario de login.
+- `POST /login` — Autenticar con password + certificado + firma.
+- `GET /dashboard` — Panel del usuario (expedientes según rol).
+- `POST /expediente/crear` — Crear nuevo expediente.
+- `POST /expediente/<id>/canalizar` — Cambiar estado de expediente.
+- `GET /admin/usuarios` — Listar usuarios (admin only).
+- `POST /admin/crear_usuario` — Crear usuario con firma (admin only).
+- `GET /certificado/setup` — Pantalla de configuración de certificado.
+- `POST /certificado/generar` — Generar/firmar certificado.
+- `GET /bitacora` — Ver eventos auditados.
+- `POST /logout` — Cerrar sesión.
+
+#### `database.py` — Módulo de datos
+
+**Responsabilidades:**
+- Definir esquema SQLite (tablas, índices, constraints).
+- Proporcionar funciones para CRUD (Create, Read, Update, Delete).
+- Inicializar base de datos con datos de prueba.
+- Manejar transacciones e integridad de datos.
+
+**Tablas principales:**
+
+| Tabla | Propósito | Campos clave |
+|-------|-----------|______________|
+| `usuarios` | Almacenar cuentas | id, username, password_hash, role, must_change_password, created_at |
+| `expedientes` | Gestionar expedientes | id, user_id, titulo, descripcion, estado, created_at, updated_at |
+| `certificados` | Certificados X.509 emitidos | id, user_id, cert_pem, huella, estado, created_at, expires_at |
+| `bitacora` | Auditoría de eventos | id, username, accion, descripcion, timestamp, ip_address |
+| `login_attempts` | Rate-limiting | id, username, intentos, locked_until, ventana_inicio |
+
+**Funciones clave:**
+- `create_tables()` — Crea esquema al iniciar.
+- `add_user(username, password, role)` — Inserta usuario.
+- `get_user(username)` — Obtiene usuario por nombre.
+- `verify_password(user_id, password)` — Valida contraseña hasheada.
+- `create_expediente(user_id, titulo, descripcion)` — Crea expediente.
+- `update_expediente_estado(expediente_id, nuevo_estado)` — Cambia estado.
+- `add_certificate(user_id, cert_pem, huella)` — Almacena certificado.
+- `revoke_certificate(cert_id, razon)` — Revoca certificado.
+- `log_event(username, accion, descripcion)` — Registra evento.
+- `check_login_attempts(username)` — Verifica si usuario está bloqueado.
+
+#### `generate_key.py` — Generador de clave de cifrado
+
+**Responsabilidades:**
+- Generar clave AES-256 aleatoria para cifrado de backups.
+- Almacenar clave en `key.key` (solo lectura).
+- Permitir regeneración segura de clave.
+
+**Uso:**
+```bash
+python generate_key.py          # Genera key.key si no existe
+python generate_key.py --force  # Regenera (cuidado: invalida backups antiguos)
+```
+
+#### `tools/backup_db.py` — Backup cifrado
+
+**Responsabilidades:**
+- Crear respaldo cifrado de `database.db` usando `key.key`.
+- Usar AES-256 en modo CBC con IV aleatorio.
+- Generar archivo `.enc` con timestamp.
+- Almacenar en directorio `backups/`.
+
+**Uso:**
+```bash
+python tools/backup_db.py       # Genera backups/db_backup_YYYYMMDDTHHMMSSZ.enc
+```
+
+#### `tools/restore_db.py` — Restore de backup
+
+**Responsabilidades:**
+- Desencriptar backup `.enc` usando `key.key`.
+- Validar integridad de datos desencriptados.
+- Restaurar `database.db` (con opción de backup previo).
+- Permitir restauración selectiva si es necesario.
+
+**Uso:**
+```bash
+python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
+```
+
+#### `templates/` — Vistas HTML
+
+**Características comunes:**
+- Usa Jinja2 para renderizado dinámico.
+- Incluye token CSRF en formularios POST.
+- Responsive design (CSS Bootstrap o custom).
+- Validación cliente-lado + server-side.
+
+**Flujo de templates:**
+1. `login.html` → Usuario ingresa credenciales + firma desafío.
+2. `dashboard.html` → Panel con expedientes filtrados por rol.
+3. `survey.html` → Crear/editar expediente.
+4. `colaborador.html` → Vista específica para operativo.
+5. `admin.html` → Panel administrativo.
+6. `usuarios.html` → Gestión de usuarios (crear, eliminar, cambiar rol).
+7. `cert_setup.html` → Setup de certificado (CSR o legacy).
+8. `logs.html` → Bitácora de eventos (read-only).
+9. `password_update.html` → Cambio de contraseña obligatorio.
+
+#### `static/style.css` — Estilos
+
+**Características:**
+- Diseño responsive (mobile, tablet, desktop).
+- Colores y tipografía consistentes.
+- Validación visual de formularios.
+- Animaciones suaves (transiciones).
+- Accesibilidad (contraste, tamaños legibles).
+
+#### `tests/test_password_security.py` — Tests
+
+**Cobertura:**
+- Validación de hash de contraseña.
+- Login lockout (intentos fallidos).
+- Rate-limiting.
+- Expiración de bloqueo temporal.
+
+**Ejecución:**
+```bash
+PYTHONPATH=. pytest -v tests/
+```
+
+---
+
 ## Configuración del Entorno
 
 ### Requisitos (versiones)
@@ -1130,223 +1347,6 @@ sqlite3 -header -column database.db "SELECT id, username, role, created_at FROM 
 **Ver bitácora de eventos:**
 ```bash
 sqlite3 -header -column database.db "SELECT username, accion, timestamp, ip_address FROM bitacora ORDER BY id DESC LIMIT 20;"
-```
-
----
-
-## Estructura del Proyecto
-
-### Organización de carpetas
-
-```
-Intentoa2/                          # Raíz del proyecto
-│
-├── app.py                          # Aplicación principal Flask
-│                                   # - Rutas (endpoints)
-│                                   # - Lógica de negocio
-│                                   # - Gestión de sesiones
-│                                   # - Validación de roles (RBAC)
-│                                   # - Verificación de firmas
-│
-├── database.py                     # Módulo de datos
-│                                   # - Esquema SQLite
-│                                   # - Funciones de ORM local
-│                                   # - Inicialización de BD
-│
-├── generate_key.py                 # Script auxiliar
-│                                   # - Genera/regenera key.key (cifrado)
-│
-├── database.db                     # Base de datos SQLite (generado al iniciar)
-├── key.key                         # Clave de cifrado AES-256 (generado)
-│
-├── README.md                       # Documentación principal (resumida)
-├── LICENSE                         # Licencia MIT
-├── CONTRIBUTING.md                 # Guía de contribuciones
-├── DEVELOPERS.md                   # Datos de desarrolladores
-├── DOCUMENTATION_CHECKLIST.md      # Progreso de documentación
-│
-├── templates/                      # Vistas HTML (Jinja2)
-│   ├── login.html                  # Formulario de login + desafío
-│   ├── dashboard.html              # Panel principal de usuario
-│   ├── survey.html                 # Creación/edición de expediente
-│   ├── colaborador.html            # Panel para usuario operativo
-│   ├── admin.html                  # Panel para administrador
-│   ├── usuarios.html               # Gestión de usuarios (admin)
-│   ├── logs.html                   # Bitácora de eventos
-│   ├── password_update.html        # Cambio de contraseña
-│   └── cert_setup.html             # Setup de certificado
-│
-├── static/                         # Recursos estáticos
-│   └── style.css                   # Estilos CSS (diseño responsive)
-│
-├── certs/                          # Certificados X.509 (desarrollo)
-│   ├── ca_cert.pem                 # Certificado de la CA local
-│   ├── ca_key.pem                  # Clave privada de la CA
-│   ├── admin_prod.pem              # Certificado demo para admin_prod
-│   ├── admin_cont.pem              # Certificado demo para admin_cont
-│   └── coord_admin.pem             # Certificado demo para coord_admin
-│
-├── tools/                          # Scripts auxiliares
-│   ├── backup_db.py                # Genera backup cifrado de database.db
-│   └── restore_db.py               # Restaura backup cifrado
-│
-├── tests/                          # Tests automatizados
-│   └── test_password_security.py   # Tests de login lockout, hashing
-│
-├── docs/                           # Documentación de entrega (borradores)
-│   ├── user_manual_draft.md        # Manual de usuario (Markdown)
-│   ├── technical_report_draft.md   # Reporte técnico (Markdown)
-│   ├── executive_report_draft.md   # Reporte ejecutivo (Markdown)
-│   └── sdk_draft.md                # Este documento (SDK)
-│
-├── .venv/                          # Entorno virtual Python (no en git)
-├── .gitignore                      # Patrones ignorados por git
-├── __pycache__/                    # Cache de Python (no en git)
-└── TODO.txt                        # Lista de tareas pendientes
-```
-
-### Descripción de módulos principales
-
-#### `app.py` — Aplicación principal Flask
-
-**Responsabilidades:**
-- Inicializar aplicación Flask y configuración.
-- Definir rutas (endpoints) para login, dashboard, expedientes, usuarios, certificados, bitácora.
-- Implementar lógica de autenticación (password + challenge-response con certificados).
-- Validar roles y permisos (RBAC) en cada endpoint.
-- Gestionar sesiones de usuario.
-- Manejar generación y validación de certificados X.509.
-
-**Funciones clave:**
-- `init_app()` — Inicializa la aplicación con configuración.
-- `create_tables()` — Crea esquema de BD en primer arranque.
-- `verify_certificate()` — Valida certificado X.509 del usuario.
-- `verify_signature()` — Verifica firma digital (challenge-response).
-- `require_login()` — Decorador para rutas autenticadas.
-- `require_role(role)` — Decorador para validar rol requerido.
-- `log_event()` — Registra evento en bitácora.
-
-**Endpoints principales:**
-- `GET /login` — Obtener desafío y formulario de login.
-- `POST /login` — Autenticar con password + certificado + firma.
-- `GET /dashboard` — Panel del usuario (expedientes según rol).
-- `POST /expediente/crear` — Crear nuevo expediente.
-- `POST /expediente/<id>/canalizar` — Cambiar estado de expediente.
-- `GET /admin/usuarios` — Listar usuarios (admin only).
-- `POST /admin/crear_usuario` — Crear usuario con firma (admin only).
-- `GET /certificado/setup` — Pantalla de configuración de certificado.
-- `POST /certificado/generar` — Generar/firmar certificado.
-- `GET /bitacora` — Ver eventos auditados.
-- `POST /logout` — Cerrar sesión.
-
-#### `database.py` — Módulo de datos
-
-**Responsabilidades:**
-- Definir esquema SQLite (tablas, índices, constraints).
-- Proporcionar funciones para CRUD (Create, Read, Update, Delete).
-- Inicializar base de datos con datos de prueba.
-- Manejar transacciones y integridad de datos.
-
-**Tablas principales:**
-
-| Tabla | Propósito | Campos clave |
-|-------|-----------|--------------|
-| `usuarios` | Almacenar cuentas | id, username, password_hash, role, must_change_password, created_at |
-| `expedientes` | Gestionar expedientes | id, user_id, titulo, descripcion, estado, created_at, updated_at |
-| `certificados` | Certificados X.509 emitidos | id, user_id, cert_pem, huella, estado, created_at, expires_at |
-| `bitacora` | Auditoría de eventos | id, username, accion, descripcion, timestamp, ip_address |
-| `login_attempts` | Rate-limiting | id, username, intentos, locked_until, ventana_inicio |
-
-**Funciones clave:**
-- `create_tables()` — Crea esquema al iniciar.
-- `add_user(username, password, role)` — Inserta usuario.
-- `get_user(username)` — Obtiene usuario por nombre.
-- `verify_password(user_id, password)` — Valida contraseña hasheada.
-- `create_expediente(user_id, titulo, descripcion)` — Crea expediente.
-- `update_expediente_estado(expediente_id, nuevo_estado)` — Cambia estado.
-- `add_certificate(user_id, cert_pem, huella)` — Almacena certificado.
-- `revoke_certificate(cert_id, razon)` — Revoca certificado.
-- `log_event(username, accion, descripcion)` — Registra evento.
-- `check_login_attempts(username)` — Verifica si usuario está bloqueado.
-
-#### `generate_key.py` — Generador de clave de cifrado
-
-**Responsabilidades:**
-- Generar clave AES-256 aleatoria para cifrado de backups.
-- Almacenar clave en `key.key` (solo lectura).
-- Permitir regeneración segura de clave.
-
-**Uso:**
-```bash
-python generate_key.py          # Genera key.key si no existe
-python generate_key.py --force  # Regenera (cuidado: invalida backups antiguos)
-```
-
-#### `tools/backup_db.py` — Backup cifrado
-
-**Responsabilidades:**
-- Crear respaldo cifrado de `database.db` usando `key.key`.
-- Usar AES-256 en modo CBC con IV aleatorio.
-- Generar archivo `.enc` con timestamp.
-- Almacenar en directorio `backups/`.
-
-**Uso:**
-```bash
-python tools/backup_db.py       # Genera backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-#### `tools/restore_db.py` — Restore de backup
-
-**Responsabilidades:**
-- Desencriptar backup `.enc` usando `key.key`.
-- Validar integridad de datos desencriptados.
-- Restaurar `database.db` (con opción de backup previo).
-- Permitir restauración selectiva si es necesario.
-
-**Uso:**
-```bash
-python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-#### `templates/` — Vistas HTML
-
-**Características comunes:**
-- Usa Jinja2 para renderizado dinámico.
-- Incluye token CSRF en formularios POST.
-- Responsive design (CSS Bootstrap o custom).
-- Validación cliente-lado + server-side.
-
-**Flujo de templates:**
-1. `login.html` → Usuario ingresa credenciales + firma desafío.
-2. `dashboard.html` → Panel con expedientes filtrados por rol.
-3. `survey.html` → Crear/editar expediente.
-4. `colaborador.html` → Vista específica para operativo.
-5. `admin.html` → Panel administrativo.
-6. `usuarios.html` → Gestión de usuarios (crear, eliminar, cambiar rol).
-7. `cert_setup.html` → Setup de certificado (CSR o legacy).
-8. `logs.html` → Bitácora de eventos (read-only).
-9. `password_update.html` → Cambio de contraseña obligatorio.
-
-#### `static/style.css` — Estilos
-
-**Características:**
-- Diseño responsive (mobile, tablet, desktop).
-- Colores y tipografía consistentes.
-- Validación visual de formularios.
-- Animaciones suaves (transiciones).
-- Accesibilidad (contraste, tamaños legibles).
-
-#### `tests/test_password_security.py` — Tests
-
-**Cobertura:**
-- Validación de hash de contraseña.
-- Login lockout (intentos fallidos).
-- Rate-limiting.
-- Expiración de bloqueo temporal.
-
-**Ejecución:**
-```bash
-PYTHONPATH=. pytest -v tests/
 ```
 
 ---
