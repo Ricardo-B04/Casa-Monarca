@@ -4929,3 +4929,859 @@ print(f'✅ Restaurados {len(users)} usuarios')
 **RPO = Recovery Point Objective (datos máx que se pierden)
 
 ---
+
+## Seguridad
+
+### Autenticación
+
+#### 1. Flujo de autenticación básica (Usuario + Contraseña)
+
+**Paso a paso:**
+```
+Usuario                    Servidor
+   |                            |
+   |--- POST /login ---------->|
+   |    {username, password}    |
+   |                            |
+   |                    [Validate password]
+   |                    [Check rate-limit]
+   |                    [Create session]
+   |<--- 200 + Set-Cookie ------|
+   |    (HttpOnly, SameSite, Secure)
+   |                            |
+   |--- GET /dashboard ------->|
+   |    (Cookie enviada)        |
+   |                    [Verify session]
+   |<--- 200 + HTML ------------|
+```
+
+**Código en app.py:**
+```python
+@app.route('/login', methods=['POST'])
+def login():
+    """Autenticación básica: usuario + contraseña"""
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    # 1. Validar entrada
+    if not username or not password:
+        return {'error': 'Usuario y contraseña requeridos'}, 400
+    
+    # 2. Verificar rate-limiting
+    if check_login_attempts(username):
+        return {'error': 'Usuario bloqueado por 15 minutos'}, 423
+    
+    # 3. Obtener usuario
+    user = get_user(username)
+    if not user:
+        record_failed_attempt(username)
+        return {'error': 'Usuario o contraseña incorrectos'}, 401
+    
+    # 4. Verificar contraseña (Argon2id)
+    if not check_password_hash(user['password_hash'], password):
+        record_failed_attempt(username)
+        return {'error': 'Usuario o contraseña incorrectos'}, 401
+    
+    # 5. Limpiar intentos fallidos
+    reset_login_attempts(username)
+    
+    # 6. Crear sesión
+    session['user_id'] = user['id']
+    session['username'] = username
+    session['role'] = user['role']
+    session['login_time'] = datetime.utcnow()
+    
+    # 7. Registrar en auditoría
+    log_event('LOGIN', username, 'success')
+    
+    return {
+        'status': 'success',
+        'message': f'Bienvenido {username}',
+        'role': user['role']
+    }, 200
+```
+
+**Configuración de cookies (segura):**
+```python
+# app.py
+app.config.update(
+    SESSION_COOKIE_SECURE=True,        # Solo HTTPS
+    SESSION_COOKIE_HTTPONLY=True,      # No accesible desde JS
+    SESSION_COOKIE_SAMESITE='Strict',  # Previene CSRF
+    PERMANENT_SESSION_LIFETIME=3600,   # 1 hora
+)
+
+@app.before_request
+def make_session_permanent():
+    """Hacer sesión permanente con tiempo de vida limitado"""
+    session.permanent = True
+```
+
+#### 2. Flujo de autenticación reforzada (Challenge-Response con Certificados)
+
+**Paso a paso:**
+```
+Usuario (con certificado)    Servidor
+           |                     |
+           |--- GET /challenge ->|
+           |                     |
+           |<-- challenge_uuid --|
+           |                     |
+           |[Sign con private key]
+           |--- POST /login-cert --->|
+           |    {username, cert_pem,  |
+           |     challenge_uuid,      |
+           |     signature}           |
+           |                     |
+           |            [Validate cert]
+           |            [Verify signature]
+           |            [Check expiration]
+           |            [Verify challenge]
+           |<--- 200 + session ---|
+           |    (Certificado registrado)
+```
+
+**Código en app.py:**
+```python
+import uuid
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+
+# 1. Generar desafío
+@app.route('/challenge', methods=['GET'])
+def get_challenge():
+    """Generar desafío UUID para login reforzado"""
+    challenge = str(uuid.uuid4())
+    session['challenge'] = challenge
+    session['challenge_time'] = datetime.utcnow()
+    
+    log_event('CHALLENGE_REQUESTED', session.get('username', 'unknown'), 'generated')
+    
+    return {
+        'challenge': challenge,
+        'purpose': 'login',
+        'ttl': 300  # 5 minutos
+    }, 200
+
+# 2. Verificar certificado y firma
+@app.route('/login-cert', methods=['POST'])
+def login_certificate():
+    """Autenticación reforzada con certificado y firma"""
+    data = request.json
+    username = data.get('username')
+    cert_pem = data.get('certificate_pem')
+    signature_b64 = data.get('signature')
+    challenge = data.get('challenge')
+    
+    # 1. Validar desafío
+    stored_challenge = session.get('challenge')
+    challenge_time = session.get('challenge_time')
+    
+    if not stored_challenge or stored_challenge != challenge:
+        return {'error': 'Desafío inválido'}, 401
+    
+    # 2. Validar TTL del desafío (5 minutos)
+    if (datetime.utcnow() - challenge_time).seconds > 300:
+        return {'error': 'Desafío expirado'}, 401
+    
+    # 3. Cargar certificado
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode())
+    except Exception as e:
+        log_event('LOGIN_CERT', username, f'invalid_cert: {str(e)}')
+        return {'error': 'Certificado inválido'}, 401
+    
+    # 4. Validar que certificado pertenece al usuario
+    cert_subject = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+    if not cert_subject or cert_subject[0].value != username:
+        log_event('LOGIN_CERT', username, 'cert_subject_mismatch')
+        return {'error': 'Certificado no pertenece al usuario'}, 401
+    
+    # 5. Validar que certificado no está expirado
+    if datetime.utcnow() > cert.not_valid_after_utc:
+        log_event('LOGIN_CERT', username, 'cert_expired')
+        return {'error': 'Certificado expirado'}, 401
+    
+    # 6. Validar que certificado está firmado por CA
+    if not verify_ca_signature(cert):
+        log_event('LOGIN_CERT', username, 'invalid_ca_signature')
+        return {'error': 'Certificado no firmado por CA válida'}, 401
+    
+    # 7. Verificar firma del desafío
+    payload = f"CasaMonarca|login|{username}|{challenge}".encode()
+    signature = base64.b64decode(signature_b64)
+    
+    try:
+        public_key = cert.public_key()
+        public_key.verify(
+            signature,
+            payload,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256()
+        )
+    except InvalidSignature:
+        log_event('LOGIN_CERT', username, 'invalid_signature')
+        return {'error': 'Firma inválida'}, 401
+    
+    # 8. Crear sesión
+    user = get_user(username)
+    session['user_id'] = user['id']
+    session['username'] = username
+    session['role'] = user['role']
+    session['auth_method'] = 'certificate'
+    session['cert_fingerprint'] = cert.fingerprint(hashes.SHA256()).hex()
+    
+    log_event('LOGIN_CERT', username, 'success')
+    
+    return {
+        'status': 'success',
+        'message': f'Autenticado con certificado: {username}',
+        'role': user['role'],
+        'cert_expiry': cert.not_valid_after_utc.isoformat()
+    }, 200
+```
+
+#### 3. Rate-limiting y bloqueo de cuenta
+
+**Implementación:**
+```python
+# database.py
+def check_login_attempts(username, max_attempts=5, lockout_minutes=15):
+    """
+    Verificar si usuario está bloqueado por demasiados intentos fallidos.
+    
+    Args:
+        username: Nombre de usuario
+        max_attempts: Máximo de intentos permitidos (default: 5)
+        lockout_minutes: Minutos de bloqueo (default: 15)
+    
+    Returns:
+        bool: True si usuario está bloqueado, False si puede intentar
+    """
+    record = db.session.query(LoginAttempts).filter_by(username=username).first()
+    
+    if not record:
+        return False
+    
+    # Si hay bloqueo y no ha expirado
+    if record.locked_until:
+        if datetime.utcnow() < record.locked_until:
+            return True
+        else:
+            # Bloqueo expiró, resetear
+            record.locked_until = None
+            record.intentos = 0
+            db.session.commit()
+            return False
+    
+    # Si intentos >= max_attempts, bloquear
+    if record.intentos >= max_attempts:
+        record.locked_until = datetime.utcnow() + timedelta(minutes=lockout_minutes)
+        db.session.commit()
+        return True
+    
+    return False
+
+def record_failed_attempt(username):
+    """Registrar intento fallido de login"""
+    record = db.session.query(LoginAttempts).filter_by(username=username).first()
+    
+    if not record:
+        record = LoginAttempts(username=username, intentos=1)
+    else:
+        record.intentos += 1
+    
+    record.last_attempt = datetime.utcnow()
+    db.session.add(record)
+    db.session.commit()
+    
+    log_event('LOGIN_ATTEMPT_FAILED', username, f'intento {record.intentos}')
+
+def reset_login_attempts(username):
+    """Resetear intentos fallidos (login exitoso)"""
+    record = db.session.query(LoginAttempts).filter_by(username=username).first()
+    
+    if record:
+        record.intentos = 0
+        record.locked_until = None
+        db.session.commit()
+```
+
+### Manejo de datos sensibles
+
+#### 1. Hashing de contraseñas (Argon2id)
+
+**Configuración en app.py:**
+```python
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
+
+# Configuración recomendada para Casa Monarca
+ph = PasswordHasher(
+    time_cost=3,           # Iteraciones
+    memory_cost=65536,     # 64 MB
+    parallelism=2,         # Threads
+    hash_len=32,           # Bytes
+    salt_len=16,           # Bytes
+    type=Type.ID           # Argon2id (hybrid)
+)
+
+def hash_password(password):
+    """
+    Hashear contraseña con Argon2id.
+    
+    Argon2id es resistente a:
+    - GPU attacks (memory-hard)
+    - Side-channel attacks (Argon2id hybrid)
+    - Rainbow tables (salt aleatorio)
+    """
+    if not password or len(password) < 8:
+        raise ValueError("Contraseña debe tener mínimo 8 caracteres")
+    
+    return ph.hash(password)
+
+def verify_password(hashed, password):
+    """Verificar contraseña contra hash"""
+    try:
+        ph.verify(hashed, password)
+        return True
+    except (InvalidHash, VerifyMismatchError):
+        return False
+```
+
+**Ejemplo de hash generado:**
+```
+$argon2id$v=19$m=65536,t=3,p=2$AbCdEfGhIjKlMnOp$1234567890abcdefghijklmnopqrstuv
+ ^^^^^^    ^^^^^^    ^^^^ hash params         ^^^ salt (base64)    ^^ hash (base64)
+```
+
+#### 2. Encriptación de datos en tránsito (HTTPS + TLS 1.3)
+
+**Configuración en app.py:**
+```python
+from flask_talisman import Talisman
+
+# Forzar HTTPS en producción
+Talisman(
+    app,
+    force_https=True,
+    strict_transport_security=True,
+    strict_transport_security_max_age=31536000,  # 1 año
+    strict_transport_security_include_subdomains=True,
+    content_security_policy={
+        'default-src': "'self'",
+        'script-src': "'self' 'unsafe-inline'",  # Revisar en producción
+        'style-src': "'self' 'unsafe-inline'",
+    }
+)
+
+# Redireccionar HTTP → HTTPS
+@app.before_request
+def redirect_to_https():
+    if not request.is_secure and os.getenv('FLASK_ENV') == 'production':
+        url = request.url.replace('http://', 'https://', 1)
+        return redirect(url, code=301)
+```
+
+**Verificar TLS en cliente:**
+```bash
+# Verificar que servidor usa TLS 1.2+
+openssl s_client -connect localhost:443 -tls1_2 << EOF
+Q
+EOF
+
+# Verificar certificado
+openssl x509 -in cert.pem -text -noout
+
+# Verificar que es auto-firmado o de CA
+openssl verify -CAfile ca.crt cert.pem
+```
+
+#### 3. Encriptación en reposo (AES-256-CBC)
+
+**Para backups:**
+```python
+# tools/backup_db.py
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import os
+
+def backup_database_encrypted():
+    """Crear backup encriptado de la base de datos"""
+    
+    # 1. Leer BD
+    with open('database.db', 'rb') as f:
+        db_data = f.read()
+    
+    # 2. Cargar clave AES-256
+    with open('key.key', 'rb') as f:
+        key = f.read()  # 32 bytes para AES-256
+    
+    # 3. Generar IV aleatorio
+    iv = os.urandom(16)
+    
+    # 4. Encriptar con AES-256-CBC
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.CBC(iv),
+        backend=default_backend()
+    )
+    encryptor = cipher.encryptor()
+    
+    # Padding PKCS7
+    from cryptography.hazmat.primitives import padding as crypto_padding
+    padder = crypto_padding.PKCS7(128).padder()
+    padded_data = padder.update(db_data) + padder.finalize()
+    
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    
+    # 5. Guardar: IV (16 bytes) + datos encriptados
+    timestamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    backup_file = f'backups/db_backup_{timestamp}.enc'
+    
+    with open(backup_file, 'wb') as f:
+        f.write(iv)
+        f.write(encrypted_data)
+    
+    print(f"✅ Backup encriptado: {backup_file}")
+    return backup_file
+
+def restore_database_encrypted(backup_file):
+    """Restaurar BD desde backup encriptado"""
+    
+    # 1. Cargar clave
+    with open('key.key', 'rb') as f:
+        key = f.read()
+    
+    # 2. Leer backup: IV + datos encriptados
+    with open(backup_file, 'rb') as f:
+        iv = f.read(16)
+        encrypted_data = f.read()
+    
+    # 3. Desencriptar
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.CBC(iv),
+        backend=default_backend()
+    )
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    
+    # Remover padding PKCS7
+    unpadder = crypto_padding.PKCS7(128).unpadder()
+    db_data = unpadder.update(padded_data) + unpadder.finalize()
+    
+    # 4. Restaurar BD
+    with open('database.db', 'wb') as f:
+        f.write(db_data)
+    
+    print(f"✅ BD restaurada desde {backup_file}")
+```
+
+#### 4. Gestión de claves y certificados
+
+**Generar clave AES-256:**
+```bash
+# generate_key.py
+python generate_key.py
+# Genera key.key (32 bytes aleatorios en base64)
+```
+
+**Almacenamiento seguro:**
+```bash
+# Proteger archivos de claves
+chmod 600 key.key
+chmod 600 ca.key
+chown app:app key.key ca.key
+
+# Usar variables de entorno en producción
+export AES_KEY=$(cat key.key)
+export CA_PASSPHRASE="contraseña-fuerte"
+```
+
+**Rotación de claves (Etapa 2):**
+```python
+# scripts/rotate_aes_key.py
+"""
+Rotación de claves AES:
+1. Generar nueva clave
+2. Re-encriptar todos los backups con nueva clave
+3. Actualizar clave en producción
+4. Archivar clave anterior por 30 días
+"""
+```
+
+#### 5. Certificados X.509
+
+**Generación de CA:**
+```bash
+# scripts/generate_ca.py
+openssl req -new -x509 -days 3650 -nodes \
+  -out ca.crt -keyout ca.key \
+  -subj "/CN=Casa Monarca CA/O=Institution/C=MX"
+
+chmod 600 ca.key
+```
+
+**Generación de certificado de usuario:**
+```bash
+# scripts/generate_user_cert.py
+openssl req -new -key user.key -out user.csr \
+  -subj "/CN=username/O=Institution/C=MX"
+
+openssl x509 -req -days 365 -in user.csr \
+  -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out user.crt \
+  -sha256
+
+# Combinar en PEM
+cat user.key user.crt > user.pem
+```
+
+### Buenas prácticas
+
+#### 1. OWASP Top 10 - Mitigaciones
+
+| Vulnerabilidad | Mitigación en Casa Monarca |
+|----------------|---------------------------|
+| **1. Injection** | Prepared statements (SQLAlchemy ORM), validación entrada |
+| **2. Broken Authentication** | Argon2id, 2FA (certificados), rate-limiting |
+| **3. Sensitive Data Exposure** | HTTPS + TLS 1.3, AES-256 en reposo, logs sin PII |
+| **4. XML External Entities** | No procesar XML, usar JSON |
+| **5. Broken Access Control** | RBAC decorators (@require_role), validación en cada endpoint |
+| **6. Security Misconfiguration** | .env por ambiente, headers seguridad, logging centralizador |
+| **7. XSS** | Jinja2 escapa HTML por defecto, CSP headers, sanitización input |
+| **8. Insecure Deserialization** | No usar pickle, usar JSON, validar esquemas |
+| **9. Using Components with Known Vulnerabilities** | Auditar requirements.txt, `pip audit`, updates |
+| **10. Insufficient Logging** | Audit log para eventos críticos, alertas en errores |
+
+#### 2. Inyección SQL - Prevención
+
+**❌ VULNERABLE:**
+```python
+# NO HACER ESTO
+query = f"SELECT * FROM usuarios WHERE username = '{username}'"
+conn.execute(query)  # ¡SQL Injection!
+```
+
+**✅ SEGURO:**
+```python
+# HACER ESTO (SQLAlchemy ORM)
+from database import Usuario
+
+user = Usuario.query.filter_by(username=username).first()
+
+# O con prepared statements
+query = "SELECT * FROM usuarios WHERE username = ?"
+user = conn.execute(query, (username,)).fetchone()
+```
+
+#### 3. CSRF Protection
+
+**Implementación en Flask:**
+```python
+from flask_wtf.csrf import CSRFProtect
+
+csrf = CSRFProtect(app)
+
+# En template HTML
+<form method="POST" action="/expediente/crear">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="text" name="titulo">
+    <button type="submit">Crear</button>
+</form>
+
+# En Python (AJAX)
+headers = {
+    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+}
+```
+
+#### 4. XSS Prevention
+
+**Jinja2 escapa por defecto:**
+```html
+<!-- Template: template.html -->
+<h1>Usuario: {{ username }}</h1>  <!-- Automáticamente escapado -->
+
+<!-- Si username = "<script>alert('XSS')</script>" -->
+<!-- Se renderiza como: <h1>Usuario: &lt;script&gt;alert(&#39;XSS&#39;)&lt;/script&gt;</h1> -->
+```
+
+**CSP Headers:**
+```python
+@app.after_request
+def set_security_headers(response):
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'"
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
+```
+
+#### 5. Validación de entrada
+
+```python
+from wtforms import StringField, PasswordField
+from wtforms.validators import Length, Email, Regexp
+
+# Definir validadores
+class CreateUserForm(FlaskForm):
+    username = StringField('Username', [
+        Length(min=3, max=20),
+        Regexp(r'^[a-zA-Z0-9_]+$', message='Solo letras, números y _')
+    ])
+    
+    email = StringField('Email', [
+        Email()
+    ])
+    
+    password = PasswordField('Password', [
+        Length(min=8, max=128),
+        Regexp(r'^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$!%*?&]).*$',
+               message='Debe incluir mayúscula, minúscula, número y símbolo')
+    ])
+
+# En route
+@app.route('/admin/crear-usuario', methods=['POST'])
+@require_role('admin')
+def crear_usuario():
+    form = CreateUserForm()
+    if not form.validate():
+        return {'errors': form.errors}, 400
+    
+    # ... crear usuario ...
+```
+
+#### 6. Auditoría y logging
+
+**Función de auditoría (app.py):**
+```python
+def log_event(event_type, username, details, severity='INFO'):
+    """
+    Registrar evento de seguridad para auditoría.
+    
+    Args:
+        event_type: LOGIN, LOGIN_CERT, CREATE_USER, CERT_REVOKED, etc.
+        username: Usuario que realizó la acción
+        details: Detalles adicionales
+        severity: INFO, WARNING, CRITICAL
+    """
+    
+    timestamp = datetime.utcnow().isoformat()
+    
+    # Registrar en BD (tabla bitacora)
+    event = AuditLog(
+        timestamp=timestamp,
+        event_type=event_type,
+        username=username,
+        details=details,
+        ip_address=request.remote_addr,
+        user_agent=request.user_agent.string,
+        severity=severity
+    )
+    db.session.add(event)
+    db.session.commit()
+    
+    # Registrar en archivo (rotated)
+    logger.log(
+        getattr(logging, severity),
+        f"[{timestamp}] {event_type} | {username} | {details}"
+    )
+    
+    # Alerta si CRITICAL
+    if severity == 'CRITICAL':
+        send_alert_email(
+            subject=f"ALERTA SEGURIDAD: {event_type}",
+            message=f"{username}: {details}"
+        )
+```
+
+**Eventos críticos a auditar:**
+```python
+log_event('LOGIN', username, 'success')
+log_event('LOGIN_FAILED', username, f'intento {count}', 'WARNING')
+log_event('LOGIN_BLOCKED', username, f'bloqueado 15min', 'WARNING')
+
+log_event('USER_CREATED', admin, f'creó usuario: {new_user}', 'INFO')
+log_event('ROLE_CHANGED', admin, f'{user}: {old_role} → {new_role}', 'INFO')
+
+log_event('CERT_ISSUED', username, f'CN={username}, exp={expiry}', 'INFO')
+log_event('CERT_REVOKED', admin, f'revocó certificado de {username}', 'INFO')
+
+log_event('EXPEDIENTE_CREATED', username, f'id={exp_id}', 'INFO')
+log_event('EXPEDIENTE_SIGNED', admin, f'firmó id={exp_id}', 'INFO')
+
+log_event('DB_BACKUP', 'system', f'archivo={backup_file}', 'INFO')
+log_event('UNAUTHORIZED_ACCESS', username, f'intentó acceder a {endpoint}', 'CRITICAL')
+```
+
+#### 7. Secretos en variables de entorno
+
+**❌ VULNERABLE (NO HACER):**
+```python
+SECRET_KEY = "my-super-secret-key-12345"  # En código fuente
+AES_KEY = "abcdef123456789..."            # En código fuente
+```
+
+**✅ SEGURO:**
+```bash
+# .env (no commitear a git)
+SECRET_KEY=<generar con 256 bits aleatorios>
+AES_KEY=<cargar desde key.key>
+CA_PASSPHRASE=<contraseña fuerte>
+DATABASE_URL=sqlite:///data/database.db
+
+# En .gitignore
+.env
+.env.*
+*.key
+*.pem
+key.key
+```
+
+**Cargar en app.py:**
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+AES_KEY = os.getenv('AES_KEY')
+CA_PASSPHRASE = os.getenv('CA_PASSPHRASE')
+
+# Validar que existen
+for var in ['SECRET_KEY', 'AES_KEY', 'CA_PASSPHRASE']:
+    if not os.getenv(var):
+        raise ValueError(f"Variable de entorno {var} no configurada")
+```
+
+#### 8. Testing de seguridad
+
+```bash
+# Instalar herramientas
+pip install bandit safety semgrep
+
+# Análisis estático con Bandit
+bandit -r . -ll  # Low level issues
+
+# Chequear dependencias vulnerables
+safety check
+
+# Análisis de código con Semgrep
+semgrep --config=p/security-audit .
+
+# Test específico: verificar no hay secrets en código
+git log -p | grep -i "secret\|password\|key" | head -5
+```
+
+**Test de penetración manual:**
+```bash
+#!/bin/bash
+# tests/security_test.sh
+
+echo "🔐 Security Test Suite"
+
+# 1. Verificar HTTPS
+echo "▶️  HTTPS enforcement..."
+curl -I http://localhost:5000/dashboard | grep -q "301\|403" && echo "✅ HTTPS OK" || echo "❌ FAIL"
+
+# 2. Verificar HSTS
+echo "▶️  HSTS headers..."
+curl -I https://localhost:5000/dashboard | grep -q "Strict-Transport-Security" && echo "✅ HSTS OK" || echo "❌ FAIL"
+
+# 3. Verificar CSP
+echo "▶️  CSP headers..."
+curl -I https://localhost:5000/dashboard | grep -q "Content-Security-Policy" && echo "✅ CSP OK" || echo "❌ FAIL"
+
+# 4. Verificar no hay información sensible en respuestas
+echo "▶️  No version disclosure..."
+curl -I https://localhost:5000/dashboard | grep -q "Server:" && echo "❌ Server header visible" || echo "✅ OK"
+
+# 5. Verificar rate-limiting
+echo "▶️  Rate-limiting on /login..."
+for i in {1..6}; do
+    curl -X POST https://localhost:5000/login \
+        -d "username=test&password=wrong" -s -o /dev/null -w "%{http_code}\n"
+done
+```
+
+#### 9. Deshabilitar features inseguras
+
+```python
+# app.py
+app.config.update(
+    DEBUG=False,                          # No debug en producción
+    TESTING=False,                        # No modo testing
+    PROPAGATE_EXCEPTIONS=False,           # No exponer stack traces
+    PRESERVE_CONTEXT_ON_EXCEPTION=False,  # No logs detallados de excepciones
+    JSON_SORT_KEYS=False,                 # No ordenar claves (timing attack)
+)
+
+# Deshabilitar endpoint de debug
+@app.route('/debug')
+def debug_info():
+    if not app.debug:
+        abort(404)
+    return {...}
+```
+
+#### 10. Validación de certificados en cliente
+
+```python
+# tests/test_certificate_validation.py
+import pytest
+from datetime import datetime, timedelta
+from cryptography import x509
+
+def test_expired_certificate_rejected():
+    """Test que certificado expirado es rechazado"""
+    # Crear certificado con expiración pasada
+    old_cert = create_cert_with_expiry(
+        datetime.utcnow() - timedelta(days=1)
+    )
+    
+    response = client.post('/login-cert', json={
+        'username': 'user',
+        'certificate_pem': old_cert,
+        'challenge': 'test-challenge',
+        'signature': 'fake-signature'
+    })
+    
+    assert response.status_code == 401
+    assert 'expirado' in response.json['error'].lower()
+
+def test_certificate_wrong_ca_rejected():
+    """Test que certificado de CA diferente es rechazado"""
+    # Crear certificado firmado por CA diferente
+    wrong_ca_cert = create_cert_from_different_ca('user')
+    
+    response = client.post('/login-cert', json={
+        'username': 'user',
+        'certificate_pem': wrong_ca_cert,
+        'challenge': 'test-challenge',
+        'signature': 'fake-signature'
+    })
+    
+    assert response.status_code == 401
+    assert 'CA' in response.json['error']
+
+def test_signature_tampered_rejected():
+    """Test que firma tamper es rechazada"""
+    response = client.post('/login-cert', json={
+        'username': 'user',
+        'certificate_pem': valid_cert_pem,
+        'challenge': 'valid-challenge',
+        'signature': 'TAMPERED_SIGNATURE_BASE64'
+    })
+    
+    assert response.status_code == 401
+    assert 'Firma inválida' in response.json['error']
+```
+
+---
