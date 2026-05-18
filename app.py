@@ -18,23 +18,19 @@ import urllib.request
 import urllib.error
 import time
 import re
+from config import config
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or os.environ.get("APP_SECRET_KEY") or "secreto_demo"
-# Cookie security defaults; override via environment when needed
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
-if os.environ.get("ENABLE_SESSION_COOKIE_SECURE", "0") == "1":
-    app.config["SESSION_COOKIE_SECURE"] = True
 
-CERT_VALIDITY_HOURS = 720
-CERT_CA_CERT_PATH = os.environ.get("CERT_CA_CERT_PATH", "certs/ca_cert.pem")
-CERT_CA_KEY_PATH = os.environ.get("CERT_CA_KEY_PATH", "certs/ca_key.pem")
+# Load configuration from config.py based on environment
+env = os.environ.get("FLASK_ENV", "development")
+app.config.from_object(config[env])
+
+# Application constants (not affected by environment-specific config)
 CERT_PRODUCT_ALGORITHM = "X509/RSA-2048/AES-256-CBC"
 CERT_CA_COMMON_NAME = "Casa Monarca Development CA"
 CERT_CA_ORG = "Casa Monarca"
 CERT_CA_COUNTRY = "MX"
-PASSWORD_MIN_LENGTH = 12
 ARGON2_MEMORY_COST = 65536
 ARGON2_TIME_COST = 3
 ARGON2_PARALLELISM = 2
@@ -42,11 +38,15 @@ ARGON2_HASH_LEN = 32
 ARGON2_SALT_LEN = 16
 HIBP_TIMEOUT_SECONDS = 4
 
-# Rate limiting / login lockout settings
-LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
-LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
-LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", "900"))
-SIGNATURE_CHALLENGE_TTL_SECONDS = int(os.environ.get("SIGNATURE_CHALLENGE_TTL_SECONDS", "300"))
+# Get configuration values (now centralized in config.py)
+CERT_VALIDITY_HOURS = app.config.get("CERT_VALIDITY_HOURS", 720)
+CERT_CA_CERT_PATH = app.config.get("CERT_CA_CERT_PATH", "certs/ca_cert.pem")
+CERT_CA_KEY_PATH = app.config.get("CERT_CA_KEY_PATH", "certs/ca_key.pem")
+PASSWORD_MIN_LENGTH = app.config.get("PASSWORD_MIN_LENGTH", 12)
+LOGIN_MAX_ATTEMPTS = app.config.get("LOGIN_MAX_ATTEMPTS", 5)
+LOGIN_WINDOW_SECONDS = app.config.get("LOGIN_WINDOW_SECONDS", 300)
+LOGIN_LOCKOUT_SECONDS = app.config.get("LOGIN_LOCKOUT_SECONDS", 900)
+SIGNATURE_CHALLENGE_TTL_SECONDS = app.config.get("SIGNATURE_CHALLENGE_TTL_SECONDS", 300)
 
 # Backward-compatible in-memory cache for failed login attempts.
 failed_login_store = {}
