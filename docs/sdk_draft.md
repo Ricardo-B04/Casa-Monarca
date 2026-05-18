@@ -1348,3 +1348,518 @@ python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
 ```bash
 PYTHONPATH=. pytest -v tests/
 ```
+
+---
+
+## Base de Datos
+
+### Modelo de datos
+
+Casa Monarca utiliza **SQLite 3.x** como base de datos local. El modelo sigue un diseño **normalizado** (3NF) con 5 tablas principales que cubren:
+- **Gestión de usuarios:** autenticación, roles, passwords
+- **Gestión de expedientes:** ciclo de vida y auditoría
+- **Seguridad:** certificados X.509 e intentos de login
+- **Auditoría:** bitácora de eventos
+
+#### Diagrama Entidad-Relación (E-R)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         MODELO CONCEPTUAL                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│                                                                   │
+│    ┌──────────────────┐                                          │
+│    │    USUARIOS      │                                          │
+│    ├──────────────────┤                                          │
+│    │ id (PK)          │                                          │
+│    │ username (UQ)    │                                          │
+│    │ password_hash    │                                          │
+│    │ role             │────────┐                                 │
+│    │ created_at       │        │ 1:N                            │
+│    │ must_change_pwd  │        │                                │
+│    └──────────────────┘        │                                │
+│           │ 1:N                │                                │
+│           │                    ▼                                │
+│           │            ┌──────────────────────────┐             │
+│           │            │    EXPEDIENTES           │             │
+│           │            ├──────────────────────────┤             │
+│           │            │ id (PK)                  │             │
+│           │            │ user_id (FK → USUARIOS)  │             │
+│           │            │ titulo                   │             │
+│           │            │ descripcion              │             │
+│           │            │ estado                   │             │
+│           │            │ created_at               │             │
+│           │            │ updated_at               │             │
+│           │            └──────────────────────────┘             │
+│           │                                                      │
+│           │ 1:N                                                  │
+│           │                                                      │
+│           ▼                                                      │
+│    ┌──────────────────┐                                          │
+│    │  CERTIFICADOS    │                                          │
+│    ├──────────────────┤                                          │
+│    │ id (PK)          │                                          │
+│    │ user_id (FK)     │                                          │
+│    │ cert_pem         │                                          │
+│    │ huella (UQ)      │                                          │
+│    │ estado           │                                          │
+│    │ created_at       │                                          │
+│    │ expires_at       │                                          │
+│    └──────────────────┘                                          │
+│                                                                   │
+│    ┌──────────────────────────┐                                  │
+│    │      BITACORA            │                                  │
+│    ├──────────────────────────┤                                  │
+│    │ id (PK)                  │                                  │
+│    │ username (FK → USUARIOS) │                                  │
+│    │ accion                   │                                  │
+│    │ descripcion              │                                  │
+│    │ timestamp                │                                  │
+│    │ ip_address               │                                  │
+│    └──────────────────────────┘                                  │
+│                                                                   │
+│    ┌──────────────────────────┐                                  │
+│    │    LOGIN_ATTEMPTS        │                                  │
+│    ├──────────────────────────┤                                  │
+│    │ id (PK)                  │                                  │
+│    │ username (FK)            │                                  │
+│    │ intentos                 │                                  │
+│    │ locked_until             │                                  │
+│    │ ventana_inicio           │                                  │
+│    └──────────────────────────┘                                  │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+
+Leyenda:
+  PK = Primary Key (clave primaria)
+  FK = Foreign Key (clave foránea)
+  UQ = Unique (único)
+  1:N = Relación uno-a-muchos
+```
+
+### Tablas principales
+
+#### 1. `usuarios` — Gestión de cuentas y autenticación
+
+**Propósito:** Almacenar información de usuarios, roles y credenciales.
+
+**Esquema:**
+
+| Campo | Tipo | Restricciones | Descripción |
+|-------|------|----------------|------------|
+| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
+| `username` | TEXT | NOT NULL, UNIQUE | Nombre de usuario (login único) |
+| `password_hash` | TEXT | NOT NULL | Hash Argon2 de contraseña |
+| `role` | TEXT | NOT NULL DEFAULT 'usuario' | Rol RBAC: usuario, operativo, coordinador, admin |
+| `must_change_password` | INTEGER | DEFAULT 1 | Flag: 1 = debe cambiar al login |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de creación |
+
+**Índices:**
+```sql
+CREATE UNIQUE INDEX idx_usuarios_username ON usuarios(username);
+CREATE INDEX idx_usuarios_role ON usuarios(role);
+```
+
+**Ejemplo de datos:**
+```
+id | username    | password_hash              | role        | must_change_password | created_at
+1  | usuario_pru | $argon2id$v=19$m=65536... | usuario     | 0                    | 2026-05-01 10:00:00
+2  | operativo_1 | $argon2id$v=19$m=65536... | operativo   | 1                    | 2026-05-05 14:30:00
+3  | coord_admin | $argon2id$v=19$m=65536... | coordinador | 0                    | 2026-05-02 09:15:00
+4  | admin_prod  | $argon2id$v=19$m=65536... | admin       | 0                    | 2026-05-01 08:00:00
+```
+
+#### 2. `expedientes` — Gestión del ciclo de vida
+
+**Propósito:** Almacenar expedientes y su estado en el flujo de procesamiento.
+
+**Esquema:**
+
+| Campo | Tipo | Restricciones | Descripción |
+|-------|------|----------------|------------|
+| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
+| `user_id` | INTEGER | NOT NULL, FK → usuarios(id) | Usuario creador (propietario) |
+| `titulo` | TEXT | NOT NULL | Título del expediente |
+| `descripcion` | TEXT | | Descripción detallada |
+| `estado` | TEXT | DEFAULT 'borrador' | Estado: borrador, en_revision, validado, cerrado |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de creación |
+| `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Última actualización |
+
+**Índices:**
+```sql
+CREATE INDEX idx_expedientes_user_id ON expedientes(user_id);
+CREATE INDEX idx_expedientes_estado ON expedientes(estado);
+CREATE INDEX idx_expedientes_created_at ON expedientes(created_at DESC);
+```
+
+**Estados y transiciones permitidas:**
+```
+borrador → en_revision → validado → cerrado
+   ↑         (solo si     ↓        (solo
+  (solo      validado)    └─→ borrador (admin)
+  propietario)                (revisar)
+```
+
+**Permisos por rol:**
+- `usuario`: Crea (borrador), ve propios, puede cancelar
+- `operativo`: Ve asignados, canaliza a coordinador
+- `coordinador`: Revisa, canaliza a admin (con firma)
+- `admin`: Valida finales, cierra
+
+**Ejemplo de datos:**
+```
+id | user_id | titulo              | estado      | created_at         | updated_at
+1  | 1       | Caso #001 - Refugio | borrador    | 2026-05-10 11:30   | 2026-05-10 11:30
+2  | 1       | Caso #002 - Legal   | en_revision | 2026-05-12 09:45   | 2026-05-15 14:20
+3  | 2       | Caso #003 - Medico  | validado    | 2026-05-14 16:00   | 2026-05-16 10:10
+```
+
+#### 3. `certificados` — Gestión de certificados X.509
+
+**Propósito:** Almacenar certificados digitales emitidos por la CA local.
+
+**Esquema:**
+
+| Campo | Tipo | Restricciones | Descripción |
+|-------|------|----------------|------------|
+| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
+| `user_id` | INTEGER | NOT NULL, FK → usuarios(id) | Usuario propietario del certificado |
+| `cert_pem` | TEXT | NOT NULL | Certificado en formato PEM (X.509) |
+| `huella` | TEXT | NOT NULL, UNIQUE | SHA-256 del certificado (fingerprint) |
+| `estado` | TEXT | DEFAULT 'activo' | Estado: activo, revocado, expirado |
+| `razon_revocacion` | TEXT | | Motivo de revocación (si aplica) |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de emisión |
+| `expires_at` | TIMESTAMP | NOT NULL | Fecha de expiración (validez 720 horas = 30 días) |
+
+**Índices:**
+```sql
+CREATE INDEX idx_certificados_user_id ON certificados(user_id);
+CREATE UNIQUE INDEX idx_certificados_huella ON certificados(huella);
+CREATE INDEX idx_certificados_estado ON certificados(estado);
+CREATE INDEX idx_certificados_expires_at ON certificados(expires_at);
+```
+
+**Estados de ciclo de vida:**
+- `activo`: Certificado válido y usable para autenticación
+- `revocado`: Revocado por el usuario o admin (no puede usarse)
+- `expirado`: Pasó la fecha de expiración
+
+**Validación en login:**
+```python
+if estado != 'activo':
+    raise AuthenticationError("Certificado no está activo")
+if expires_at < NOW():
+    raise AuthenticationError("Certificado expirado")
+if not verify_ca_signature(cert_pem):
+    raise AuthenticationError("Firma de CA inválida")
+if certificate.CN != username:
+    raise AuthenticationError("CN no coincide con usuario")
+```
+
+**Ejemplo de datos:**
+```
+id | user_id | huella (SHA-256)          | estado   | expires_at         | created_at
+1  | 4       | a1b2c3d4e5f6...           | activo   | 2026-06-15 08:00   | 2026-05-16 08:00
+2  | 3       | f6e5d4c3b2a1...           | activo   | 2026-06-14 10:30   | 2026-05-15 10:30
+3  | 3       | 9z8y7x6w5v4u...           | revocado | 2026-06-10 14:00   | 2026-05-10 14:00
+```
+
+#### 4. `bitacora` — Auditoría de eventos
+
+**Propósito:** Registro inmutable de eventos (audit log) para trazabilidad y compliance.
+
+**Esquema:**
+
+| Campo | Tipo | Restricciones | Descripción |
+|-------|------|----------------|------------|
+| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
+| `username` | TEXT | NOT NULL, FK → usuarios(username) | Usuario que ejecutó la acción |
+| `accion` | TEXT | NOT NULL | Tipo de acción: login, logout, crear_expediente, cambiar_estado, crear_usuario, revocar_certificado, etc. |
+| `descripcion` | TEXT | | Detalles adicionales de la acción |
+| `timestamp` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha/hora exacta del evento |
+| `ip_address` | TEXT | | Dirección IP del cliente (para auditoría de seguridad) |
+
+**Índices:**
+```sql
+CREATE INDEX idx_bitacora_username ON bitacora(username);
+CREATE INDEX idx_bitacora_accion ON bitacora(accion);
+CREATE INDEX idx_bitacora_timestamp ON bitacora(timestamp DESC);
+```
+
+**Eventos auditados:**
+
+| Acción | Descripción |
+|--------|------------|
+| `login_exitoso` | Usuario inició sesión correctamente |
+| `login_fallido` | Intento de login fallido (contraseña incorrecta) |
+| `login_bloqueado` | Usuario bloqueado por intentos excesivos |
+| `logout` | Usuario cerró sesión |
+| `cambiar_contrasena` | Usuario cambió su contraseña |
+| `crear_expediente` | Nuevo expediente creado |
+| `cambiar_estado_expediente` | Cambio de estado en expediente |
+| `crear_usuario` | Nuevo usuario creado por admin |
+| `eliminar_usuario` | Usuario eliminado |
+| `cambiar_rol_usuario` | Rol de usuario modificado |
+| `generar_certificado` | Certificado X.509 emitido |
+| `revocar_certificado` | Certificado revocado |
+| `backup_realizado` | Backup cifrado realizado |
+| `backup_restaurado` | Base de datos restaurada desde backup |
+
+**Ejemplo de datos:**
+```
+id | username    | accion                  | descripcion                    | timestamp           | ip_address
+1  | admin_prod  | crear_usuario           | Nuevo usuario: operativo_1     | 2026-05-05 14:30:00 | 192.168.1.100
+2  | usuario_pru | login_exitoso           | Login con certificado exitoso  | 2026-05-10 11:20:00 | 192.168.1.150
+3  | operativo_1 | crear_expediente        | ID: 1, Título: Caso #001      | 2026-05-10 11:30:00 | 192.168.1.155
+4  | operativo_1 | cambiar_estado_exped    | ID: 1, borrador → en_revision | 2026-05-12 09:45:00 | 192.168.1.155
+5  | coord_admin | revocar_certificado     | User: operativo_1, huella: ...| 2026-05-16 15:00:00 | 192.168.1.120
+```
+
+#### 5. `login_attempts` — Rate-limiting y protección
+
+**Propósito:** Rastrear intentos de login fallidos para implementar lockout temporal (rate-limiting).
+
+**Esquema:**
+
+| Campo | Tipo | Restricciones | Descripción |
+|-------|------|----------------|------------|
+| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
+| `username` | TEXT | NOT NULL, UNIQUE | Usuario intentando login (UNIQUE para evitar duplicados) |
+| `intentos` | INTEGER | DEFAULT 0 | Número de intentos fallidos en la ventana actual |
+| `locked_until` | TIMESTAMP | | Fecha/hora hasta la que el usuario está bloqueado (NULL = no bloqueado) |
+| `ventana_inicio` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Inicio de la ventana de conteo |
+
+**Índices:**
+```sql
+CREATE UNIQUE INDEX idx_login_attempts_username ON login_attempts(username);
+CREATE INDEX idx_login_attempts_locked_until ON login_attempts(locked_until);
+```
+
+**Lógica de rate-limiting:**
+
+```
+Configuración:
+  - LOGIN_MAX_ATTEMPTS = 5
+  - LOGIN_WINDOW_SECONDS = 300 (5 minutos)
+  - LOGIN_LOCKOUT_SECONDS = 900 (15 minutos)
+
+Flujo:
+1. Usuario intenta login
+2. Si password es incorrecto:
+   - intentos += 1
+   - Si intentos >= 5:
+       locked_until = NOW + 900 segundos
+   - Registrar en bitácora "login_fallido"
+3. Si password es correcto:
+   - Resetear intentos = 0
+   - Registrar en bitácora "login_exitoso"
+4. Si locked_until > NOW:
+   - Rechazar login inmediatamente
+   - Registrar en bitácora "login_bloqueado"
+5. Si locked_until < NOW:
+   - Desbloquear: locked_until = NULL, intentos = 0
+```
+
+**Ejemplo de datos:**
+```
+id | username    | intentos | locked_until        | ventana_inicio
+1  | usuario_pru | 0        | NULL                | 2026-05-10 11:00:00
+2  | operativo_1 | 3        | NULL                | 2026-05-12 09:30:00
+3  | admin_temp  | 5        | 2026-05-16 15:15:00 | 2026-05-16 15:00:00
+```
+
+### Relaciones
+
+#### Relación: USUARIOS ← 1:N → EXPEDIENTES
+
+```
+Un usuario puede crear múltiples expedientes.
+Un expediente pertenece a exactamente un usuario.
+
+ON DELETE: CASCADE (si se elimina usuario, se eliminan sus expedientes)
+ON UPDATE: CASCADE (si cambia user_id, se propaga a expedientes)
+```
+
+**SQL:**
+```sql
+ALTER TABLE expedientes 
+ADD CONSTRAINT fk_expedientes_user_id 
+FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE;
+```
+
+#### Relación: USUARIOS ← 1:N → CERTIFICADOS
+
+```
+Un usuario puede tener múltiples certificados (activos, revocados, expirados).
+Un certificado pertenece a exactamente un usuario.
+
+ON DELETE: CASCADE (si se elimina usuario, se eliminan sus certs)
+ON UPDATE: CASCADE
+```
+
+**SQL:**
+```sql
+ALTER TABLE certificados 
+ADD CONSTRAINT fk_certificados_user_id 
+FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE;
+```
+
+#### Relación: USUARIOS ← 1:N → BITACORA
+
+```
+Un usuario puede generar múltiples eventos auditados.
+Un evento en bitácora se asocia a un usuario específico.
+
+ON DELETE: SET NULL (el evento permanece pero usuario se desconoce)
+ON UPDATE: CASCADE
+```
+
+**SQL:**
+```sql
+ALTER TABLE bitacora 
+ADD CONSTRAINT fk_bitacora_username 
+FOREIGN KEY (username) REFERENCES usuarios(username) ON UPDATE CASCADE;
+```
+
+#### Relación: USUARIOS ← 1:1 → LOGIN_ATTEMPTS
+
+```
+Un usuario tiene exactamente un registro de intentos de login (por ventana).
+Un registro de intentos pertenece a un usuario.
+
+ON DELETE: CASCADE
+ON UPDATE: CASCADE
+```
+
+**SQL:**
+```sql
+ALTER TABLE login_attempts 
+ADD CONSTRAINT fk_login_attempts_username 
+FOREIGN KEY (username) REFERENCES usuarios(username) ON DELETE CASCADE;
+```
+
+### Script de inicialización (DDL)
+
+```sql
+-- Table: usuarios
+CREATE TABLE usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'usuario',
+    must_change_password INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table: expedientes
+CREATE TABLE expedientes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    titulo TEXT NOT NULL,
+    descripcion TEXT,
+    estado TEXT DEFAULT 'borrador',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+);
+
+-- Table: certificados
+CREATE TABLE certificados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    cert_pem TEXT NOT NULL,
+    huella TEXT NOT NULL UNIQUE,
+    estado TEXT DEFAULT 'activo',
+    razon_revocacion TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+);
+
+-- Table: bitacora
+CREATE TABLE bitacora (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    accion TEXT NOT NULL,
+    descripcion TEXT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ip_address TEXT,
+    FOREIGN KEY (username) REFERENCES usuarios(username) ON UPDATE CASCADE
+);
+
+-- Table: login_attempts
+CREATE TABLE login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    intentos INTEGER DEFAULT 0,
+    locked_until TIMESTAMP,
+    ventana_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (username) REFERENCES usuarios(username) ON DELETE CASCADE
+);
+
+-- Índices para optimización
+CREATE UNIQUE INDEX idx_usuarios_username ON usuarios(username);
+CREATE INDEX idx_usuarios_role ON usuarios(role);
+
+CREATE INDEX idx_expedientes_user_id ON expedientes(user_id);
+CREATE INDEX idx_expedientes_estado ON expedientes(estado);
+CREATE INDEX idx_expedientes_created_at ON expedientes(created_at DESC);
+
+CREATE INDEX idx_certificados_user_id ON certificados(user_id);
+CREATE UNIQUE INDEX idx_certificados_huella ON certificados(huella);
+CREATE INDEX idx_certificados_estado ON certificados(estado);
+CREATE INDEX idx_certificados_expires_at ON certificados(expires_at);
+
+CREATE INDEX idx_bitacora_username ON bitacora(username);
+CREATE INDEX idx_bitacora_accion ON bitacora(accion);
+CREATE INDEX idx_bitacora_timestamp ON bitacora(timestamp DESC);
+
+CREATE UNIQUE INDEX idx_login_attempts_username ON login_attempts(username);
+CREATE INDEX idx_login_attempts_locked_until ON login_attempts(locked_until);
+```
+
+### Consultas principales (ejemplos)
+
+**Obtener todos los expedientes de un usuario:**
+```sql
+SELECT e.id, e.titulo, e.estado, e.created_at 
+FROM expedientes e
+WHERE e.user_id = ? 
+ORDER BY e.created_at DESC;
+```
+
+**Listar certificados activos próximos a expirar:**
+```sql
+SELECT c.id, c.huella, c.expires_at, u.username
+FROM certificados c
+JOIN usuarios u ON c.user_id = u.id
+WHERE c.estado = 'activo' 
+  AND c.expires_at < datetime('now', '+7 days')
+ORDER BY c.expires_at ASC;
+```
+
+**Historial de eventos de un usuario:**
+```sql
+SELECT accion, descripcion, timestamp, ip_address
+FROM bitacora
+WHERE username = ?
+ORDER BY timestamp DESC
+LIMIT 50;
+```
+
+**Verificar si usuario está bloqueado:**
+```sql
+SELECT locked_until, intentos
+FROM login_attempts
+WHERE username = ?
+  AND locked_until > datetime('now');
+```
+
+**Contar expedientes por estado:**
+```sql
+SELECT estado, COUNT(*) as cantidad
+FROM expedientes
+GROUP BY estado
+ORDER BY cantidad DESC;
+```
