@@ -3600,3 +3600,309 @@ curl -s -X POST "$BASE_URL/logout" -b /tmp/cookies.txt | jq .
 ```
 
 ---
+
+## Manejo de Errores
+
+### Estrategia de errores
+
+Casa Monarca implementa una **estrategia consistente de manejo de errores** con:
+
+1. **Validación en capas:**
+   - Capa 1: Validación HTTP (parámetros, headers)
+   - Capa 2: Validación de negocio (roles, estados)
+   - Capa 3: Validación de seguridad (certs, firmas)
+
+2. **Respuestas de error normalizadas:**
+```json
+{
+  "status": "error",
+  "message": "Descripción legible para el usuario",
+  "code": "ERROR_CODE",
+  "details": {"field": "error_specific"}
+}
+```
+
+3. **Códigos HTTP apropriados:**
+   - `400` — Parámetro inválido (culpa del cliente)
+   - `401` — No autenticado (sesión expirada)
+   - `403` — Sin permisos (RBAC denied)
+   - `404` — Recurso no existe
+   - `422` — Validación fallida (datos inválidos)
+   - `423` — Recurso bloqueado (usuario locked, expediente en transición)
+   - `500` — Error del servidor (excepción no manejada)
+
+4. **Manejo de excepciones:**
+   - Captura de excepciones en decoradores de rutas
+   - Logging de stack trace en servidor
+   - Respuesta genérica al cliente (nunca exponer detalles internos)
+
+### Mensajes comunes
+
+#### Autenticación
+
+| Error | Código HTTP | Mensaje | Causa |
+|-------|------------|---------|-------|
+| Credenciales inválidas | 401 | `Credenciales inválidas` | Usuario/password incorrecto |
+| Usuario no existe | 401 | `Usuario no encontrado` | username no existe en BD |
+| Usuario bloqueado | 423 | `Usuario bloqueado hasta {timestamp}` | 5 intentos fallidos |
+| Certificado inválido | 401 | `Certificado no válido` | Firma CA falló |
+| Certificado expirado | 401 | `Certificado expirado` | Fecha de expiración pasada |
+| CN mismatch | 401 | `CN del certificado no coincide con usuario` | Cert CN ≠ username |
+| Certificado revocado | 401 | `Certificado ha sido revocado` | Estado = revocado en BD |
+| Firma inválida | 401 | `Firma digital inválida` | Verificación RSA-SHA256 falló |
+| No autenticado | 401 | `No autenticado. Inicia sesión` | Sin sesión activa |
+| Sesión expirada | 401 | `Tu sesión ha expirado` | Cookie > 8 horas |
+
+#### Autorización
+
+| Error | Código HTTP | Mensaje | Causa |
+|-------|------------|---------|-------|
+| Rol insuficiente | 403 | `No tienes permisos. Rol requerido: {role}` | User role < required |
+| Acceso denegado | 403 | `No puedes acceder a este recurso` | RBAC validation failed |
+| Sin firma requerida | 422 | `Firma requerida para esta acción` | Certificado + firma no provided |
+
+#### Validación de datos
+
+| Error | Código HTTP | Mensaje | Detalles |
+|-------|------------|---------|----------|
+| Parámetro faltante | 400 | `Parámetro '{field}' es requerido` | `{"field": "titulo"}` |
+| Formato inválido | 422 | `'{field}' tiene formato inválido` | `{"field": "email", "expected": "email"}` |
+| Longitud mínima | 422 | `'{field}' debe tener ≥ {min} caracteres` | `{"field": "password", "min": 12}` |
+| Contraseña débil | 422 | `Contraseña no cumple requisitos` | `{"requirements": [...]}` |
+| Username duplicado | 422 | `Username ya existe` | `{"field": "username"}` |
+| Expediente no existe | 404 | `Expediente no encontrado` | `{"id": 999}` |
+| Transición inválida | 422 | `No puedes cambiar de {from} a {to}` | `{"from": "borrador", "to": "cerrado"}` |
+
+#### Certificados
+
+| Error | Código HTTP | Mensaje | Causa |
+|-------|------------|---------|-------|
+| CSR inválido | 422 | `CSR tiene formato inválido` | PEM parse error |
+| CN en CSR inválido | 422 | `CN del CSR no coincide con usuario` | CSR CN ≠ username |
+| Clave débil | 422 | `CSR debe usar RSA-2048 o mayor` | Key size < 2048 |
+| Certificado no encontrado | 404 | `Certificado no existe` | cert_id invalid |
+| Ya tiene certificado activo | 422 | `Ya tienes un certificado activo` | User already has active cert |
+
+#### Sistema
+
+| Error | Código HTTP | Mensaje | Causa |
+|-------|------------|---------|-------|
+| Error interno | 500 | `Error interno del servidor` | Excepción no manejada |
+| BD indisponible | 503 | `Base de datos no disponible` | SQLite locked/missing |
+| Backup fallido | 500 | `No se pudo crear backup` | Escritura a disco falló |
+
+### Ejemplos de respuestas de error
+
+**Formato estándar de error:**
+```json
+{
+  "status": "error",
+  "message": "Contraseña incorrecta",
+  "code": "INVALID_CREDENTIALS",
+  "remaining_attempts": 4
+}
+```
+
+**Error de validación (422):**
+```json
+{
+  "status": "error",
+  "message": "Validación fallida",
+  "code": "VALIDATION_ERROR",
+  "details": {
+    "titulo": "Mínimo 5 caracteres",
+    "descripcion": "Campo opcional"
+  }
+}
+```
+
+**Error de permisos (403):**
+```json
+{
+  "status": "error",
+  "message": "No tienes permisos para esta acción",
+  "code": "FORBIDDEN",
+  "details": {
+    "required_role": "admin",
+    "current_role": "usuario"
+  }
+}
+```
+
+**Error de bloqueo (423):**
+```json
+{
+  "status": "locked",
+  "message": "Usuario bloqueado por intentos excesivos",
+  "code": "USER_LOCKED",
+  "locked_until": "2026-05-16T15:15:00Z"
+}
+```
+
+### Registro (logs)
+
+#### Niveles de log
+
+| Nivel | Propósito | Ejemplo |
+|-------|-----------|---------|
+| DEBUG | Desarrollo, variables internas | "Iniciando validación de cert..." |
+| INFO | Eventos normales significativos | "Usuario login_exitoso", "Backup completado" |
+| WARNING | Situaciones anormales | "Usuario bloqueado", "Certificado próximo a expirar" |
+| ERROR | Errores que requieren atención | "Login fallido x5", "Backup fallido" |
+| CRITICAL | Fallos de sistema | "BD indisponible", "Clave CA corrupta" |
+
+#### Ubicación de logs
+
+```
+proyecto/
+├── logs/
+│   ├── app.log              # Logs principales de aplicación
+│   ├── security.log         # Eventos de seguridad
+│   ├── audit.log            # Auditoría (duplica bitácora)
+│   └── error.log            # Solo errores
+├── flask.log                # Log Flask por defecto
+└── database.db              # Bitácora en BD (inmutable)
+```
+
+#### Configuración de logging
+
+```python
+import logging
+import logging.handlers
+
+# Logger principal
+logger = logging.getLogger('casa_monarca')
+logger.setLevel(logging.DEBUG)
+
+# Handler para archivo (rotación)
+fh = logging.handlers.RotatingFileHandler(
+    'logs/app.log',
+    maxBytes=10*1024*1024,  # 10 MB
+    backupCount=5           # Mantener 5 backups
+)
+fh.setLevel(logging.DEBUG)
+
+# Handler para errores solo
+error_handler = logging.handlers.RotatingFileHandler(
+    'logs/error.log',
+    maxBytes=5*1024*1024,
+    backupCount=3
+)
+error_handler.setLevel(logging.ERROR)
+
+# Formato
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+fh.setFormatter(formatter)
+error_handler.setFormatter(formatter)
+
+logger.addHandler(fh)
+logger.addHandler(error_handler)
+```
+
+#### Eventos de seguridad (security.log)
+
+```
+2026-05-16 15:30:00 - INFO - [LOGIN_EXITOSO] usuario_pru (192.168.1.150)
+2026-05-16 15:31:15 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 1/5 (192.168.1.155)
+2026-05-16 15:31:42 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 2/5 (192.168.1.155)
+2026-05-16 15:32:30 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 3/5 (192.168.1.155)
+2026-05-16 15:33:15 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 4/5 (192.168.1.155)
+2026-05-16 15:34:00 - ERROR - [LOGIN_BLOQUEADO] operativo_1 (192.168.1.155) hasta 2026-05-16T15:49:00Z
+2026-05-16 15:40:20 - INFO - [CERTIFICADO_GENERADO] admin_prod (huella: a1b2c3d4...)
+2026-05-16 15:41:10 - WARNING - [CERTIFICADO_PROXIMO_EXPIRAR] coord_admin expira en 7 días
+```
+
+#### Auditoría en código
+
+```python
+def log_event(username, accion, descripcion="", ip_address=""):
+    """Registra evento en BD y log de auditoría."""
+    try:
+        # Registrar en BD (bitácora)
+        evento = Bitacora(
+            username=username,
+            accion=accion,
+            descripcion=descripcion,
+            timestamp=datetime.now(timezone.utc),
+            ip_address=ip_address
+        )
+        db.session.add(evento)
+        db.commit()
+        
+        # Registrar en archivo de auditoría
+        logger.info(f"[{accion}] {username} - {descripcion} ({ip_address})")
+        
+    except Exception as e:
+        logger.error(f"Error logging event: {str(e)}")
+
+# Uso en rutas
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    ip = request.remote_addr
+    
+    user = get_user(username)
+    if not user:
+        log_event(username, "login_fallido", "Usuario no existe", ip)
+        return {"status": "error", "message": "Usuario no encontrado"}, 401
+    
+    if not verify_password(user, password):
+        log_event(username, "login_fallido", "Contraseña incorrecta", ip)
+        return {"status": "error", "message": "Credenciales inválidas"}, 401
+    
+    # Login exitoso
+    session['user_id'] = user.id
+    log_event(username, "login_exitoso", "Autenticación correcta", ip)
+    return {"status": "success", "user": user.to_dict()}, 200
+```
+
+#### Consultar logs
+
+```bash
+# Ver últimos 50 eventos de app.log
+tail -50 logs/app.log
+
+# Monitorear en tiempo real
+tail -f logs/app.log
+
+# Buscar logins fallidos
+grep "login_fallido" logs/security.log
+
+# Contar eventos por tipo
+grep "INFO\|WARNING\|ERROR" logs/app.log | cut -d'-' -f4 | sort | uniq -c
+
+# Ver solo errores de las últimas 24 horas
+find logs/ -name "*.log" -mtime -1 -exec grep -h "ERROR\|CRITICAL" {} \;
+
+# Limpiar logs antiguos (> 30 días)
+find logs/ -name "*.log" -mtime +30 -delete
+```
+
+#### Monitoreo y alertas
+
+**Problemas a monitorear:**
+
+```bash
+# 1. Múltiples intentos fallidos (potencial ataque)
+grep -c "login_fallido" logs/security.log
+# Si > 50 en última hora → ALERTA
+
+# 2. Certificados a punto de expirar
+sqlite3 database.db \
+  "SELECT username FROM certificados 
+   WHERE expires_at < datetime('now', '+7 days') 
+   AND estado='activo';"
+
+# 3. Tamaño de logs
+du -sh logs/
+# Si > 1GB → Considerar rotación manual
+
+# 4. Errores de sistema
+grep "CRITICAL\|500" logs/error.log
+```
+
+---
