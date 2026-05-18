@@ -3398,3 +3398,205 @@ def validar_csr(csr_pem, username):
 ```
 
 ---
+
+## Ejemplos de Uso
+
+### 1. Caso típico: Usuario crea y canaliza expediente
+
+**Escenario:** Usuario operativo crea un expediente, lo revisa y lo canaliza a coordinador.
+
+```bash
+# 1. Login
+curl -X POST http://localhost:5000/login \
+  -d "username=operativo_1&password=Operativo123!" \
+  -c cookies.txt
+
+# 2. Ver dashboard
+curl http://localhost:5000/dashboard -b cookies.txt
+
+# 3. Crear expediente
+curl -X POST http://localhost:5000/expediente/crear \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"titulo":"Caso refugio","descripcion":"Solicitud urgente"}'
+# Response: {"expediente": {"id": 10, ...}}
+
+# 4. Canalizar a coordinador
+curl -X POST http://localhost:5000/expediente/10/canalizar \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"nuevo_estado":"en_revision"}'
+
+# 5. Logout
+curl -X POST http://localhost:5000/logout -b cookies.txt
+```
+
+### 2. Caso típico: Admin crea usuario con certificado
+
+**Escenario:** Admin crea nuevo usuario operativo mediante certificado.
+
+```bash
+# 1. Admin obtiene challenge
+CHALLENGE=$(curl http://localhost:5000/login | jq -r '.challenge')
+
+# 2. Admin construye y firma payload
+PAYLOAD="CasaMonarca|creacion de usuario|admin_prod|$CHALLENGE"
+echo -n "$PAYLOAD" | openssl dgst -sha256 -sign admin_prod.key | base64 > sig.b64
+SIGNATURE=$(cat sig.b64 | tr -d '\n')
+
+# 3. Admin login con certificado
+curl -X POST http://localhost:5000/login \
+  -d "username=admin_prod&password=AdminProdX2026!&challenge=$CHALLENGE&signature_b64=$SIGNATURE&certificate_pem=$(cat admin_prod.pem | base64)" \
+  -c cookies.txt
+
+# 4. Admin crea usuario (requiere firma)
+curl -X POST http://localhost:5000/admin/crear_usuario \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"username":"nuevo_operativo","role":"operativo","challenge":"...","signature_b64":"..."}'
+```
+
+### 3. Integración básica: Cliente Python
+
+**Cliente reutilizable para integración:**
+
+```python
+import requests
+import json
+
+class CasaMonarcaClient:
+    def __init__(self, base_url="http://localhost:5000"):
+        self.base_url = base_url
+        self.session = requests.Session()
+    
+    def login(self, username, password):
+        """Autentica usuario con contraseña."""
+        resp = self.session.post(
+            f"{self.base_url}/login",
+            data={"username": username, "password": password}
+        )
+        return resp.json()
+    
+    def crear_expediente(self, titulo, descripcion=""):
+        """Crea nuevo expediente."""
+        return self.session.post(
+            f"{self.base_url}/expediente/crear",
+            json={"titulo": titulo, "descripcion": descripcion}
+        ).json()
+    
+    def canalizar_expediente(self, exp_id, nuevo_estado):
+        """Canaliza expediente a nuevo estado."""
+        return self.session.post(
+            f"{self.base_url}/expediente/{exp_id}/canalizar",
+            json={"nuevo_estado": nuevo_estado}
+        ).json()
+    
+    def obtener_bitacora(self, limit=20):
+        """Obtiene últimos eventos auditados."""
+        return self.session.get(
+            f"{self.base_url}/bitacora",
+            params={"limit": limit}
+        ).json()
+    
+    def logout(self):
+        """Cierra sesión."""
+        return self.session.post(f"{self.base_url}/logout").json()
+
+# Uso
+client = CasaMonarcaClient()
+client.login("usuario_pru", "UserDemo123!")
+exp = client.crear_expediente("Mi caso", "Descripción")
+print(f"Expediente creado: {exp['expediente']['id']}")
+client.canalizar_expediente(exp['expediente']['id'], "en_revision")
+client.logout()
+```
+
+### 4. Ejecución de funciones clave desde Python
+
+**Operaciones comunes directas:**
+
+```python
+# Login básico
+import requests
+session = requests.Session()
+r = session.post("http://localhost:5000/login",
+                 data={"username": "usuario_pru", "password": "UserDemo123!"})
+print(r.json())
+
+# Crear expediente
+r = session.post("http://localhost:5000/expediente/crear",
+                 json={"titulo": "Nuevo caso", "descripcion": "Detalles"})
+expediente_id = r.json()["expediente"]["id"]
+
+# Obtener dashboard
+r = session.get("http://localhost:5000/dashboard")
+print(f"Expedientes: {len(r.json()['expedientes'])}")
+
+# Canalizar
+r = session.post(f"http://localhost:5000/expediente/{expediente_id}/canalizar",
+                 json={"nuevo_estado": "en_revision"})
+print(r.json()["message"])
+
+# Ver bitácora
+r = session.get("http://localhost:5000/bitacora?limit=5")
+for evt in r.json()["eventos"]:
+    print(f"{evt['timestamp']}: {evt['accion']}")
+
+# Logout
+session.post("http://localhost:5000/logout")
+```
+
+### 5. Script de administración (backup y restore)
+
+```bash
+# Hacer backup cifrado
+python tools/backup_db.py
+# Salida: Backup guardado en backups/db_backup_20260516T153000Z.enc
+
+# Restaurar desde backup
+python tools/restore_db.py backups/db_backup_20260516T153000Z.enc
+# Salida: Base de datos restaurada exitosamente
+
+# Ver usuarios en BD
+sqlite3 database.db "SELECT id, username, role FROM usuarios;"
+
+# Crear usuario vía CLI
+python -c "
+import sqlite3
+from werkzeug.security import generate_password_hash
+conn = sqlite3.connect('database.db')
+c = conn.cursor()
+c.execute('INSERT INTO usuarios (username, password_hash, role) VALUES (?, ?, ?)',
+          ('nuevo_user', generate_password_hash('Pass123!'), 'usuario'))
+conn.commit()
+"
+```
+
+### 6. Testing rápido de endpoints
+
+```bash
+# Setup: guardar BASE_URL
+BASE_URL="http://localhost:5000"
+
+# 1. Login
+curl -s -X POST "$BASE_URL/login" \
+  -d "username=usuario_pru&password=UserDemo123!" \
+  -c /tmp/cookies.txt | jq .
+
+# 2. Dashboard
+curl -s "$BASE_URL/dashboard" -b /tmp/cookies.txt | jq '.expedientes | length'
+
+# 3. Crear expediente
+curl -s -X POST "$BASE_URL/expediente/crear" \
+  -H "Content-Type: application/json" \
+  -b /tmp/cookies.txt \
+  -d '{"titulo":"Test","descripcion":"Quick test"}' | jq '.expediente.id'
+
+# 4. Bitácora
+curl -s "$BASE_URL/bitacora?limit=3" -b /tmp/cookies.txt | jq '.eventos[-1]'
+
+# 5. Logout
+curl -s -X POST "$BASE_URL/logout" -b /tmp/cookies.txt | jq .
+```
+
+---
