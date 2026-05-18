@@ -2796,3 +2796,605 @@ Nuevo estado: en_revision
 === 7. Logout ===
 Sesión cerrada
 ```
+
+---
+
+## Flujos y Lógica de Negocio
+
+### Procesos clave del sistema
+
+#### 1. Autenticación y Control de Acceso
+
+**Flujo de autenticación básica (usuario):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   AUTENTICACIÓN BÁSICA                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  1. USUARIO ACCEDE A /login                                     │
+│     └─→ Servidor genera UUID challenge                         │
+│     └─→ Retorna formulario HTML                                │
+│                                                                   │
+│  2. USUARIO INGRESA CREDENCIALES                               │
+│     ├─ username                                                 │
+│     └─ password                                                 │
+│                                                                   │
+│  3. CLIENTE ENVÍA POST /login                                  │
+│                                                                   │
+│  4. SERVIDOR VALIDA                                            │
+│     ├─ ¿Usuario existe?                                        │
+│     │  └─→ NO: Retorna 401 "Usuario no existe"               │
+│     ├─ ¿Está bloqueado por intentos?                          │
+│     │  └─→ SÍ: Retorna 423 "Usuario bloqueado"               │
+│     ├─ ¿Contraseña es correcta?                               │
+│     │  ├─→ NO: login_attempts++                               │
+│     │  │   └─ Si intentos >= 5:                              │
+│     │  │      └─ locked_until = NOW + 900 seg                │
+│     │  │   └─→ Retorna 401 "Contraseña incorrecta"           │
+│     │  └─→ SÍ: Continuar                                      │
+│     └─ Resetear login_attempts a 0                            │
+│                                                                   │
+│  5. CREAR SESIÓN                                               │
+│     ├─ Generar session_id                                      │
+│     ├─ Almacenar en Flask session                              │
+│     ├─ Configurar cookie HttpOnly + SameSite                   │
+│     └─ Registrar evento "login_exitoso" en bitácora            │
+│                                                                   │
+│  6. RETORNAR RESPUESTA 200                                     │
+│     └─ {"status": "success", "user": {...}}                   │
+│                                                                   │
+│  7. CLIENTE RECIBE COOKIE DE SESIÓN                            │
+│     └─ Se almacena en cliente de forma segura                  │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Flujo de autenticación reforzada (admin/coordinador con certificado):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│            AUTENTICACIÓN CON CERTIFICADO + FIRMA                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  1. USUARIO ACCEDE A /login                                     │
+│     └─→ Servidor genera UUID challenge                         │
+│                                                                   │
+│  2. USUARIO CONSTRUYE PAYLOAD PARA FIRMAR                       │
+│     Formato: CasaMonarca|<proposito>|<username>|<challenge>    │
+│     Ejemplo: CasaMonarca|login|admin_prod|a1b2c3d4-...        │
+│                                                                   │
+│  3. USUARIO FIRMA CON CLAVE PRIVADA                            │
+│     Command: openssl dgst -sha256 -sign private.key             │
+│     Resultado: signature_b64 (Base64)                           │
+│                                                                   │
+│  4. USUARIO ENVÍA POST /login                                  │
+│     ├─ username                                                 │
+│     ├─ password                                                 │
+│     ├─ challenge                                                │
+│     ├─ signature_b64                                            │
+│     └─ certificate_pem                                          │
+│                                                                   │
+│  5. SERVIDOR VALIDA CONTRASEÑA (igual que arriba)              │
+│                                                                   │
+│  6. SERVIDOR VALIDA CERTIFICADO                                │
+│     ├─ ¿Certificado tiene firma válida de CA?                 │
+│     │  └─→ NO: Retorna 401 "Certificado inválido"             │
+│     ├─ ¿Certificado está expirado?                            │
+│     │  └─→ SÍ: Retorna 401 "Certificado expirado"             │
+│     ├─ ¿CN del certificado == username?                       │
+│     │  └─→ NO: Retorna 401 "CN no coincide"                   │
+│     ├─ ¿Certificado está revocado?                            │
+│     │  └─→ SÍ: Retorna 401 "Certificado revocado"             │
+│     └─→ VÁLIDO: Continuar                                      │
+│                                                                   │
+│  7. SERVIDOR VALIDA FIRMA                                      │
+│     ├─ Extraer clave pública del certificado                   │
+│     ├─ Verificar: signature_b64 = RSA-SHA256(payload)          │
+│     │  └─→ NO: Retorna 401 "Firma inválida"                   │
+│     └─→ VÁLIDA: Continuar                                      │
+│                                                                   │
+│  8. CREAR SESIÓN (igual que autenticación básica)              │
+│     └─ Sesión ahora tiene "certificado_validado: true"        │
+│                                                                   │
+│  9. REGISTRAR EN BITÁCORA                                      │
+│     └─ "login_exitoso" + "Con certificado + firma"            │
+│                                                                   │
+│  10. RETORNAR RESPUESTA 200                                    │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 2. Ciclo de vida de expedientes
+
+**Estados y transiciones:**
+
+```
+                ┌──────────────┐
+                │   BORRADOR   │ ◄──────┐ Usuario crea
+                └──────┬───────┘        │ expediente
+                       │
+                       │ canalizar (usuario)
+                       ▼
+                ┌──────────────┐
+                │ EN_REVISIÓN  │
+                └──────┬───────┘
+                       │
+                       │ canalizar (operativo)
+                       ▼
+                ┌──────────────┐
+                │  VALIDADO    │
+                └──────┬───────┘
+                       │
+                       │ canalizar (coordinador + firma)
+                       ▼
+                ┌──────────────┐
+                │   CERRADO    │
+                └──────────────┘
+                       ▲
+                       │
+                       └─ Cualquier estado → borrador (admin, para revisar)
+```
+
+**Reglas de transición:**
+
+| De → A | Rol requerido | Autenticación | Condiciones adicionales |
+|--------|---------------|--------------|----------------------|
+| BORRADOR → EN_REVISIÓN | usuario | Contraseña | Solo propietario |
+| EN_REVISIÓN → VALIDADO | operativo | Contraseña | Solo asignado |
+| VALIDADO → CERRADO | coordinador | Cert + Firma | Debe registrarse en bitácora |
+| * → BORRADOR | admin | Cert + Firma | Para revisar/editar |
+| * → CERRADO | admin | Cert + Firma | Cierre de emergencia |
+
+**Permisos por rol en cada estado:**
+
+| Estado | Usuario | Operativo | Coordinador | Admin |
+|--------|---------|-----------|-------------|-------|
+| BORRADOR | Ver, Canalizar | - | - | Ver, Canalizar, Editar |
+| EN_REVISIÓN | Ver (propio) | Ver, Canalizar | Ver | Ver, Canalizar |
+| VALIDADO | Ver (propio) | Ver | Ver, Canalizar | Ver, Canalizar |
+| CERRADO | Ver (propio) | Ver | Ver | Ver, Reabrir |
+
+#### 3. Gestión de certificados
+
+**Ciclo de vida de certificados:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  CICLO DE VIDA DE CERTIFICADOS                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  USUARIO SOLICITA CERTIFICADO EN /certificado/setup             │
+│  ├─ Opción A: Generar localmente (sin CSR)                     │
+│  │  └─ CA genera clave privada + CSR + certificado             │
+│  │  └─ Usuario descarga (.pem)                                 │
+│  └─ Opción B: Cargar CSR existente                             │
+│     └─ Usuario previamente generó CSR con clave privada        │
+│     └─ CA firma el CSR                                         │
+│     └─ Usuario descarga certificado firmado                    │
+│                                                                   │
+│  CERTIFICADO EMITIDO (estado: ACTIVO)                           │
+│  ├─ Stored en BD (huella SHA-256, PEM)                         │
+│  ├─ Válido por 30 días (720 horas)                             │
+│  └─ Puede usar para:                                           │
+│     ├─ Autenticación reforzada (login)                         │
+│     └─ Firmar acciones críticas                                │
+│                                                                   │
+│  ANTES DE EXPIRACIÓN                                            │
+│  └─ Usuario recibe notificación (7 días antes)                 │
+│     └─ Puede renovar en /certificado/setup                     │
+│                                                                   │
+│  USUARIO REVOCA (acción crítica)                               │
+│  ├─ POST /certificado/<id>/revocar con motivo                  │
+│  ├─ Motivo obligatorio: "Compromiso", "Pérdida", "Rotación"    │
+│  ├─ Certificado marcado como REVOCADO                          │
+│  ├─ Evento registrado en bitácora                              │
+│  └─ No puede volver a usar (incluso si había tiempo)           │
+│                                                                   │
+│  CERTIFICADO EXPIRA                                            │
+│  └─ Después de 30 días                                         │
+│  └─ Estado automático: EXPIRADO                                │
+│  └─ No puede usar para autenticación                           │
+│  └─ Debe generar nuevo                                         │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Validaciones de certificado en login:**
+
+```python
+def validate_certificate_for_login(cert_pem, username):
+    # 1. Parsear certificado
+    cert = load_pem_x509_certificate(cert_pem)
+    
+    # 2. Validar firma de CA
+    if not verify_ca_signature(cert):
+        raise InvalidCertificate("CA signature invalid")
+    
+    # 3. Validar CN
+    cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    if cn != username:
+        raise InvalidCertificate("CN mismatch")
+    
+    # 4. Validar vigencia
+    if cert.not_valid_after < datetime.now():
+        raise CertificateExpired()
+    
+    # 5. Consultar BD
+    db_cert = get_certificate_by_fingerprint(certificate_fingerprint(cert))
+    
+    # 6. Validar estado en BD
+    if db_cert.estado != 'activo':
+        raise CertificateRevoked()
+    
+    return True
+```
+
+#### 4. Rate-limiting y protección
+
+**Lógica de bloqueo por intentos fallidos:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   RATE-LIMITING DE LOGIN                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  Configuración:                                                 │
+│  ├─ MAX_ATTEMPTS = 5 intentos                                   │
+│  ├─ WINDOW = 300 segundos (5 minutos)                           │
+│  └─ LOCKOUT = 900 segundos (15 minutos)                         │
+│                                                                   │
+│  USUARIO INTENTA LOGIN                                          │
+│  ├─ ¿Existe registro en login_attempts?                         │
+│  │  └─ NO: Crear registro nuevo (intentos=0)                   │
+│  │  └─ SÍ: Continuar                                           │
+│  │                                                               │
+│  ├─ ¿locked_until > NOW?                                       │
+│  │  └─ SÍ: RECHAZAR "Usuario bloqueado hasta ..."             │
+│  │  └─ NO: Continuar                                           │
+│  │                                                               │
+│  ├─ ¿ ventana_inicio + 300 < NOW?                             │
+│  │  └─ SÍ: RESETEAR (intentos=0, ventana_inicio=NOW)          │
+│  │  └─ NO: Continuar con ventana actual                        │
+│  │                                                               │
+│  ├─ VALIDAR CREDENCIALES                                       │
+│  │  └─ ¿Correctas?                                             │
+│  │     ├─ SÍ: intentos=0, locked_until=NULL → LOGIN OK       │
+│  │     └─ NO: intentos++ → Continuar                           │
+│  │                                                               │
+│  ├─ ¿intentos >= MAX_ATTEMPTS (5)?                            │
+│  │  └─ SÍ:                                                      │
+│  │     ├─ locked_until = NOW + 900 seg                         │
+│  │     ├─ Registrar "login_bloqueado" en bitácora              │
+│  │     └─ RECHAZAR "Usuario bloqueado 15 minutos"             │
+│  │  └─ NO:                                                      │
+│  │     ├─ remaining = 5 - intentos                             │
+│  │     └─ RECHAZAR "Contraseña incorrecta. Intenta: X/5"      │
+│  │                                                               │
+│  ├─ DESPUÉS DE 15 MINUTOS                                      │
+│  │  └─ locked_until < NOW                                      │
+│  │  └─ Siguiente intento: resetea automáticamente              │
+│  │  └─ Vuelve a contar desde 0                                 │
+│  │                                                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Reglas importantes
+
+#### 1. Reglas de seguridad
+
+**Contraseña:**
+- Mínimo 12 caracteres
+- Debe contener: mayúscula, minúscula, número, símbolo especial
+- No puede ser contraseña débil común (lista negra)
+- Hashing: Argon2id con:
+  - `memory_cost` = 65536 KB (64 MB)
+  - `time_cost` = 3 iteraciones
+  - `parallelism` = 2
+  - `hash_len` = 32 bytes
+
+**Certificados X.509:**
+- Generados por CA local
+- Válidos por 30 días (720 horas)
+- Utilizan RSA-2048 para claves
+- SHA-256 para firma
+- CN debe coincidir con username
+
+**Sesiones:**
+- Cookie HttpOnly: No accesible por JavaScript
+- Cookie SameSite: Strict (producción) / Lax (desarrollo)
+- Cookie Secure: Requiere HTTPS en producción
+- Tiempo de vida: 8 horas (configurable)
+
+#### 2. Reglas de integridad de datos
+
+**Expedientes:**
+- Solo el propietario puede editar en estado "BORRADOR"
+- Una vez canalizados, no pueden volver a "BORRADOR" excepto admin
+- Cambios de estado se registran en bitácora con timestamp
+- Auditoría completa: quién, cuándo, qué acción
+
+**Certificados:**
+- Una vez revocado, no se puede reactivar (debe generar nuevo)
+- Huella SHA-256 es única (no puede haber dos certificados con misma huella)
+- Expiración es automática en BD (chequeo al login)
+
+**Usuarios:**
+- username es único (constraint UNIQUE)
+- No se puede cambiar username después de creación
+- Eliminar usuario es operación crítica (cascada a expedientes)
+
+#### 3. Reglas de auditoría
+
+**Eventos auditados (14 tipos):**
+1. `login_exitoso` — Login correcto
+2. `login_fallido` — Credenciales incorrectas
+3. `login_bloqueado` — Usuario bloqueado por intentos
+4. `logout` — Cierre de sesión
+5. `cambiar_contrasena` — Cambio de contraseña
+6. `crear_expediente` — Nuevo expediente
+7. `cambiar_estado_expediente` — Canalización
+8. `crear_usuario` — Creación por admin (requiere firma)
+9. `eliminar_usuario` — Eliminación por admin
+10. `cambiar_rol_usuario` — Cambio de rol por admin
+11. `generar_certificado` — Emisión de certificado
+12. `revocar_certificado` — Revocación de certificado
+13. `backup_realizado` — Backup cifrado
+14. `backup_restaurado` — Restauración de backup
+
+**Registro obligatorio:**
+- username: usuario que realizó la acción
+- accion: tipo de evento
+- descripcion: detalles (ej: "User: operativo_1, Estado: borrador → en_revision")
+- timestamp: fecha/hora exacta (UTC)
+- ip_address: IP del cliente (para auditoría de seguridad)
+
+#### 4. Reglas de acceso RBAC
+
+**Roles y permisos:**
+
+| Rol | Crear Expediente | Canalizar | Ver Bitácora | Crear Usuario | Revocar Cert |
+|-----|-----------------|-----------|--------------|---------------|-------------|
+| usuario | ✓ (propio) | ✓ | - | - | ✓ (propio) |
+| operativo | - | ✓ | - | - | ✓ (propio) |
+| coordinador | - | ✓ (con firma) | ✓ (todo) | - | ✓ (todo) |
+| admin | ✓ | ✓ | ✓ (todo) | ✓ (con firma) | ✓ (todo) |
+
+**Validación en cada request:**
+```python
+@require_login
+@require_role("admin")  # Solo admin
+def admin_crear_usuario():
+    # Si no es admin → 403 Forbidden
+    # Si no está autenticado → 401 Unauthorized
+    pass
+```
+
+### Casos críticos
+
+#### 1. Usuario bloqueado por intentos
+
+**Escenario:** Usuario ingresa contraseña incorrecta 5 veces en 5 minutos.
+
+**Lógica:**
+1. Intento 1-4: Rechaza con "Credenciales incorrectas. Intentos restantes: X"
+2. Intento 5: locked_until = NOW + 900 segundos (15 minutos)
+3. Login rechazado: "Usuario bloqueado hasta 2026-05-16T15:15:00Z"
+4. Evento registrado: `login_bloqueado`
+5. Después de 15 min: Usuario puede intentar de nuevo (contador resetea)
+
+**Código:**
+```python
+def check_login_attempts(username):
+    record = db.query(LoginAttempts).filter_by(username=username).first()
+    
+    # Si no existe, crear
+    if not record:
+        record = LoginAttempts(username=username, intentos=0)
+        db.add(record)
+        db.commit()
+        return True
+    
+    # Si está bloqueado y aún vigente
+    if record.locked_until and record.locked_until > datetime.now():
+        log_event(username, "login_bloqueado", f"Bloqueado hasta {record.locked_until}")
+        return False
+    
+    # Si pasó la ventana de bloqueo, resetear
+    if record.ventana_inicio and (datetime.now() - record.ventana_inicio).total_seconds() > 300:
+        record.intentos = 0
+        record.ventana_inicio = datetime.now()
+        db.commit()
+    
+    return True
+
+def handle_failed_login(username):
+    record = db.query(LoginAttempts).filter_by(username=username).first()
+    record.intentos += 1
+    
+    if record.intentos >= 5:
+        record.locked_until = datetime.now() + timedelta(seconds=900)
+        log_event(username, "login_bloqueado", "Por intentos excesivos")
+    else:
+        log_event(username, "login_fallido", f"Intento {record.intentos}/5")
+    
+    db.commit()
+```
+
+#### 2. Certificado próximo a expirar
+
+**Escenario:** Certificado expira en 7 días.
+
+**Lógica:**
+1. Sistema detecta: expires_at < NOW + 7 días
+2. En siguiente login: Mostrar banner amarillo "Tu certificado expira el X"
+3. Usuario navega a /certificado/setup
+4. Si intenta usar certificado expirado:
+   - Rechaza login con "Certificado expirado"
+   - Debe generar nuevo certificado
+
+**Consulta de detección:**
+```sql
+SELECT * FROM certificados
+WHERE user_id = ? 
+  AND estado = 'activo'
+  AND expires_at < datetime('now', '+7 days')
+ORDER BY expires_at ASC;
+```
+
+#### 3. Expediente en transición de estado bloqueado
+
+**Escenario:** Coordinador intenta canalizar expediente que está en revisión pero sin firma.
+
+**Lógica:**
+1. POST /expediente/<id>/canalizar
+2. Servidor valida:
+   - ¿Usuario es coordinador? ✓
+   - ¿Expediente está en VALIDADO? ✓
+   - ¿Tiene firma? ✗ (signature_b64 vacío)
+3. Rechaza: "Firma requerida para canalizar"
+4. Usuario debe firmar con certificado privado
+
+**Validación:**
+```python
+def canalizar_expediente(exp_id, nuevo_estado, signature_b64=None):
+    exp = get_expediente(exp_id)
+    user = get_current_user()
+    
+    # Validar transición
+    if not es_transicion_valida(exp.estado, nuevo_estado, user.role):
+        raise PermissionError(f"Transición no permitida para {user.role}")
+    
+    # Si es coordinador/admin, requiere firma
+    if user.role in ["coordinador", "admin"]:
+        if not signature_b64:
+            raise ValueError("Firma requerida")
+        
+        if not verify_signature(signature_b64, user.certificate_pem):
+            raise ValueError("Firma inválida")
+    
+    # Actualizar y auditar
+    exp.estado = nuevo_estado
+    exp.updated_at = datetime.now()
+    db.commit()
+    
+    log_event(user.username, "cambiar_estado_expediente",
+              f"ID: {exp_id}, {exp.estado} → {nuevo_estado}")
+```
+
+#### 4. Admin resetea contraseña de usuario bloqueado
+
+**Escenario:** User "operativo_1" está bloqueado por intentos. Admin lo resetea.
+
+**Lógica:**
+1. Admin accede (autenticado)
+2. Admin navega a /admin/usuarios
+3. Localiza "operativo_1"
+4. Opción: "Resetear contraseña"
+5. Sistema:
+   - Genera nueva contraseña temporal
+   - Establece `must_change_password = 1`
+   - Resetea `login_attempts.locked_until = NULL`
+   - Resetea `login_attempts.intentos = 0`
+   - Registra evento: "cambiar_contrasena_forzado"
+6. Admin comparte password temporal con usuario
+7. Usuario en siguiente login debe cambiar contraseña
+
+#### 5. Backup fallido durante operación crítica
+
+**Escenario:** Proceso de backup interrumpido mientras se escribía archivo .enc
+
+**Lógica:**
+1. `tools/backup_db.py` inicia
+2. Genera IV aleatorio
+3. Cifra database.db con AES-256
+4. Escribe backup a `backups/db_backup_YYYYMMDDTHHMMSSZ.enc`
+5. Si falla a mitad:
+   - Archivo .enc queda incompleto/corrupto
+   - Siguiente intento crea nuevo archivo
+   - No intenta completar anterior
+
+**Protección:**
+```python
+def backup_database():
+    try:
+        # Leer BD
+        with open("database.db", "rb") as f:
+            db_data = f.read()
+        
+        # Generar IV aleatorio
+        iv = os.urandom(16)
+        
+        # Cifrar
+        cipher = Cipher(
+            algorithms.AES(key),
+            modes.CBC(iv),
+            backend=default_backend()
+        )
+        encryptor = cipher.encryptor()
+        encrypted = encryptor.update(db_data) + encryptor.finalize()
+        
+        # Escribir a archivo temporal primero
+        timestamp = datetime.now().isoformat().replace(":", "").replace(".", "")
+        temp_path = f"backups/db_backup_{timestamp}.tmp"
+        final_path = f"backups/db_backup_{timestamp}.enc"
+        
+        with open(temp_path, "wb") as f:
+            f.write(iv + encrypted)
+        
+        # Renombrar solo si todo fue bien
+        os.rename(temp_path, final_path)
+        
+        log_event("system", "backup_realizado", f"File: {final_path}")
+        
+    except Exception as e:
+        log_event("system", "backup_fallido", f"Error: {str(e)}")
+        raise
+```
+
+#### 6. Validación de CSR cargado por usuario
+
+**Escenario:** Usuario carga CSR generado con su clave privada en /certificado/setup
+
+**Lógica:**
+1. Usuario navega a /certificado/setup
+2. Selecciona "Usar CSR existente"
+3. Carga archivo: `usuario.csr.pem`
+4. Servidor valida:
+   - ¿Es formato PEM válido?
+   - ¿CSR está bien formado?
+   - ¿CN en CSR == username del usuario?
+   - ¿Clave pública en CSR es válida?
+5. Si todo OK:
+   - CA firma el CSR
+   - Emite certificado X.509
+   - Almacena en BD
+6. Si error: Rechaza con mensaje claro
+
+**Validación:**
+```python
+def validar_csr(csr_pem, username):
+    try:
+        # Parsear CSR
+        csr = load_pem_x509_csr(csr_pem.encode())
+        
+        # Validar CN
+        cn = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        if cn != username:
+            raise ValueError(f"CSR CN ({cn}) no coincide con usuario ({username})")
+        
+        # Validar clave pública
+        public_key = csr.public_key()
+        if not isinstance(public_key, RSAPublicKey):
+            raise ValueError("CSR debe usar RSA")
+        
+        if public_key.key_size < 2048:
+            raise ValueError("CSR debe usar RSA-2048 o mayor")
+        
+        return True
+        
+    except Exception as e:
+        raise ValueError(f"CSR inválido: {str(e)}")
+```
+
+---
