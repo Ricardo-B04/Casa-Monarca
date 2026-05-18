@@ -6111,3 +6111,239 @@ git push origin feature/change-password
 - ✅ Rama actualizada con main: `git pull origin main`
 
 ---
+
+## Problemas Conocidos
+
+### Bugs actuales
+❌ N/A — Primera versión (1.0.0), sin bugs reportados en testing.
+
+### Limitaciones
+
+#### 1. Base de datos SQLite (HostGator)
+- ❌ Single-writer: máx 1 transacción simultánea
+- ❌ No soporta >100-1000 conexiones concurrentes
+- ❌ No escalable horizontalmente
+- ✅ Solución Etapa 2: Migrar a PostgreSQL
+
+#### 2. Almacenamiento en HostGator
+- ❌ Límite de espacio en disco (revisar plan)
+- ❌ Backups manuales en carpeta (backups/)
+- ✅ Solución: Implementar backup automático a S3 (Etapa 2)
+
+#### 3. Certificados auto-firmados
+- ❌ Navegadores muestran advertencia de seguridad
+- ❌ No válidos para producción real
+- ✅ Solución: Usar Let's Encrypt o CA institucional en Etapa 2
+
+#### 4. Sin caché distribuida
+- ❌ Cada servidor tiene caché local
+- ❌ No hay sesiones compartidas en multi-servidor
+- ✅ Solución: Implementar Redis (Etapa 2)
+
+#### 5. Sin autoscaling
+- ❌ HostGator no permite load balancing automático
+- ❌ Escalabilidad manual (cambiar plan)
+- ✅ Solución: Considerar migración a cloud (Etapa 2)
+
+#### 6. Logs locales
+- ❌ Logs solo en servidor (sin centralización)
+- ❌ Difícil monitoreo multi-servidor
+- ✅ Solución: ELK Stack o Datadog (Etapa 2)
+
+#### 7. Sin 2FA (aún)
+- ❌ Autenticación solo básica + certificados
+- ✅ Solución: Agregar TOTP (Etapa 2)
+
+---
+
+## FAQ Técnica
+
+### Q1: ¿Cómo levantar el proyecto en local?
+
+**A:** 
+```bash
+# 1. Clonar
+git clone <repo>
+cd Intentoa2
+
+# 2. Crear venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Instalar dependencias
+pip install -r requirements.txt
+
+# 4. Generar claves
+python generate_key.py
+
+# 5. Crear BD
+python -c "from database import create_tables; create_tables()"
+
+# 6. Crear usuario admin
+python -c "from database import add_user; add_user('admin', 'AdminDev123!', 'admin')"
+
+# 7. Ejecutar
+python app.py
+```
+
+### Q2: Error "ModuleNotFoundError: No module named 'database'"
+
+**A:** Falta PYTHONPATH
+```bash
+# Antes de ejecutar tests:
+export PYTHONPATH=.
+pytest tests/ -v
+
+# O en un comando:
+PYTHONPATH=. python app.py
+```
+
+### Q3: Error "database.db no existe"
+
+**A:** Crear tablas
+```bash
+python -c "from database import create_tables; create_tables()"
+```
+
+### Q4: Error en certificados "ca.key o ca.crt no encontrados"
+
+**A:** Generar certificados
+```bash
+python scripts/generate_certs.py --env dev
+```
+
+### Q5: ¿Cómo resetear la contraseña de un usuario?
+
+**A:** 
+```python
+# En terminal Python
+from database import update_user_password
+update_user_password(user_id=1, new_password='NewPass123!')
+```
+
+### Q6: Tests fallan con "sqlite3.OperationalError: database is locked"
+
+**A:** Cerrar todas las instancias de app
+```bash
+# Matar procesos Python
+pkill -f "python app.py"
+pkill -f "pytest"
+
+# Luego ejecutar tests
+PYTHONPATH=. pytest -v
+```
+
+### Q7: ¿Cómo ver logs en tiempo real?
+
+**A:**
+```bash
+# Error logs
+tail -f logs/error.log
+
+# Info logs
+tail -f logs/app.log | grep INFO
+
+# Ver últimas 50 líneas
+tail -50 logs/error.log
+
+# Buscar errores específicos
+grep "ERROR\|CRITICAL" logs/error.log
+```
+
+### Q8: Error "key.key not found" en backups
+
+**A:** Generar clave AES
+```bash
+python generate_key.py
+```
+
+### Q9: ¿Cómo ejecutar un test específico?
+
+**A:**
+```bash
+# Test específico
+PYTHONPATH=. pytest tests/test_password_security.py::test_weak_password_rejected -v
+
+# Tests que coincidan con patrón
+PYTHONPATH=. pytest -k "login" -v
+
+# Tests lentos (si tienen marker @pytest.mark.slow)
+PYTHONPATH=. pytest -m "slow" -v
+```
+
+### Q10: ¿Cómo cambiar puerto (no es 5000)?
+
+**A:** En `app.py`, última línea:
+```python
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080, debug=True)
+```
+
+O en terminal:
+```bash
+python -c "import app; app.app.run(port=8080)"
+```
+
+### Q11: Error "Address already in use" en puerto 5000
+
+**A:** Encontrar y matar proceso
+```bash
+# Encontrar PID usando puerto 5000
+lsof -i :5000
+
+# Matar proceso
+kill -9 <PID>
+
+# O usar otro puerto
+python app.py --port 8080
+```
+
+### Q12: ¿Cómo cambiar la BD a otro nombre?
+
+**A:** En `app.py` o `.env`:
+```python
+DATABASE_URL = 'sqlite:///mi_base_datos.db'
+
+# Luego crear tablas
+python -c "from database import create_tables; create_tables()"
+```
+
+### Q13: Error "certificate verify failed" en HTTPS local
+
+**A:** Certificado auto-firmado en desarrollo, es normal. Para ignorar:
+```bash
+# Python requests
+import requests
+from urllib3.exceptions import InsecureRequestWarning
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+response = requests.get('https://localhost:5000', verify=False)
+
+# curl
+curl -k https://localhost:5000/health
+```
+
+### Q14: ¿Cómo hacer backup de la BD?
+
+**A:**
+```bash
+# Backup encriptado
+python tools/backup_db.py
+
+# Ver backups creados
+ls -lh backups/
+
+# Restaurar desde backup
+python tools/restore_db.py backups/db_backup_20260517T143022Z.enc
+```
+
+### Q15: Tests de cobertura muy bajos
+
+**A:** Generar reporte HTML
+```bash
+PYTHONPATH=. pytest --cov=. --cov-report=html
+
+# Abrir reporte
+open htmlcov/index.html
+```
+
+---
