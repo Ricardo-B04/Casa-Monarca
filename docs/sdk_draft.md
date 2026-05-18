@@ -5785,3 +5785,329 @@ def test_signature_tampered_rejected():
 ```
 
 ---
+
+## Guía de Contribución
+
+### Convenciones de código
+
+**Python (PEP 8)**
+```python
+# ✅ Nombres descriptivos
+def verify_certificate_signature(cert_pem, signature):
+    """Verificar que firma de certificado es válida."""
+    pass
+
+# ✅ Máximo 79 caracteres por línea
+long_variable_name = some_function(
+    parameter1, parameter2, parameter3
+)
+
+# ✅ Docstrings en todas las funciones
+def add_user(username, password, role):
+    """
+    Crear nuevo usuario en la BD.
+    
+    Args:
+        username: Nombre único de usuario (3-20 caracteres)
+        password: Contraseña sin hashear (mínimo 8 caracteres)
+        role: usuario, operativo, coordinador, admin
+    
+    Returns:
+        dict: {'id': int, 'username': str, 'created_at': str}
+    
+    Raises:
+        ValueError: Si usuario ya existe o parámetros inválidos
+        DatabaseError: Si falla inserción en BD
+    """
+    pass
+
+# ✅ Type hints (Python 3.10+)
+def get_user(user_id: int) -> dict | None:
+    """Obtener usuario por ID"""
+    pass
+
+# ❌ Evitar
+x = some_func(a, b)  # Nombres no descriptivos
+def f():  # Sin docstring
+    return 1
+```
+
+**JavaScript/HTML**
+```html
+<!-- ✅ IDs descriptivos, clases en snake_case -->
+<input id="login_username" class="form_field" type="text">
+
+<!-- ✅ Comentarios en secciones importantes -->
+<!-- Formulario de autenticación reforzada -->
+<form id="login_cert_form">
+    <input type="text" name="username">
+</form>
+```
+
+**SQL**
+```sql
+-- ✅ Keywords en MAYÚSCULA, tablas/columnas en snake_case
+SELECT id, username, created_at 
+FROM usuarios 
+WHERE role = 'admin' AND is_active = true
+ORDER BY created_at DESC;
+
+-- ❌ Evitar
+select * from usuarios where username='test'
+```
+
+### Flujo de trabajo (Git)
+
+**1. Crear rama para feature**
+```bash
+git checkout -b feature/agregar-2fa
+# O bugfix
+git checkout -b bugfix/corregir-rate-limiting
+```
+
+**2. Hacer cambios y commits atómicos**
+```bash
+# Cambio 1: agregar función de verificación
+git add app.py
+git commit -m "feat: add 2fa verification function"
+
+# Cambio 2: agregar tests
+git add tests/
+git commit -m "test: add tests for 2fa verification"
+
+# Formato de commit: type(scope): short description
+# Types: feat, fix, test, docs, refactor, security
+# Scope: app, database, auth, api, etc.
+```
+
+**3. Push y crear Pull Request**
+```bash
+git push origin feature/agregar-2fa
+
+# En GitHub: crear PR con descripción:
+# - Qué se agregó
+# - Por qué
+# - Testing realizado
+```
+
+**4. Code Review y merge**
+```bash
+# Después de aprobación:
+git checkout main
+git pull origin main
+git merge --no-ff feature/agregar-2fa
+git push origin main
+
+# Eliminar rama
+git branch -d feature/agregar-2fa
+git push origin -d feature/agregar-2fa
+```
+
+**Convenciones de commit:**
+```
+feat: agregar soporte para 2FA
+fix: corregir bug en rate-limiting
+test: agregar tests para login
+docs: actualizar README
+refactor: simplificar lógica de autenticación
+security: mejorar validación de entrada
+chore: actualizar dependencias
+```
+
+### Cómo agregar funcionalidades
+
+**Ejemplo: Agregar endpoint para cambiar contraseña**
+
+**Paso 1: Planificar**
+```
+Requirement:
+- Endpoint: POST /profile/change-password
+- Input: usuario + contraseña actual + contraseña nueva
+- Output: 200 OK o 401/400 error
+- Seguridad: HTTPS, validar sesión, rate-limiting
+- Testing: test login antiguo falla, test login nuevo funciona
+```
+
+**Paso 2: Implementar BD**
+```python
+# database.py - agregar función
+def update_user_password(user_id: int, new_password: str) -> bool:
+    """Actualizar contraseña del usuario"""
+    from argon2 import PasswordHasher
+    
+    user = Usuario.query.get(user_id)
+    if not user:
+        raise ValueError(f"Usuario {user_id} no existe")
+    
+    # Hash nueva contraseña
+    ph = PasswordHasher()
+    user.password_hash = ph.hash(new_password)
+    user.password_updated = datetime.utcnow()
+    
+    db.session.commit()
+    log_event('PASSWORD_CHANGED', user.username, 'success')
+    
+    return True
+```
+
+**Paso 3: Implementar endpoint**
+```python
+# app.py
+@app.route('/profile/change-password', methods=['POST'])
+@require_login
+def change_password():
+    """Cambiar contraseña del usuario autenticado"""
+    data = request.json
+    
+    old_password = data.get('old_password')
+    new_password = data.get('new_password')
+    
+    # Validar entrada
+    if not old_password or not new_password:
+        return {'error': 'Contraseña actual y nueva requeridas'}, 400
+    
+    if len(new_password) < 8:
+        return {'error': 'Contraseña debe tener mínimo 8 caracteres'}, 400
+    
+    # Obtener usuario
+    user = get_user(session['username'])
+    
+    # Verificar contraseña actual
+    if not verify_password(user['password_hash'], old_password):
+        log_event('PASSWORD_CHANGE_FAILED', session['username'], 'wrong_old_password')
+        return {'error': 'Contraseña actual incorrecta'}, 401
+    
+    # Actualizar contraseña
+    try:
+        update_user_password(user['id'], new_password)
+        return {'status': 'success', 'message': 'Contraseña actualizada'}, 200
+    except Exception as e:
+        log_event('PASSWORD_CHANGE_ERROR', session['username'], str(e), 'CRITICAL')
+        return {'error': 'Error al actualizar contraseña'}, 500
+```
+
+**Paso 4: Agregar tests**
+```python
+# tests/test_change_password.py
+import pytest
+
+def test_change_password_success(client, auth_session):
+    """Test cambio de contraseña exitoso"""
+    response = client.post('/profile/change-password', json={
+        'old_password': 'OldPass123!',
+        'new_password': 'NewPass456!'
+    })
+    
+    assert response.status_code == 200
+    assert response.json['status'] == 'success'
+    
+    # Verificar que login antiguo ya no funciona
+    logout_response = client.get('/logout')
+    assert logout_response.status_code == 200
+    
+    login_old = client.post('/login', data={
+        'username': 'testuser',
+        'password': 'OldPass123!'
+    })
+    assert login_old.status_code == 401
+    
+    # Verificar que login nuevo funciona
+    login_new = client.post('/login', data={
+        'username': 'testuser',
+        'password': 'NewPass456!'
+    })
+    assert login_new.status_code == 200
+
+def test_change_password_wrong_old(client, auth_session):
+    """Test cambio con contraseña anterior incorrecta"""
+    response = client.post('/profile/change-password', json={
+        'old_password': 'WrongPass123!',
+        'new_password': 'NewPass456!'
+    })
+    
+    assert response.status_code == 401
+    assert 'incorrecta' in response.json['error'].lower()
+
+def test_change_password_weak_new(client, auth_session):
+    """Test rechazo de contraseña nueva débil"""
+    response = client.post('/profile/change-password', json={
+        'old_password': 'OldPass123!',
+        'new_password': '123456'
+    })
+    
+    assert response.status_code == 400
+    assert 'mínimo' in response.json['error'].lower()
+
+def test_change_password_unauthenticated(client):
+    """Test que usuario no autenticado no puede cambiar"""
+    response = client.post('/profile/change-password', json={
+        'old_password': 'Pass123!',
+        'new_password': 'NewPass456!'
+    })
+    
+    assert response.status_code == 401
+```
+
+**Paso 5: Agregar en frontend (si aplica)**
+```html
+<!-- templates/profile.html -->
+<h2>Cambiar Contraseña</h2>
+<form id="change_password_form">
+    <input type="password" name="old_password" placeholder="Contraseña actual" required>
+    <input type="password" name="new_password" placeholder="Contraseña nueva" required>
+    <button type="submit">Cambiar</button>
+</form>
+
+<script>
+document.getElementById('change_password_form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const data = {
+        old_password: e.target.old_password.value,
+        new_password: e.target.new_password.value
+    };
+    
+    const response = await fetch('/profile/change-password', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    
+    const result = await response.json();
+    
+    if (response.ok) {
+        alert(result.message);
+        e.target.reset();
+    } else {
+        alert('Error: ' + result.error);
+    }
+});
+</script>
+```
+
+**Paso 6: Commit y PR**
+```bash
+git checkout -b feature/change-password
+
+git add database.py app.py tests/test_change_password.py templates/profile.html
+git commit -m "feat: add endpoint to change user password"
+
+git push origin feature/change-password
+
+# Crear PR en GitHub con descripción:
+# - Permite a usuarios cambiar su contraseña
+# - Validación: contraseña actual correcta, nueva >= 8 caracteres
+# - Tests: 4 cases (success, wrong old, weak new, unauthenticated)
+# - Security: Argon2id hash, auditoría de cambios
+```
+
+**Checklist antes de hacer PR:**
+- ✅ Tests nuevos pasan: `PYTHONPATH=. pytest tests/test_change_password.py -v`
+- ✅ Tests existentes no fallan: `PYTHONPATH=. pytest -v`
+- ✅ Código sigue PEP 8: `pylint app.py` o `black --check app.py`
+- ✅ Sin hardcoded secrets
+- ✅ Docstrings completos
+- ✅ Commits atómicos con mensajes claros
+- ✅ Rama actualizada con main: `git pull origin main`
+
+---
