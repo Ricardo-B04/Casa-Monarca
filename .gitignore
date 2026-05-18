@@ -48,6 +48,11 @@ usuarios.db
 *_demo.key
 *.pem.enc
 
+# Environment variables (but NOT .env.example which is a template)
+.env
+.env.local
+.env.*.local
+
 # Local certs (CA and user certs generated at runtime)
 certs/ca_cert.pem
 certs/ca_key.pem
