@@ -1863,3 +1863,936 @@ FROM expedientes
 GROUP BY estado
 ORDER BY cantidad DESC;
 ```
+
+---
+
+## API / Interfaces
+
+Casa Monarca expone una **API REST** basada en Flask para operaciones HTTP. Los endpoints están protegidos con **autenticación por sesión** (cookies) y **validación de roles (RBAC)**.
+
+### Convenciones generales
+
+**Protocolo:** HTTP/HTTPS (HTTPS obligatorio en producción)
+
+**Base URL:** `http://localhost:5000` (desarrollo) o `https://casa-monarca.ejemplo.com` (producción)
+
+**Autenticación:** 
+- Método 1: Sesión con cookie (POST /login)
+- Método 2: Challenge-response con certificado (para admin/coordinador)
+
+**Formato de respuestas:** JSON (excepto descargas de archivos)
+
+**Códigos HTTP utilizados:**
+| Código | Significado |
+|--------|------------|
+| 200 | OK - Solicitud exitosa |
+| 201 | Created - Recurso creado |
+| 400 | Bad Request - Parámetro inválido |
+| 401 | Unauthorized - No autenticado |
+| 403 | Forbidden - Sin permisos para esta acción |
+| 404 | Not Found - Recurso no existe |
+| 422 | Unprocessable Entity - Datos inválidos |
+| 500 | Internal Server Error - Error del servidor |
+
+### Endpoints de autenticación
+
+#### 1. GET /login — Obtener formulario y desafío
+
+**Descripción:** Obtiene el formulario de login y genera un desafío para firmar (challenge).
+
+**Método:** `GET`
+
+**Autenticación requerida:** No
+
+**Parámetros:** Ninguno
+
+**Respuesta (200 OK):**
+```json
+{
+  "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
+  "form": "<html>...</html>"
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/login
+```
+
+---
+
+#### 2. POST /login — Autenticarse con credenciales
+
+**Descripción:** Autentica usuario con contraseña y, opcionalmente, certificado + firma.
+
+**Método:** `POST`
+
+**Autenticación requerida:** No
+
+**Parámetros (form-data o JSON):**
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|----------|------------|
+| `username` | string | Sí | Nombre de usuario |
+| `password` | string | Sí | Contraseña |
+| `challenge` | string | No | UUID del desafío (para login con cert) |
+| `signature_b64` | string | No | Firma Base64 del desafío (para admin/coordinador) |
+| `certificate_pem` | string | No | Certificado PEM (para login reforzado) |
+
+**Respuesta (200 OK - login exitoso):**
+```json
+{
+  "status": "success",
+  "message": "Login exitoso",
+  "user": {
+    "id": 1,
+    "username": "usuario_pru",
+    "role": "usuario",
+    "must_change_password": false
+  }
+}
+```
+
+**Respuesta (401 Unauthorized - credenciales inválidas):**
+```json
+{
+  "status": "error",
+  "message": "Contraseña incorrecta",
+  "remaining_attempts": 4
+}
+```
+
+**Respuesta (423 Locked - usuario bloqueado):**
+```json
+{
+  "status": "locked",
+  "message": "Usuario bloqueado por intentos excesivos",
+  "locked_until": "2026-05-16T15:15:00Z"
+}
+```
+
+**Ejemplo (curl - login básico):**
+```bash
+curl -X POST http://localhost:5000/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=usuario_pru&password=UserDemo123!" \
+  -c cookies.txt
+```
+
+**Ejemplo (curl - login con certificado):**
+```bash
+curl -X POST http://localhost:5000/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin_prod&password=AdminProdX2026!&challenge=a1b2c3d4-e5f6-4789-abcd-ef1234567890&signature_b64=ABC123==&certificate_pem=$(cat admin_prod.pem | base64)" \
+  -c cookies.txt
+```
+
+**Ejemplo (Python):**
+```python
+import requests
+
+session = requests.Session()
+response = session.post(
+    "http://localhost:5000/login",
+    data={
+        "username": "usuario_pru",
+        "password": "UserDemo123!"
+    }
+)
+print(response.json())
+# {'status': 'success', 'user': {...}}
+```
+
+---
+
+#### 3. POST /logout — Cerrar sesión
+
+**Descripción:** Cierra la sesión del usuario autenticado.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí (sesión activa)
+
+**Parámetros:** Ninguno
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Sesión cerrada"
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/logout \
+  -b cookies.txt
+```
+
+---
+
+### Endpoints de gestión de expedientes
+
+#### 4. GET /dashboard — Obtener panel del usuario
+
+**Descripción:** Retorna expedientes según el rol del usuario.
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí
+
+**Parámetros:** Ninguno
+
+**Respuesta (200 OK):**
+```json
+{
+  "user": {
+    "id": 1,
+    "username": "usuario_pru",
+    "role": "usuario"
+  },
+  "expedientes": [
+    {
+      "id": 1,
+      "titulo": "Caso #001 - Refugio",
+      "estado": "borrador",
+      "created_at": "2026-05-10T11:30:00Z",
+      "updated_at": "2026-05-10T11:30:00Z"
+    },
+    {
+      "id": 2,
+      "titulo": "Caso #002 - Legal",
+      "estado": "en_revision",
+      "created_at": "2026-05-12T09:45:00Z",
+      "updated_at": "2026-05-15T14:20:00Z"
+    }
+  ]
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/dashboard \
+  -b cookies.txt
+```
+
+**Ejemplo (Python):**
+```python
+response = session.get("http://localhost:5000/dashboard")
+dashboard = response.json()
+print(f"Usuario: {dashboard['user']['username']}")
+print(f"Expedientes: {len(dashboard['expedientes'])}")
+```
+
+---
+
+#### 5. POST /expediente/crear — Crear nuevo expediente
+
+**Descripción:** Crea un nuevo expediente en estado "borrador".
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí
+
+**Parámetros (JSON):**
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|----------|------------|
+| `titulo` | string | Sí | Título del expediente |
+| `descripcion` | string | No | Descripción detallada |
+
+**Respuesta (201 Created):**
+```json
+{
+  "status": "success",
+  "message": "Expediente creado",
+  "expediente": {
+    "id": 3,
+    "titulo": "Caso #003 - Medico",
+    "descripcion": "Necesita asistencia médica urgente",
+    "estado": "borrador",
+    "user_id": 1,
+    "created_at": "2026-05-16T10:30:00Z"
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/expediente/crear \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{
+    "titulo": "Caso #003 - Medico",
+    "descripcion": "Necesita asistencia médica urgente"
+  }'
+```
+
+**Ejemplo (Python):**
+```python
+response = session.post(
+    "http://localhost:5000/expediente/crear",
+    json={
+        "titulo": "Caso #003 - Medico",
+        "descripcion": "Necesita asistencia médica urgente"
+    }
+)
+expediente = response.json()["expediente"]
+print(f"Expediente creado: ID {expediente['id']}")
+```
+
+---
+
+#### 6. GET /expediente/<id> — Obtener detalle de expediente
+
+**Descripción:** Retorna detalles de un expediente específico (con validación de permisos).
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí
+
+**Parámetros (path):**
+
+| Parámetro | Tipo | Descripción |
+|-----------|------|------------|
+| `id` | integer | ID del expediente |
+
+**Respuesta (200 OK):**
+```json
+{
+  "expediente": {
+    "id": 1,
+    "titulo": "Caso #001 - Refugio",
+    "descripcion": "Solicitud de refugio",
+    "estado": "borrador",
+    "user_id": 1,
+    "created_at": "2026-05-10T11:30:00Z",
+    "updated_at": "2026-05-10T11:30:00Z"
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/expediente/1 \
+  -b cookies.txt
+```
+
+---
+
+#### 7. POST /expediente/<id>/canalizar — Cambiar estado de expediente
+
+**Descripción:** Canaliza (cambia de estado) un expediente. Requiere validación de firma para ciertos roles.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí
+
+**Parámetros (path + JSON):**
+
+| Parámetro | Tipo | Ubicación | Descripción |
+|-----------|------|-----------|------------|
+| `id` | integer | path | ID del expediente |
+| `nuevo_estado` | string | body | Nuevo estado: en_revision, validado, cerrado |
+| `signature_b64` | string | body | Firma del cambio (requerida para coordinador/admin) |
+| `challenge` | string | body | Challenge para validar firma |
+
+**Estados permitidos por rol:**
+- `usuario` → puede canalizar a operativo
+- `operativo` → puede canalizar a coordinador
+- `coordinador` → puede canalizar a admin (con firma)
+- `admin` → puede cerrar o volver a borrador
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Expediente canalizado",
+  "expediente": {
+    "id": 1,
+    "estado": "en_revision",
+    "updated_at": "2026-05-12T14:00:00Z"
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/expediente/1/canalizar \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{
+    "nuevo_estado": "en_revision",
+    "signature_b64": "ABC123==",
+    "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890"
+  }'
+```
+
+---
+
+### Endpoints de gestión de certificados
+
+#### 8. GET /certificado/setup — Obtener página de setup de certificado
+
+**Descripción:** Retorna formulario HTML para setup de certificado (CSR).
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí
+
+**Respuesta:** HTML del formulario
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/certificado/setup \
+  -b cookies.txt
+```
+
+---
+
+#### 9. POST /certificado/generar — Generar/firmar certificado
+
+**Descripción:** Genera o firma un certificado X.509 para el usuario.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí
+
+**Parámetros (form-data):**
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|----------|------------|
+| `csr_pem` | string | Sí | Certificate Signing Request (PEM) o vacío para generar |
+| `days_valid` | integer | No | Días de validez (default: 30) |
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Certificado generado",
+  "certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "fingerprint_sha256": "a1b2c3d4e5f6...",
+  "expires_at": "2026-06-15T08:00:00Z"
+}
+```
+
+**Ejemplo (curl - generar sin CSR):**
+```bash
+curl -X POST http://localhost:5000/certificado/generar \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -b cookies.txt \
+  -d "csr_pem=&days_valid=30"
+```
+
+**Ejemplo (curl - firmar CSR):**
+```bash
+curl -X POST http://localhost:5000/certificado/generar \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -b cookies.txt \
+  -d "csr_pem=$(cat usuario.csr.pem | base64)&days_valid=30"
+```
+
+---
+
+#### 10. POST /certificado/<id>/revocar — Revocar certificado
+
+**Descripción:** Revoca un certificado (marca como revocado en BD).
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí (admin o propietario del cert)
+
+**Parámetros (path + JSON):**
+
+| Parámetro | Tipo | Ubicación | Descripción |
+|-----------|------|-----------|------------|
+| `id` | integer | path | ID del certificado |
+| `razon` | string | body | Motivo de revocación |
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Certificado revocado",
+  "certificate_id": 1,
+  "razon": "Compromiso de seguridad"
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/certificado/1/revocar \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"razon": "Compromiso de seguridad"}'
+```
+
+---
+
+### Endpoints de administración
+
+#### 11. GET /admin/usuarios — Listar usuarios (admin only)
+
+**Descripción:** Lista todos los usuarios del sistema.
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí (role = admin)
+
+**Parámetros:** Ninguno
+
+**Respuesta (200 OK):**
+```json
+{
+  "usuarios": [
+    {
+      "id": 1,
+      "username": "usuario_pru",
+      "role": "usuario",
+      "created_at": "2026-05-01T10:00:00Z"
+    },
+    {
+      "id": 4,
+      "username": "admin_prod",
+      "role": "admin",
+      "created_at": "2026-05-01T08:00:00Z"
+    }
+  ]
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/admin/usuarios \
+  -b cookies.txt
+```
+
+---
+
+#### 12. POST /admin/crear_usuario — Crear usuario (admin only)
+
+**Descripción:** Crea nuevo usuario (requiere firma del admin).
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí (role = admin con certificado)
+
+**Parámetros (JSON):**
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|----------|------------|
+| `username` | string | Sí | Nombre de usuario |
+| `role` | string | Sí | Rol: usuario, operativo, coordinador, admin |
+| `challenge` | string | Sí | Challenge para validar firma del admin |
+| `signature_b64` | string | Sí | Firma de admin |
+
+**Respuesta (201 Created):**
+```json
+{
+  "status": "success",
+  "message": "Usuario creado",
+  "usuario": {
+    "id": 5,
+    "username": "nuevo_operativo",
+    "role": "operativo",
+    "created_at": "2026-05-16T15:30:00Z"
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/admin/crear_usuario \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{
+    "username": "nuevo_operativo",
+    "role": "operativo",
+    "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
+    "signature_b64": "ABC123=="
+  }'
+```
+
+---
+
+#### 13. POST /admin/eliminar_usuario/<id> — Eliminar usuario (admin only)
+
+**Descripción:** Elimina un usuario del sistema.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí (role = admin)
+
+**Parámetros (path):**
+
+| Parámetro | Tipo | Descripción |
+|-----------|------|------------|
+| `id` | integer | ID del usuario a eliminar |
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Usuario eliminado",
+  "user_id": 5
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/admin/eliminar_usuario/5 \
+  -b cookies.txt
+```
+
+---
+
+#### 14. POST /admin/cambiar_rol/<id> — Cambiar rol de usuario (admin only)
+
+**Descripción:** Modifica el rol de un usuario.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí (role = admin)
+
+**Parámetros (path + JSON):**
+
+| Parámetro | Tipo | Ubicación | Descripción |
+|-----------|------|-----------|------------|
+| `id` | integer | path | ID del usuario |
+| `nuevo_rol` | string | body | Nuevo rol: usuario, operativo, coordinador, admin |
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Rol modificado",
+  "user_id": 5,
+  "nuevo_rol": "coordinador"
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/admin/cambiar_rol/5 \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"nuevo_rol": "coordinador"}'
+```
+
+---
+
+### Endpoints de perfil y seguridad
+
+#### 15. GET /perfil — Obtener perfil del usuario autenticado
+
+**Descripción:** Retorna información del perfil del usuario actual.
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí
+
+**Respuesta (200 OK):**
+```json
+{
+  "usuario": {
+    "id": 1,
+    "username": "usuario_pru",
+    "role": "usuario",
+    "created_at": "2026-05-01T10:00:00Z",
+    "must_change_password": false
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET http://localhost:5000/perfil \
+  -b cookies.txt
+```
+
+---
+
+#### 16. POST /cambiar_contrasena — Cambiar contraseña
+
+**Descripción:** Cambia la contraseña del usuario autenticado.
+
+**Método:** `POST`
+
+**Autenticación requerida:** Sí
+
+**Parámetros (JSON):**
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|----------|------------|
+| `password_actual` | string | Sí | Contraseña actual |
+| `password_nueva` | string | Sí | Nueva contraseña (mín. 12 caracteres) |
+| `password_confirmacion` | string | Sí | Confirmación de nueva contraseña |
+
+**Respuesta (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Contraseña cambiada exitosamente"
+}
+```
+
+**Respuesta (422 Unprocessable Entity - contraseña débil):**
+```json
+{
+  "status": "error",
+  "message": "Contraseña no cumple requisitos de seguridad",
+  "requirements": {
+    "min_length": 12,
+    "must_have_uppercase": true,
+    "must_have_lowercase": true,
+    "must_have_number": true,
+    "must_have_special": true
+  }
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X POST http://localhost:5000/cambiar_contrasena \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{
+    "password_actual": "UserDemo123!",
+    "password_nueva": "NewPassword456!",
+    "password_confirmacion": "NewPassword456!"
+  }'
+```
+
+---
+
+### Endpoints de auditoría
+
+#### 17. GET /bitacora — Ver bitácora de eventos
+
+**Descripción:** Lista eventos auditados (acceso según rol).
+
+**Método:** `GET`
+
+**Autenticación requerida:** Sí (admin y coordinador ven todos, otros ven propios)
+
+**Parámetros (query - opcionales):**
+
+| Parámetro | Tipo | Descripción |
+|-----------|------|------------|
+| `username` | string | Filtrar por usuario (admin only) |
+| `accion` | string | Filtrar por tipo de acción |
+| `limit` | integer | Número de registros (default: 50) |
+| `offset` | integer | Desplazamiento para paginación (default: 0) |
+
+**Respuesta (200 OK):**
+```json
+{
+  "eventos": [
+    {
+      "id": 1,
+      "username": "admin_prod",
+      "accion": "crear_usuario",
+      "descripcion": "Nuevo usuario: operativo_1",
+      "timestamp": "2026-05-05T14:30:00Z",
+      "ip_address": "192.168.1.100"
+    },
+    {
+      "id": 2,
+      "username": "usuario_pru",
+      "accion": "login_exitoso",
+      "descripcion": "Login con certificado",
+      "timestamp": "2026-05-10T11:20:00Z",
+      "ip_address": "192.168.1.150"
+    }
+  ],
+  "total": 250,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+**Ejemplo (curl):**
+```bash
+curl -X GET "http://localhost:5000/bitacora?limit=20&accion=login_exitoso" \
+  -b cookies.txt
+```
+
+**Ejemplo (curl - filtrar por usuario, admin only):**
+```bash
+curl -X GET "http://localhost:5000/bitacora?username=usuario_pru&limit=30" \
+  -b cookies.txt
+```
+
+---
+
+### Resumen de endpoints por rol
+
+| Endpoint | GET | POST | PUT | DELETE | Admin | Coord | Oper | Usuario |
+|----------|-----|------|-----|--------|-------|-------|------|---------|
+| /login | ✓ | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /logout |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /dashboard | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
+| /perfil | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
+| /cambiar_contrasena |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /expediente/crear |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /expediente/<id> | ✓ |  |  |  | ✓ | ✓ | ✓ | (propio) |
+| /expediente/<id>/canalizar |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /certificado/setup | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
+| /certificado/generar |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
+| /certificado/<id>/revocar |  | ✓ |  |  | ✓ | ✓ | ✓ | (propio) |
+| /admin/usuarios | ✓ |  |  |  | ✓ |  |  |  |
+| /admin/crear_usuario |  | ✓ |  |  | ✓ |  |  |  |
+| /admin/eliminar_usuario |  | ✓ |  |  | ✓ |  |  |  |
+| /admin/cambiar_rol |  | ✓ |  |  | ✓ |  |  |  |
+| /bitacora | ✓ |  |  |  | ✓ | ✓ |  |  |
+
+---
+
+### Manejo de errores
+
+Todos los endpoints retornan errores en formato JSON:
+
+**Formato de error:**
+```json
+{
+  "status": "error",
+  "message": "Descripción del error",
+  "code": "ERROR_CODE",
+  "details": {}
+}
+```
+
+**Errores comunes:**
+
+```json
+// 400 Bad Request
+{
+  "status": "error",
+  "message": "Parámetro 'titulo' es requerido",
+  "code": "MISSING_PARAMETER"
+}
+
+// 401 Unauthorized
+{
+  "status": "error",
+  "message": "No autenticado",
+  "code": "NOT_AUTHENTICATED"
+}
+
+// 403 Forbidden
+{
+  "status": "error",
+  "message": "No tienes permisos para esta acción",
+  "code": "FORBIDDEN",
+  "details": {"required_role": "admin", "current_role": "usuario"}
+}
+
+// 404 Not Found
+{
+  "status": "error",
+  "message": "Expediente no encontrado",
+  "code": "NOT_FOUND"
+}
+
+// 422 Unprocessable Entity
+{
+  "status": "error",
+  "message": "Validación fallida",
+  "code": "VALIDATION_ERROR",
+  "details": {
+    "username": "Longitud mínima: 3 caracteres",
+    "password": "Debe contener mayúscula, minúscula, número y símbolo"
+  }
+}
+```
+
+---
+
+### Ejemplo de flujo completo (Python)
+
+```python
+import requests
+import json
+
+BASE_URL = "http://localhost:5000"
+session = requests.Session()
+
+# 1. Login
+print("=== 1. Login ===")
+login_response = session.post(
+    f"{BASE_URL}/login",
+    data={"username": "usuario_pru", "password": "UserDemo123!"}
+)
+print(f"Status: {login_response.status_code}")
+print(f"Response: {login_response.json()}\n")
+
+# 2. Ver dashboard
+print("=== 2. Dashboard ===")
+dashboard = session.get(f"{BASE_URL}/dashboard").json()
+print(f"Usuario: {dashboard['user']['username']} ({dashboard['user']['role']})")
+print(f"Expedientes: {len(dashboard['expedientes'])}\n")
+
+# 3. Crear expediente
+print("=== 3. Crear expediente ===")
+new_exp = session.post(
+    f"{BASE_URL}/expediente/crear",
+    json={
+        "titulo": "Nuevo caso",
+        "descripcion": "Descripción del caso"
+    }
+).json()
+exp_id = new_exp["expediente"]["id"]
+print(f"Expediente creado: ID {exp_id}\n")
+
+# 4. Ver detalles
+print("=== 4. Ver detalles ===")
+exp_detail = session.get(f"{BASE_URL}/expediente/{exp_id}").json()
+print(f"Estado: {exp_detail['expediente']['estado']}\n")
+
+# 5. Canalizar expediente
+print("=== 5. Canalizar ===")
+canal_response = session.post(
+    f"{BASE_URL}/expediente/{exp_id}/canalizar",
+    json={"nuevo_estado": "en_revision"}
+).json()
+print(f"Nuevo estado: {canal_response['expediente']['estado']}\n")
+
+# 6. Ver bitácora
+print("=== 6. Bitácora ===")
+bitacora = session.get(f"{BASE_URL}/bitacora?limit=5").json()
+for evento in bitacora["eventos"][-3:]:
+    print(f"- {evento['timestamp']}: {evento['accion']}")
+
+# 7. Logout
+print("\n=== 7. Logout ===")
+session.post(f"{BASE_URL}/logout")
+print("Sesión cerrada")
+```
+
+**Output esperado:**
+```
+=== 1. Login ===
+Status: 200
+Response: {'status': 'success', 'user': {'id': 1, 'username': 'usuario_pru', ...}}
+
+=== 2. Dashboard ===
+Usuario: usuario_pru (usuario)
+Expedientes: 2
+
+=== 3. Crear expediente ===
+Expediente creado: ID 3
+
+=== 4. Ver detalles ===
+Estado: borrador
+
+=== 5. Canalizar ===
+Nuevo estado: en_revision
+
+=== 6. Bitácora ===
+- 2026-05-16T15:30:00Z: crear_expediente
+- 2026-05-16T15:30:15Z: cambiar_estado_expediente
+- 2026-05-16T15:30:20Z: ver_bitacora
+
+=== 7. Logout ===
+Sesión cerrada
+```
