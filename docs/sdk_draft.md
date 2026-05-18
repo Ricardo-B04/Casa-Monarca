@@ -4247,3 +4247,685 @@ chmod +x tests/pre_deploy.sh
 ```
 
 ---
+
+## Despliegue
+
+### Cómo hacerlo
+
+#### 1. Pre-despliegue (Checklist)
+
+```bash
+#!/bin/bash
+# scripts/pre_deploy.sh
+
+set -e
+
+echo "🔍 Pre-despliegue checklist"
+
+# 1. Verificar rama
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "release" ]; then
+    echo "❌ No estás en main o release"
+    exit 1
+fi
+
+# 2. Verificar cambios sin commit
+if [ -n "$(git status --porcelain)" ]; then
+    echo "❌ Cambios sin commit"
+    git status
+    exit 1
+fi
+
+# 3. Ejecutar tests
+echo "▶️  Ejecutando tests..."
+PYTHONPATH=. pytest --cov=. --cov-fail-under=80 -q
+
+# 4. Verificar variables de entorno
+echo "▶️  Verificando .env..."
+for var in SECRET_KEY DATABASE_URL AES_KEY; do
+    if [ -z "${!var}" ]; then
+        echo "❌ Variable $var no configurada en .env"
+        exit 1
+    fi
+done
+
+# 5. Verificar certificados
+if [ ! -f "ca.key" ] || [ ! -f "ca.crt" ]; then
+    echo "❌ Certificados CA no encontrados"
+    exit 1
+fi
+
+# 6. Verificar clave de encriptación
+if [ ! -f "key.key" ]; then
+    echo "❌ key.key no encontrada"
+    exit 1
+fi
+
+# 7. Generar backup pre-despliegue
+echo "▶️  Creando backup..."
+python tools/backup_db.py
+
+echo "✅ Pre-despliegue OK. Listo para desplegar."
+```
+
+**Ejecutar:**
+```bash
+chmod +x scripts/pre_deploy.sh
+./scripts/pre_deploy.sh
+```
+
+#### 2. Despliegue manual (Local/Servidor)
+
+**Opción A: Despliegue directo en servidor**
+
+```bash
+# 1. Conectar a servidor
+ssh user@server.com
+
+# 2. Navegar a carpeta del proyecto
+cd /opt/casa_monarca
+
+# 3. Descargar cambios
+git pull origin main
+
+# 4. Instalar dependencias
+pip install -r requirements.txt
+
+# 5. Ejecutar migraciones BD (si aplica)
+python -c "from database import create_tables; create_tables()"
+
+# 6. Recopilar archivos estáticos (si aplica)
+# flask collect-static
+
+# 7. Detener servicio antiguo
+systemctl stop casa_monarca
+
+# 8. Iniciar servicio nuevo
+systemctl start casa_monarca
+
+# 9. Verificar estado
+systemctl status casa_monarca
+
+# 10. Ver logs
+journalctl -u casa_monarca -f
+```
+
+**Opción B: Despliegue con zero-downtime (Blue-Green)**
+
+```bash
+#!/bin/bash
+# scripts/deploy_blue_green.sh
+
+set -e
+
+BLUE_PORT=5000
+GREEN_PORT=5001
+NGINX_CONF="/etc/nginx/sites-available/casa_monarca"
+
+echo "🚀 Blue-Green Deployment"
+
+# 1. Detectar versión actual (BLUE o GREEN)
+CURRENT_PORT=$(grep "proxy_pass" $NGINX_CONF | grep -oP 'localhost:\K\d+')
+if [ "$CURRENT_PORT" = "$BLUE_PORT" ]; then
+    DEPLOY_PORT=$GREEN_PORT
+    NEXT_ENV="GREEN"
+else
+    DEPLOY_PORT=$BLUE_PORT
+    NEXT_ENV="BLUE"
+fi
+
+echo "▶️  Versión actual: puerto $CURRENT_PORT"
+echo "▶️  Desplegando en $NEXT_ENV (puerto $DEPLOY_PORT)"
+
+# 2. Preparar entorno en puerto nuevo
+cd /opt/casa_monarca
+
+# 3. Actualizar código
+git pull origin main
+
+# 4. Instalar dependencias
+pip install -r requirements.txt
+
+# 5. Ejecutar tests en nuevo entorno
+PYTHONPATH=. pytest -q
+
+# 6. Iniciar aplicación en puerto nuevo
+PORT=$DEPLOY_PORT python app.py &
+DEPLOY_PID=$!
+
+sleep 2
+
+# 7. Verificar que nueva versión está online
+if ! curl -f http://localhost:$DEPLOY_PORT/health; then
+    echo "❌ Nueva versión no respondió"
+    kill $DEPLOY_PID
+    exit 1
+fi
+
+# 8. Cambiar nginx a nuevo puerto
+sed -i "s/proxy_pass http:\/\/localhost:\d\+/proxy_pass http:\/\/localhost:$DEPLOY_PORT/" $NGINX_CONF
+nginx -s reload
+
+echo "✅ Tráfico movido a $NEXT_ENV (puerto $DEPLOY_PORT)"
+
+# 9. Mantener versión antigua como rollback
+echo "▶️  Versión anterior en puerto $CURRENT_PORT (disponible para rollback)"
+```
+
+**Ejecutar:**
+```bash
+chmod +x scripts/deploy_blue_green.sh
+./scripts/deploy_blue_green.sh
+```
+
+#### 3. Despliegue con Docker
+
+```bash
+# 1. Construir imagen
+docker build -t casa_monarca:latest .
+
+# 2. Etiquetar para registro
+docker tag casa_monarca:latest registry.example.com/casa_monarca:latest
+
+# 3. Subir a registro
+docker push registry.example.com/casa_monarca:latest
+
+# 4. En servidor de despliegue, actualizar compose
+docker compose pull
+docker compose up -d
+
+# 5. Ejecutar migraciones si aplica
+docker compose exec web python -c "from database import create_tables; create_tables()"
+
+# 6. Ver logs
+docker compose logs -f web
+```
+
+**Dockerfile:**
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar código
+COPY . .
+
+# Crear carpetas necesarias
+RUN mkdir -p logs backups certs
+
+# Usuario no-root por seguridad
+RUN useradd -m -u 1000 casa_user
+RUN chown -R casa_user:casa_user /app
+USER casa_user
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:5000/health')"
+
+# Comando de inicio
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--worker-class", "sync", "--timeout", "30", "app:app"]
+```
+
+**docker-compose.yml:**
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: casa_monarca:latest
+    container_name: casa_monarca_web
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY}
+      - DATABASE_URL=sqlite:////app/data/database.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./certs:/app/certs
+      - ./backups:/app/backups
+    networks:
+      - casa_monarca
+    restart: unless-stopped
+    depends_on:
+      - db_backup
+
+  nginx:
+    image: nginx:alpine
+    container_name: casa_monarca_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/ssl:/etc/nginx/certs:ro
+    networks:
+      - casa_monarca
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  db_backup:
+    image: casa_monarca:latest
+    container_name: casa_monarca_backup
+    command: python -c "from tools.backup_db import backup_database; backup_database()"
+    environment:
+      - DATABASE_URL=sqlite:////app/data/database.db
+      - AES_KEY=${AES_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    networks:
+      - casa_monarca
+    restart: unless-stopped
+
+networks:
+  casa_monarca:
+    driver: bridge
+```
+
+### Entornos
+
+#### Desarrollo (Local)
+
+**Archivo: `.env.development`**
+```bash
+FLASK_ENV=development
+FLASK_DEBUG=1
+SECRET_KEY=dev-key-1234567890abcdefghijklmnopqrstuv
+DATABASE_URL=sqlite:///database.db
+LOG_LEVEL=DEBUG
+TESTING=False
+
+# Certificados (auto-generados)
+CA_KEY=ca_dev.key
+CA_CRT=ca_dev.crt
+CA_PASSPHRASE=DevPass123!
+
+# Encriptación
+AES_KEY=dev-key-32-bytes-for-aes256enc
+```
+
+**Setup:**
+```bash
+# 1. Crear venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 2. Instalar dependencias
+pip install -r requirements.txt
+
+# 3. Generar certificados
+python scripts/generate_certs.py --env dev
+
+# 4. Generar clave AES
+python generate_key.py
+
+# 5. Inicializar BD
+python -c "from database import create_tables; create_tables()"
+
+# 6. Crear usuario admin
+python -c "
+from database import add_user
+add_user('admin', 'AdminDev123!', 'admin')
+print('Usuario admin creado')
+"
+
+# 7. Ejecutar aplicación
+python app.py
+```
+
+**URL:** `http://localhost:5000`
+
+**Credenciales de prueba:**
+- Usuario: `admin`
+- Contraseña: `AdminDev123!`
+
+#### Staging (Pre-producción)
+
+**Archivo: `.env.staging`**
+```bash
+FLASK_ENV=production
+FLASK_DEBUG=0
+SECRET_KEY=staging-key-${RANDOM_256_BITS}
+DATABASE_URL=sqlite:///data/database.db
+LOG_LEVEL=INFO
+TESTING=False
+
+# Certificados (certificados reales o auto-firmados con validez extendida)
+CA_KEY=ca_staging.key
+CA_CRT=ca_staging.crt
+CA_PASSPHRASE=${STAGING_CA_PASSPHRASE}
+
+# Encriptación
+AES_KEY=${STAGING_AES_KEY}
+
+# HTTPS
+HTTPS=True
+SSL_CERT=/etc/ssl/certs/staging.crt
+SSL_KEY=/etc/ssl/private/staging.key
+```
+
+**Servidor: staging.casa_monarca.local**
+
+**Verificación:**
+```bash
+# Health check
+curl -k https://staging.casa_monarca.local/health
+
+# Acceso a login
+curl -k https://staging.casa_monarca.local/login
+
+# Tests contra staging
+PYTHONPATH=. pytest tests/test_integration.py \
+  --base-url=https://staging.casa_monarca.local \
+  -v
+```
+
+#### Producción (Operacional)
+
+**Archivo: `.env.production`** (NO commitear a git)
+```bash
+FLASK_ENV=production
+FLASK_DEBUG=0
+SECRET_KEY=${PROD_SECRET_KEY}  # 256 bits random, mínimo
+DATABASE_URL=sqlite:///data/database.db
+LOG_LEVEL=WARNING
+TESTING=False
+
+# Certificados (certificados válidos emitidos por CA)
+CA_KEY=${PROD_CA_KEY}
+CA_CRT=${PROD_CA_CRT}
+CA_PASSPHRASE=${PROD_CA_PASSPHRASE}
+
+# Encriptación (debe ser igual al usado en backups anteriores)
+AES_KEY=${PROD_AES_KEY}
+
+# HTTPS obligatorio
+HTTPS=True
+SSL_CERT=/etc/ssl/certs/casa_monarca.crt
+SSL_KEY=/etc/ssl/private/casa_monarca.key
+HSTS_MAX_AGE=31536000  # 1 año
+
+# Rate-limiting más estricto
+MAX_LOGIN_ATTEMPTS=5
+LOCKOUT_DURATION=900  # 15 minutos
+```
+
+**Servidor: casa_monarca.institucion.mx**
+
+**Requisitos:**
+- ✅ HTTPS obligatorio (certificado válido de CA)
+- ✅ Firewall restrictivo (solo puertos 80, 443)
+- ✅ Servidor actualizado con parches de seguridad
+- ✅ Contraseñas fuertes para .env (almacenar en secrets manager)
+- ✅ Backups diarios encriptados
+- ✅ Monitoreo 24/7
+
+### Consideraciones
+
+#### Seguridad
+
+**1. Certificados HTTPS**
+```bash
+# Generar certificado auto-firmado (solo para testing)
+openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365
+
+# Usar Let's Encrypt en producción
+certbot certonly --standalone -d casa_monarca.institucion.mx
+```
+
+**2. Credenciales y secretos**
+```bash
+# NUNCA commitear .env a git
+echo ".env*" >> .gitignore
+echo "*.key" >> .gitignore
+echo "*.pem" >> .gitignore
+
+# Usar secrets manager
+# AWS Secrets Manager, HashiCorp Vault, Azure Key Vault
+
+# En GitHub Actions:
+- name: Deploy
+  env:
+    SECRET_KEY: ${{ secrets.SECRET_KEY }}
+    AES_KEY: ${{ secrets.AES_KEY }}
+```
+
+**3. Permisos de archivos**
+```bash
+# Proteger archivos sensibles en servidor
+chmod 600 .env
+chmod 600 ca.key
+chmod 600 key.key
+chown app:app .env ca.key key.key
+```
+
+**4. HTTPS + HSTS + Redirección**
+```python
+# app.py
+from flask_talisman import Talisman
+
+Talisman(app, 
+    force_https=True,
+    strict_transport_security=True,
+    strict_transport_security_max_age=31536000)  # 1 año
+```
+
+#### Escalabilidad
+
+**1. Base de datos SQLite (Limitación)**
+- SQLite es single-writer (una transacción a la vez)
+- Máx ~100-1000 conexiones simultáneas
+- Ideal para: equipos pequeños, <50 usuarios concurrentes
+
+**Plan para Etapa 2 (PostgreSQL):**
+```bash
+# Cambiar DATABASE_URL en producción
+DATABASE_URL=postgresql://user:pass@db.server/casa_monarca
+
+# Instalar adaptador
+pip install psycopg2-binary
+
+# Migrar datos
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+**2. Aplicación multi-worker**
+```bash
+# Usar Gunicorn con múltiples workers
+gunicorn --bind 0.0.0.0:5000 --workers 4 --worker-class sync app:app
+
+# En docker-compose:
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4"]
+```
+
+**3. Caché (Redis)**
+```bash
+# Opcional para Etapa 2
+# Cachear sesiones, certificados, expedientes
+
+pip install flask-caching redis
+
+CACHE_TYPE=redis
+CACHE_REDIS_URL=redis://localhost:6379/0
+```
+
+#### Disponibilidad
+
+**1. Health check**
+```python
+# app.py
+@app.route('/health')
+def health():
+    return {
+        'status': 'ok',
+        'version': '1.0.0',
+        'timestamp': datetime.utcnow().isoformat()
+    }, 200
+```
+
+**Verificación:**
+```bash
+curl http://localhost:5000/health
+```
+
+**2. Alertas y monitoreo**
+```bash
+# Monitorear logs en tiempo real
+tail -f logs/error.log | grep -E "ERROR|CRITICAL"
+
+# Contar errores por hora
+grep "ERROR" logs/error.log | cut -d' ' -f1-2 | sort | uniq -c
+
+# Alertar si >10 errores en 5 minutos
+watch -n 60 'tail -300 logs/error.log | grep "ERROR" | wc -l'
+```
+
+**3. Rollback rápido**
+```bash
+# Mantener versión anterior
+git tag -a v1.0.0-prod -m "Versión 1.0.0 en producción"
+git push origin v1.0.0-prod
+
+# Si hay problema, volver a versión anterior
+git checkout v1.0.0-prod
+python app.py  # Reiniciar
+```
+
+#### Mantenimiento
+
+**1. Backups diarios**
+```bash
+# Programar con cron
+0 2 * * * cd /opt/casa_monarca && python tools/backup_db.py
+
+# Verificar que backup se crea
+ls -lh backups/ | tail -1
+
+# Listar backups
+ls -1 backups/ | head -10
+```
+
+**2. Rotación de logs**
+```bash
+# Configurar en app.py (ya incluido)
+# Logs rotan cada 10MB, máx 5 archivos
+
+# Limpiar logs viejos (>30 días)
+find logs/ -name "*.log.*" -mtime +30 -delete
+```
+
+**3. Verificación de integridad**
+```bash
+# Verificar que BD está OK
+python -c "
+import sqlite3
+conn = sqlite3.connect('database.db')
+conn.integrity_check()
+print('✅ BD OK')
+"
+
+# Ejecutar tests en producción
+PYTHONPATH=. pytest tests/test_security.py -v --tb=short
+```
+
+**4. Actualización de dependencias**
+```bash
+# Revisar si hay vulnerabilidades
+pip install safety
+safety check
+
+# Actualizar dependencias menores
+pip install --upgrade -r requirements.txt
+
+# Generar nuevo requirements.txt
+pip freeze > requirements.txt
+```
+
+#### Monitoreo y logging
+
+**1. Agregar monitoreo en producción**
+```python
+# app.py - Agregar antes de run()
+
+import logging
+from logging.handlers import RotatingFileHandler
+
+if not app.debug:
+    if not os.path.exists('logs'):
+        os.mkdir('logs')
+    
+    file_handler = RotatingFileHandler(
+        'logs/casa_monarca.log',
+        maxBytes=10240000,  # 10MB
+        backupCount=10
+    )
+    file_handler.setFormatter(logging.Formatter(
+        '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+    ))
+    file_handler.setLevel(logging.INFO)
+    app.logger.addHandler(file_handler)
+    
+    app.logger.setLevel(logging.INFO)
+    app.logger.info('Casa Monarca iniciado')
+```
+
+**2. Alertas automáticas**
+```bash
+# Enviar alerta si error rate > 5%
+# Implementar en Etapa 2 con Datadog, New Relic, etc.
+
+# Por ahora, revisar logs manualmente
+tail -100 logs/error.log | grep -c ERROR
+```
+
+**3. Métricas clave**
+- Tiempo de respuesta promedio
+- Errores por hora
+- Usuarios activos
+- Expedientes procesados por día
+- Certificados próximos a expirar
+
+#### Desastre y recuperación
+
+**1. Backup y restore**
+```bash
+# Crear backup manual
+python tools/backup_db.py
+
+# Restaurar desde backup
+python tools/restore_db.py backups/db_backup_20260517T143022Z.enc
+
+# Verificar restauración
+python -c "
+from database import get_all_users
+users = get_all_users()
+print(f'✅ Restaurados {len(users)} usuarios')
+"
+```
+
+**2. Plan de recuperación ante desastre (DRP)**
+
+| Escenario | RTO* | RPO** | Acción |
+|-----------|------|-------|--------|
+| BD corrupta | 1 hora | 24 horas | Restaurar último backup |
+| Servidor caído | 30 min | 5 min | Failover a réplica (Etapa 2) |
+| Ataque de seguridad | 2 horas | 1 hora | Restore + cambiar credenciales |
+| Pérdida total de datos | 24 horas | 7 días | Restaurar de backup en cloud |
+
+*RTO = Recovery Time Objective (tiempo para recuperar)
+**RPO = Recovery Point Objective (datos máx que se pierden)
+
+---
