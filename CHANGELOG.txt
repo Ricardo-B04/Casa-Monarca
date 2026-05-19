@@ -122,6 +122,31 @@ Sprint 1 — Hardening y seguridad web (2 semanas)
   - Reduccion del inventario visible de certificados a los artefactos utiles para las cuentas criticas.
   - Refuerzo del arranque de desarrollo para que las cuentas sensibles usen certificados emitidos por la CA interna y no archivos heredados.
 
+[0.2.6] - 2026-05-18
+- Added:
+  - Inicio de implementacion de Sprint 2.5 con soporte base de Passkeys (WebAuthn) para roles criticos.
+  - Nuevos endpoints backend para ceremonias de registro y autenticacion con passkeys.
+  - Tabla `passkey_credentials` en SQLite con estado, contador de firma y trazabilidad de uso/revocacion.
+  - Gestion inicial de passkeys desde perfil de usuario (registro y revocacion).
+  - Separacion inicial de superficies administrativas en `/admin/identidades` y `/admin/pki`.
+- Changed:
+  - Pantalla de login actualizada con flujo interactivo de autenticacion por passkey desde navegador.
+  - Configuracion centralizada extendida con banderas y parametros de WebAuthn (`RP_ID`, `origin`, timeout, enforcement).
+- Security:
+  - Validacion server-side de assertions WebAuthn con verificacion de challenge, origin, rpId y user verification.
+  - Actualizacion de `sign_count` y bitacora para reforzar deteccion de replay y trazabilidad de autenticacion.
+
+[0.2.7] - 2026-05-18
+- Added:
+  - Bootstrap de cuentas semilla con enrolamiento obligatorio de passkey para `admin_prod`, `admin_cont` y `coord_admin`.
+  - Persistencia del estado `passkey_enrollment_required` en usuarios para forzar el primer enrolamiento desde perfil.
+- Changed:
+  - El arranque de desarrollo deja de generar certificados legacy como mecanismo principal para las cuentas semilla.
+  - El perfil de usuario ahora muestra un aviso explícito de enrolamiento obligatorio cuando la cuenta semilla no tiene passkey registrada.
+- Security:
+  - Las cuentas administrativas sensibles pasan a exigir passkey registrada antes de permitir el acceso normal al sistema.
+  - Limpieza de artefactos legacy de certificados/llaves demo para evitar que el bootstrap anterior siga siendo el camino principal.
+
 Sprint 2 — PKI educativa y firma (2 semanas)
 - Inquietudes principales:
   - Custodia de claves privadas en servidor debilita no-repudio.
@@ -144,7 +169,20 @@ Política de certificación y revocación
 - Reemisión: solo si el certificado está expirado o revocado; siempre genera nuevo serial y nueva huella pública.
 - Evidencia: cada cambio de estado debe quedar en logs y ser visible desde la UI administrativa.
 
-
+Sprint 2.5 — Infraestructura Passkey-First & Rediseño de Gestión
+- Inquietudes principales:
+  - El flujo de Challenge-Response manual genera fricción operativa y riesgo de errores en la transcripción de firmas.
+  - La dependencia de hardware dedicado (YubiKeys) supone un costo logístico y financiero elevado para el despliegue.
+  - Necesidad de un mecanismo de recuperación de identidad que no comprometa la seguridad de la clave privada.
+  - Saturación visual en la interfaz administrativa al mezclar gestión de identidades con estados técnicos de certificados.
+- Mejoras urgentes a implementar:
+  - Implementación de Passkeys (WebAuthn): Adoptar el estándar FIDO2 para permitir la autenticación mediante biometría nativa (TouchID, FaceID, Windows Hello).
+  - Custodia en Administradores de Contraseñas: Configurar el flujo de registro para permitir credenciales sincronizadas (iCloud Keychain/Google), facilitando el acceso multidispositivo.
+  - Desacoplamiento de Interfaz (UX):
+    - Crear la Página A (Gestión de Identidades): Focada en el ciclo de vida del usuario y asignación de roles.
+    - Crear la Página B (Centro de Control PKI): Panel técnico para monitoreo de salud, revocación (CRL/OCSP) y expiración de certificados X.509.
+  - Vinculación Criptográfica: Asociar las llaves públicas de las Passkeys directamente con el almacén de certificados del sistema para firma de acciones sensibles (No-Repudio).
+  - Automatización del Desafío: Sustituir la copia manual de hashes por la API de credenciales del navegador para una validación instantánea y transparente.
 
 Sprint 3 — Mantenibilidad, tests y documentación (2 semanas)
 - Inquietudes principales:

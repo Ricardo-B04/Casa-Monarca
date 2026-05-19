@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, session, flash, send_file
+from flask import Flask, render_template, request, redirect, session, flash, send_file, jsonify
 import sqlite3
 from cryptography import x509
 from cryptography.fernet import Fernet
@@ -18,7 +18,32 @@ import urllib.request
 import urllib.error
 import time
 import re
+import sys
+import json
+import traceback
 from config import config
+
+try:
+    from webauthn import (
+        generate_registration_options,
+        verify_registration_response,
+        generate_authentication_options,
+        verify_authentication_response,
+        options_to_json,
+    )
+    from webauthn.helpers.structs import (
+        AttestationConveyancePreference,
+        AuthenticatorSelectionCriteria,
+        PublicKeyCredentialDescriptor,
+        UserVerificationRequirement,
+        RegistrationCredential,
+        AuthenticationCredential,
+        AuthenticatorAttestationResponse,
+        AuthenticatorAssertionResponse,
+    )
+    WEBAUTHN_AVAILABLE = True
+except Exception:
+    WEBAUTHN_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -47,6 +72,13 @@ LOGIN_MAX_ATTEMPTS = app.config.get("LOGIN_MAX_ATTEMPTS", 5)
 LOGIN_WINDOW_SECONDS = app.config.get("LOGIN_WINDOW_SECONDS", 300)
 LOGIN_LOCKOUT_SECONDS = app.config.get("LOGIN_LOCKOUT_SECONDS", 900)
 SIGNATURE_CHALLENGE_TTL_SECONDS = app.config.get("SIGNATURE_CHALLENGE_TTL_SECONDS", 300)
+PASSKEY_ENABLED = app.config.get("PASSKEY_ENABLED", True)
+PASSKEY_ENFORCE_CRITICAL = app.config.get("PASSKEY_ENFORCE_CRITICAL", False)
+PASSKEY_RP_ID = app.config.get("PASSKEY_RP_ID", "localhost")
+PASSKEY_RP_NAME = app.config.get("PASSKEY_RP_NAME", "Casa Monarca")
+PASSKEY_ORIGIN = app.config.get("PASSKEY_ORIGIN", "http://localhost:5000")
+PASSKEY_TIMEOUT_MS = app.config.get("PASSKEY_TIMEOUT_MS", 60000)
+PASSKEY_MAX_CREDENTIALS_PER_USER = app.config.get("PASSKEY_MAX_CREDENTIALS_PER_USER", 5)
 
 # Backward-compatible in-memory cache for failed login attempts.
 failed_login_store = {}
@@ -128,7 +160,8 @@ def init_db():
             area TEXT,
             cert_fingerprint TEXT,
             is_contingency INTEGER DEFAULT 0,
-            activo INTEGER DEFAULT 1
+            activo INTEGER DEFAULT 1,
+            passkey_enrollment_required INTEGER DEFAULT 0
         )
         """
     )
@@ -198,6 +231,28 @@ def init_db():
         """
     )
 
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS passkey_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            credential_id TEXT NOT NULL UNIQUE,
+            public_key_b64 TEXT NOT NULL,
+            sign_count INTEGER NOT NULL DEFAULT 0,
+            aaguid TEXT,
+            transports TEXT,
+            label TEXT,
+            status TEXT NOT NULL DEFAULT 'activo',
+            created_at TEXT,
+            updated_at TEXT,
+            last_used_at TEXT,
+            revoked_at TEXT,
+            revoked_by TEXT,
+            revocation_reason TEXT
+        )
+        """
+    )
+
     # Compatibilidad con bases existentes de la version anterior
     ensure_column(c, "encuestas", "estado", "TEXT DEFAULT 'borrador'")
     ensure_column(c, "encuestas", "creado_por", "TEXT")
@@ -218,6 +273,7 @@ def init_db():
     ensure_column(c, "usuarios", "email", "TEXT")
     ensure_column(c, "usuarios", "phone", "TEXT")
     ensure_column(c, "usuarios", "full_name", "TEXT")
+    ensure_column(c, "usuarios", "passkey_enrollment_required", "INTEGER DEFAULT 0")
 
     ensure_column(c, "certificados", "rol", "TEXT")
     ensure_column(c, "certificados", "issued_by", "TEXT")
@@ -242,6 +298,24 @@ def init_db():
     ensure_column(c, "login_lockouts", "attempts", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(c, "login_lockouts", "first_ts", "REAL NOT NULL DEFAULT 0")
     ensure_column(c, "login_lockouts", "lockout_until", "REAL")
+
+    ensure_column(c, "passkey_credentials", "username", "TEXT")
+    ensure_column(c, "passkey_credentials", "credential_id", "TEXT")
+    ensure_column(c, "passkey_credentials", "public_key_b64", "TEXT")
+    ensure_column(c, "passkey_credentials", "sign_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(c, "passkey_credentials", "aaguid", "TEXT")
+    ensure_column(c, "passkey_credentials", "transports", "TEXT")
+    ensure_column(c, "passkey_credentials", "label", "TEXT")
+    ensure_column(c, "passkey_credentials", "status", "TEXT NOT NULL DEFAULT 'activo'")
+    ensure_column(c, "passkey_credentials", "created_at", "TEXT")
+    ensure_column(c, "passkey_credentials", "updated_at", "TEXT")
+    ensure_column(c, "passkey_credentials", "last_used_at", "TEXT")
+    ensure_column(c, "passkey_credentials", "revoked_at", "TEXT")
+    ensure_column(c, "passkey_credentials", "revoked_by", "TEXT")
+    ensure_column(c, "passkey_credentials", "revocation_reason", "TEXT")
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_passkey_username ON passkey_credentials(username)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_passkey_status ON passkey_credentials(status)")
 
     c.execute(
         """
@@ -569,22 +643,22 @@ def create_default_accounts():
     if app.config.get("TESTING", False):
         # Keep legacy test passwords when running tests to preserve existing test expectations
         default_users = [
-            ("admin_prod", "admin123", "admin", None, 0),
-            ("admin_cont", "admin123", "admin", None, 1),
-            ("coord_admin", "coord123", "coordinador", "Administracion", 0),
-            ("operativo_1", "oper123", "operativo", None, 0),
-            ("usuario_1", "user123", "usuario", None, 0),
+            ("admin_prod", "admin123", "admin", None, 0, 0),
+            ("admin_cont", "admin123", "admin", None, 1, 0),
+            ("coord_admin", "coord123", "coordinador", "Administracion", 0, 0),
+            ("operativo_1", "oper123", "operativo", None, 0, 0),
+            ("usuario_1", "user123", "usuario", None, 0, 0),
         ]
     else:
         default_users = [
-            ("admin_prod", "AdminProdX2026!", "admin", None, 0),
-            ("admin_cont", "AdminContX2026!", "admin", None, 1),
-            ("coord_admin", "CoordAdminX2026!", "coordinador", "Administracion", 0),
-            ("operativo_1", "Operativo_2026!", "operativo", None, 0),
-            ("usuario_1", "Usuario_2026!X", "usuario", None, 0),
+            ("admin_prod", "AdminProdX2026!", "admin", None, 0, 1),
+            ("admin_cont", "AdminContX2026!", "admin", None, 1, 1),
+            ("coord_admin", "CoordAdminX2026!", "coordinador", "Administracion", 0, 1),
+            ("operativo_1", "Operativo_2026!", "operativo", None, 0, 0),
+            ("usuario_1", "Usuario_2026!X", "usuario", None, 0, 0),
         ]
 
-    for username, password, rol, area, contingency in default_users:
+    for username, password, rol, area, contingency, passkey_required in default_users:
         salt = generate_password_salt()
         password_hash = hash_password_argon2id(password, salt)
         c.execute("SELECT id FROM usuarios WHERE username=?", (username,))
@@ -595,9 +669,10 @@ def create_default_accounts():
                 """
                 INSERT INTO usuarios (
                     username, password_hash, rol, area, is_contingency, activo,
+                    passkey_enrollment_required,
                     must_change_password, password_updated_at, password_algo, password_salt
                 )
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'argon2id', ?)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'argon2id', ?)
                 """,
                 (
                     username,
@@ -605,6 +680,7 @@ def create_default_accounts():
                     rol,
                     area,
                     contingency,
+                    passkey_required,
                     0 if not app.config.get("TESTING", False) else 1,
                     str(datetime.datetime.now()),
                     encode_salt(salt),
@@ -615,6 +691,7 @@ def create_default_accounts():
                 """
                 UPDATE usuarios
                 SET password_hash=?, rol=?, area=?, is_contingency=?, activo=1,
+                    passkey_enrollment_required=?,
                     must_change_password=0, password_updated_at=?, password_algo='argon2id',
                     password_salt=?
                 WHERE username=?
@@ -624,6 +701,7 @@ def create_default_accounts():
                     rol,
                     area,
                     contingency,
+                    passkey_required,
                     str(datetime.datetime.now()),
                     encode_salt(salt),
                     username,
@@ -695,9 +773,16 @@ def _build_demo_csr(username, role, private_key):
 
 def _cleanup_legacy_certificate_files():
     os.makedirs("certs", exist_ok=True)
-    allowed = {"ca_cert.pem", "ca_key.pem", "admin_prod.pem", "admin_cont.pem", "coord_admin.pem"}
+    legacy_artifacts = {
+        "admin_prod.pem",
+        "admin_cont.pem",
+        "coord_admin.pem",
+        "admin_prod_demo.key",
+        "admin_cont_demo.key",
+        "coord_admin_demo.key",
+    }
     for entry in os.scandir("certs"):
-        if entry.is_file() and entry.name not in allowed:
+        if entry.is_file() and entry.name in legacy_artifacts:
             try:
                 os.remove(entry.path)
             except OSError:
@@ -729,23 +814,41 @@ def bootstrap_dev_certificates():
         if not row:
             continue
 
+        # Preserve existing passkeys: if the user already has active passkeys,
+        # do not delete them and do not force reenrollment on bootstrap.
         c.execute("DELETE FROM certificados WHERE username=?", (username,))
-
-        private_key = _load_or_create_demo_private_key(username, passphrase)
-        csr = _build_demo_csr(username, role, private_key)
-        cert_info = issue_user_certificate_from_csr(
-            conn,
-            username,
-            role,
-            csr.public_bytes(serialization.Encoding.PEM),
-            "system",
-            None,
+        c.execute(
+            "SELECT COUNT(1) as cnt FROM passkey_credentials WHERE username=? AND status='activo'",
+            (username,),
         )
-
-        if cert_info:
+        cnt_row = c.fetchone()
+        has_passkeys = (cnt_row and cnt_row[0])
+        if not has_passkeys:
+            # No existing passkeys: ensure clean state and require enrollment
+            c.execute("DELETE FROM passkey_credentials WHERE username=?", (username,))
             c.execute(
-                "UPDATE usuarios SET cert_fingerprint=?, must_change_password=0, password_updated_at=? WHERE username=?",
-                (cert_info["public_fp"], str(datetime.datetime.now()), username),
+                """
+                UPDATE usuarios
+                SET cert_fingerprint=NULL,
+                    must_change_password=0,
+                    passkey_enrollment_required=1,
+                    password_updated_at=?
+                WHERE username=?
+                """,
+                (str(datetime.datetime.now()), username),
+            )
+        else:
+            # Preserve passkeys and clear enrollment requirement
+            c.execute(
+                """
+                UPDATE usuarios
+                SET cert_fingerprint=NULL,
+                    must_change_password=0,
+                    passkey_enrollment_required=0,
+                    password_updated_at=?
+                WHERE username=?
+                """,
+                (str(datetime.datetime.now()), username),
             )
 
     conn.commit()
@@ -775,6 +878,91 @@ def serialize_public_key(public_key):
 
 def compute_public_fingerprint(public_bytes):
     return hash_bytes(public_bytes)
+
+
+def b64url_encode(raw_bytes):
+    if raw_bytes is None:
+        return None
+    return base64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("ascii")
+
+
+def b64url_decode(raw_text):
+    if not raw_text:
+        return None
+    padding_len = (4 - len(raw_text) % 4) % 4
+    return base64.urlsafe_b64decode(raw_text + ("=" * padding_len))
+
+
+def get_active_passkeys(conn, username):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT * FROM passkey_credentials
+        WHERE username=? AND status='activo'
+        ORDER BY created_at DESC, id DESC
+        """,
+        (username,),
+    )
+    return c.fetchall()
+
+
+def get_active_passkey_by_credential(conn, username, credential_id):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT * FROM passkey_credentials
+        WHERE username=? AND credential_id=? AND status='activo'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (username, credential_id),
+    )
+    return c.fetchone()
+
+
+def save_passkey_credential(conn, username, credential_id, public_key_b64, sign_count, aaguid=None, transports=None, label=None):
+    now = str(datetime.datetime.now())
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO passkey_credentials (
+            username, credential_id, public_key_b64, sign_count,
+            aaguid, transports, label, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'activo', ?, ?)
+        """,
+        (
+            username,
+            credential_id,
+            public_key_b64,
+            sign_count,
+            aaguid,
+            transports,
+            label,
+            now,
+            now,
+        ),
+    )
+
+    c.execute(
+        """
+        UPDATE usuarios
+        SET passkey_enrollment_required=0
+        WHERE username=?
+        """,
+        (username,),
+    )
+
+
+def update_passkey_usage(conn, passkey_id, sign_count):
+    now = str(datetime.datetime.now())
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE passkey_credentials
+        SET sign_count=?, last_used_at=?, updated_at=?
+        WHERE id=?
+        """,
+        (sign_count, now, now, passkey_id),
+    )
 
 
 def store_pem_file(username, pem_bytes):
@@ -1676,6 +1864,16 @@ def enforce_certificate_setup():
             return None
         return redirect("/password/update")
 
+    if session.get("passkey_enrollment_required"):
+        if not session.get("user"):
+            session.pop("passkey_enrollment_required", None)
+            return None
+        if request.path.startswith("/static"):
+            return None
+        if request.path in ("/", "/profile", "/logout", "/auth/passkey/register/options", "/auth/passkey/register/verify"):
+            return None
+        return redirect("/profile")
+
     if not session.get("cert_setup_required"):
         return None
 
@@ -1946,7 +2144,12 @@ def can_delete_user(target_user):
 
 def render_login_page(error=None):
     consume_signature_challenge("login")
-    return render_template("login.html", error=error)
+    return render_template(
+        "login.html",
+        error=error,
+        passkey_enabled=PASSKEY_ENABLED and WEBAUTHN_AVAILABLE,
+        passkey_rp_id=PASSKEY_RP_ID,
+    )
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -1989,6 +2192,23 @@ def login():
 
             if user["rol"] in ("admin", "coordinador"):
                 conn = get_conn()
+                active_passkeys = get_active_passkeys(conn, user["username"])
+                if PASSKEY_ENABLED and active_passkeys:
+                    conn.close()
+                    error = "Este usuario usa passkey. Selecciona 'Entrar con passkey'."
+                    return render_login_page(error)
+
+                enrollment_required = bool(user["passkey_enrollment_required"])
+                if PASSKEY_ENABLED and (PASSKEY_ENFORCE_CRITICAL or enrollment_required) and not active_passkeys:
+                    conn.close()
+                    session["user"] = user["username"]
+                    session["role"] = user["rol"]
+                    session["area"] = user["area"]
+                    session["passkey_enrollment_required"] = True
+                    flash("Debes registrar una passkey antes de continuar.")
+                    log(user["username"], "Inicio de sesion (passkey pendiente)")
+                    return redirect("/profile")
+
                 active_cert = get_active_certificate(conn, user["username"])
                 if not active_cert:
                     pending_cert = get_pending_certificate(conn, user["username"])
@@ -2064,6 +2284,316 @@ def login():
         error = "Usuario o contrasena incorrectos"
 
     return render_login_page(error)
+
+
+@app.route("/auth/passkey/register/options", methods=["POST"])
+def passkey_register_options():
+    if not require_login():
+        return jsonify({"ok": False, "message": "Sesion no valida."}), 401
+
+    if session.get("role") not in ("admin", "coordinador"):
+        return jsonify({"ok": False, "message": "Solo roles criticos pueden registrar passkeys."}), 403
+
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+
+    conn = get_conn()
+    active_passkeys = get_active_passkeys(conn, session.get("user"))
+    if len(active_passkeys) >= PASSKEY_MAX_CREDENTIALS_PER_USER:
+        conn.close()
+        return jsonify({
+            "ok": False,
+            "message": f"Limite alcanzado: maximo {PASSKEY_MAX_CREDENTIALS_PER_USER} passkeys activas.",
+        }), 400
+
+    exclude_credentials = [
+        PublicKeyCredentialDescriptor(id=b64url_decode(row["credential_id"]))
+        for row in active_passkeys
+    ]
+    conn.close()
+
+    options = generate_registration_options(
+        rp_id=PASSKEY_RP_ID,
+        rp_name=PASSKEY_RP_NAME,
+        user_id=session.get("user").encode("utf-8"),
+        user_name=session.get("user"),
+        user_display_name=session.get("user"),
+        timeout=PASSKEY_TIMEOUT_MS,
+        attestation=AttestationConveyancePreference.NONE,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+        exclude_credentials=exclude_credentials,
+    )
+    options_json = json.loads(options_to_json(options))
+
+    session["pending_passkey_registration"] = {
+        "username": session.get("user"),
+        "challenge": options_json["challenge"],
+        "issued_at": time.time(),
+    }
+
+    return jsonify({"ok": True, "publicKey": options_json})
+
+
+@app.route("/auth/passkey/register/verify", methods=["POST"])
+def passkey_register_verify():
+    if not require_login():
+        return jsonify({"ok": False, "message": "Sesion no valida."}), 401
+
+    if session.get("role") not in ("admin", "coordinador"):
+        return jsonify({"ok": False, "message": "Solo roles criticos pueden registrar passkeys."}), 403
+
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+
+    pending = session.get("pending_passkey_registration")
+    if not pending or pending.get("username") != session.get("user"):
+        return jsonify({"ok": False, "message": "No hay un registro de passkey pendiente."}), 400
+
+    if time.time() - pending.get("issued_at", 0) > SIGNATURE_CHALLENGE_TTL_SECONDS:
+        session.pop("pending_passkey_registration", None)
+        return jsonify({"ok": False, "message": "El desafio de registro expiro."}), 400
+
+    body = request.get_json(silent=True) or {}
+    credential_payload = body.get("credential")
+    label = (body.get("label") or "").strip() or None
+    if not credential_payload:
+        return jsonify({"ok": False, "message": "Falta la respuesta de credencial WebAuthn."}), 400
+
+    try:
+        # Normalize payload keys and decode base64url fields to bytes for the library
+        try:
+            cred = dict(credential_payload)
+            # rawId -> raw_id (bytes)
+            if "rawId" in cred:
+                cred["raw_id"] = b64url_decode(cred.pop("rawId"))
+            # response fields -> build AuthenticatorAttestationResponse
+            resp = cred.get("response") or {}
+            client_data = b64url_decode(resp.get("clientDataJSON")) if "clientDataJSON" in resp else None
+            att_obj = b64url_decode(resp.get("attestationObject")) if "attestationObject" in resp else None
+            transports = resp.get("transports") if isinstance(resp.get("transports"), list) else None
+            resp_obj = AuthenticatorAttestationResponse(
+                client_data_json=client_data,
+                attestation_object=att_obj,
+                transports=transports,
+            )
+            cred["response"] = resp_obj
+            credential_obj = RegistrationCredential(**cred)
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"ok": False, "message": f"Carga de credential invalida: {e}"}), 400
+
+        verification = verify_registration_response(
+            credential=credential_obj,
+            expected_challenge=b64url_decode(pending.get("challenge")),
+            expected_origin=PASSKEY_ORIGIN,
+            expected_rp_id=PASSKEY_RP_ID,
+            require_user_verification=True,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "message": f"No se pudo verificar el registro de passkey: {str(e)}"}), 400
+
+    credential_id = b64url_encode(verification.credential_id)
+    credential_public_key = b64url_encode(verification.credential_public_key)
+    aaguid = str(verification.aaguid) if getattr(verification, "aaguid", None) else None
+    transports = None
+    response_obj = credential_payload.get("response") or {}
+    if isinstance(response_obj.get("transports"), list):
+        transports = ",".join(response_obj.get("transports"))
+
+    conn = get_conn()
+    save_passkey_credential(
+        conn,
+        session.get("user"),
+        credential_id,
+        credential_public_key,
+        int(verification.sign_count),
+        aaguid=aaguid,
+        transports=transports,
+        label=label,
+    )
+    conn.commit()
+    conn.close()
+
+    session.pop("pending_passkey_registration", None)
+    log(session.get("user"), "Registro una nueva passkey")
+    return jsonify({"ok": True, "message": "Passkey registrada correctamente."})
+
+
+@app.route("/auth/passkey/login/options", methods=["POST"])
+def passkey_login_options():
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"ok": False, "message": "Usuario y contrasena son obligatorios."}), 400
+
+    identifier = _login_identifier_from_request(username)
+    locked, until = _is_locked(identifier)
+    if locked:
+        lock_minutes = int((until - time.time()) // 60) + 1
+        return jsonify({
+            "ok": False,
+            "message": f"Cuenta bloqueada por intentos fallidos. Intenta en {lock_minutes} minutos.",
+        }), 429
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM usuarios WHERE username=? AND activo=1", (username,))
+    user = c.fetchone()
+    if not user or not user["password_hash"] or not verify_user_password(user, password):
+        conn.close()
+        _record_failed(identifier)
+        return jsonify({"ok": False, "message": "Usuario o contrasena incorrectos."}), 401
+
+    if password_is_legacy_or_weak(user, password):
+        conn.close()
+        _clear_failed(identifier)
+        session["user"] = user["username"]
+        session["role"] = user["rol"]
+        session["area"] = user["area"]
+        session["password_change_required"] = True
+        log(user["username"], "Inicio de sesion (cambio de contrasena obligatorio)")
+        return jsonify({"ok": False, "message": "Debes cambiar la contrasena antes de usar passkey.", "redirect": "/password/update"}), 403
+
+    if user["rol"] not in ("admin", "coordinador"):
+        conn.close()
+        return jsonify({"ok": False, "message": "Este usuario no requiere passkey para autenticarse."}), 400
+
+    active_passkeys = get_active_passkeys(conn, username)
+    if not active_passkeys:
+        conn.close()
+        return jsonify({"ok": False, "message": "No hay passkeys activas para este usuario."}), 400
+
+    allow_credentials = [
+        PublicKeyCredentialDescriptor(id=b64url_decode(row["credential_id"]))
+        for row in active_passkeys
+    ]
+    conn.close()
+
+    options = generate_authentication_options(
+        rp_id=PASSKEY_RP_ID,
+        timeout=PASSKEY_TIMEOUT_MS,
+        user_verification=UserVerificationRequirement.REQUIRED,
+        allow_credentials=allow_credentials,
+    )
+    options_json = json.loads(options_to_json(options))
+
+    session["pending_passkey_login"] = {
+        "username": user["username"],
+        "role": user["rol"],
+        "area": user["area"],
+        "identifier": identifier,
+        "challenge": options_json["challenge"],
+        "issued_at": time.time(),
+    }
+
+    return jsonify({"ok": True, "publicKey": options_json})
+
+
+@app.route("/auth/passkey/login/verify", methods=["POST"])
+def passkey_login_verify():
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+
+    pending = session.get("pending_passkey_login")
+    if not pending:
+        return jsonify({"ok": False, "message": "No hay autenticacion passkey pendiente."}), 400
+
+    if time.time() - pending.get("issued_at", 0) > SIGNATURE_CHALLENGE_TTL_SECONDS:
+        session.pop("pending_passkey_login", None)
+        return jsonify({"ok": False, "message": "El desafio de passkey expiro."}), 400
+
+    body = request.get_json(silent=True) or {}
+    credential_payload = body.get("credential")
+    if not credential_payload:
+        return jsonify({"ok": False, "message": "Falta la assertion WebAuthn."}), 400
+
+    credential_id = credential_payload.get("id") or credential_payload.get("rawId")
+    if not credential_id:
+        return jsonify({"ok": False, "message": "Credential ID invalido."}), 400
+
+    conn = get_conn()
+    passkey_row = get_active_passkey_by_credential(conn, pending.get("username"), credential_id)
+    if not passkey_row:
+        conn.close()
+        _record_failed(pending.get("identifier"))
+        session.pop("pending_passkey_login", None)
+        return jsonify({"ok": False, "message": "Passkey no encontrada o revocada."}), 401
+
+    try:
+        # Normalize authentication payload and decode base64url fields
+        try:
+            cred = dict(credential_payload)
+            if "rawId" in cred:
+                cred["raw_id"] = b64url_decode(cred.pop("rawId"))
+            resp = cred.get("response") or {}
+            client_data = b64url_decode(resp.get("clientDataJSON")) if "clientDataJSON" in resp else None
+            auth_data = b64url_decode(resp.get("authenticatorData")) if "authenticatorData" in resp else None
+            signature = b64url_decode(resp.get("signature")) if "signature" in resp else None
+            user_handle = b64url_decode(resp.get("userHandle")) if "userHandle" in resp else None
+            resp_obj = AuthenticatorAssertionResponse(
+                client_data_json=client_data,
+                authenticator_data=auth_data,
+                signature=signature,
+                user_handle=user_handle,
+            )
+            cred["response"] = resp_obj
+            auth_cred = AuthenticationCredential(**cred)
+        except Exception as e:
+            conn.close()
+            _record_failed(pending.get("identifier"))
+            session.pop("pending_passkey_login", None)
+            traceback.print_exc()
+            return jsonify({"ok": False, "message": f"Carga de assertion invalida: {e}"}), 400
+
+        verification = verify_authentication_response(
+            credential=auth_cred,
+            expected_challenge=b64url_decode(pending.get("challenge")),
+            expected_origin=PASSKEY_ORIGIN,
+            expected_rp_id=PASSKEY_RP_ID,
+            credential_public_key=b64url_decode(passkey_row["public_key_b64"]),
+            credential_current_sign_count=int(passkey_row["sign_count"] or 0),
+            require_user_verification=True,
+        )
+    except Exception:
+        conn.close()
+        _record_failed(pending.get("identifier"))
+        session.pop("pending_passkey_login", None)
+        return jsonify({"ok": False, "message": "No se pudo validar la assertion passkey."}), 401
+
+    update_passkey_usage(conn, passkey_row["id"], int(verification.new_sign_count))
+    conn.commit()
+    conn.close()
+
+    _clear_failed(pending.get("identifier"))
+    session["user"] = pending.get("username")
+    session["role"] = pending.get("role")
+    session["area"] = pending.get("area")
+    session.pop("cert_setup_required", None)
+    session.pop("password_change_required", None)
+    session.pop("pending_passkey_login", None)
+    log(session.get("user"), "Inicio de sesion con passkey")
+
+    return jsonify({"ok": True, "redirect": role_home(session.get("role"))})
 
 
 @app.route("/dashboard")
@@ -2480,6 +3010,63 @@ def usuarios():
     )
 
 
+@app.route("/admin/identidades")
+def admin_identidades():
+    if not require_role("admin"):
+        return redirect("/")
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM usuarios ORDER BY rol, username")
+    lista_usuarios = c.fetchall()
+    c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 100")
+    lista_logs = c.fetchall()
+    conn.close()
+
+    return render_template(
+        "admin_identidades.html",
+        lista_usuarios=lista_usuarios,
+        lista_logs=lista_logs,
+        role_labels=ROLE_LABELS,
+    )
+
+
+@app.route("/admin/pki")
+def admin_pki():
+    if not require_role("admin"):
+        return redirect("/")
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM certificados ORDER BY issued_at DESC, created_at DESC")
+    cert_rows = c.fetchall()
+    conn.close()
+
+    certificados = []
+    now = datetime.datetime.now()
+    resumen = {
+        "activo": 0,
+        "pendiente": 0,
+        "expirado": 0,
+        "revocado": 0,
+    }
+    for row in cert_rows:
+        exp_dt = parse_datetime(row["expires_at"])
+        status = row["status"]
+        if exp_dt and exp_dt < now and status != "revocado":
+            status = "expirado"
+        cert = dict(row)
+        cert["status"] = status or "pendiente"
+        cert["hash_short"] = (row["pem_hash"] or "-")[:12]
+        cert["public_short"] = (row["public_fp"] or "-")[:12]
+        cert["issuer_short"] = (row["issuer_fingerprint"] or "-")[:12]
+        certificados.append(cert)
+        if cert["status"] in resumen:
+            resumen[cert["status"]] += 1
+
+    return render_template("admin_pki.html", certificados=certificados, resumen=resumen)
+
+
 @app.route("/eliminar-usuario/<int:user_id>", methods=["POST"])
 def eliminar_usuario(user_id):
     if not require_role("admin"):
@@ -2679,6 +3266,9 @@ def profile():
     if not require_login():
         return redirect("/")
 
+    if session.get("passkey_enrollment_required"):
+        session["passkey_enrollment_required"] = True
+
     conn = get_conn()
     c = conn.cursor()
 
@@ -2777,19 +3367,61 @@ def profile():
             conn.commit()
             conn.close()
 
+            session.pop("passkey_enrollment_required", None)
             session.pop("password_change_required", None)
             log(session.get("user"), "Actualizo su contrasena (perfil)")
             flash("Contrasena actualizada correctamente.")
             return redirect(role_home(session.get("role")))
 
+        if action == "revoke_passkey":
+            passkey_id = request.form.get("passkey_id", "").strip()
+            c.execute(
+                """
+                UPDATE passkey_credentials
+                SET status='revocado', revoked_at=?, revoked_by=?, revocation_reason=?, updated_at=?
+                WHERE id=? AND username=? AND status='activo'
+                """,
+                (
+                    str(datetime.datetime.now()),
+                    session.get("user"),
+                    "Revocada por el usuario desde perfil",
+                    str(datetime.datetime.now()),
+                    passkey_id,
+                    session.get("user"),
+                ),
+            )
+            conn.commit()
+            conn.close()
+            log(session.get("user"), f"Revoco passkey {passkey_id}")
+            flash("Passkey revocada correctamente.")
+            return redirect("/profile")
+
     c.execute(
-        "SELECT username, rol, area, activo, password_updated_at, email, phone, full_name FROM usuarios WHERE username=?",
+        "SELECT username, rol, area, activo, password_updated_at, email, phone, full_name, passkey_enrollment_required FROM usuarios WHERE username=?",
         (session.get("user"),),
     )
     user = c.fetchone()
+
+    c.execute(
+        """
+        SELECT id, label, aaguid, transports, sign_count, status, created_at, last_used_at
+        FROM passkey_credentials
+        WHERE username=?
+        ORDER BY created_at DESC, id DESC
+        """,
+        (session.get("user"),),
+    )
+    passkeys = c.fetchall()
     conn.close()
 
-    return render_template("profile.html", user=user, role_label=ROLE_LABELS.get(session.get("role"), session.get("role")))
+    return render_template(
+        "profile.html",
+        user=user,
+        role_label=ROLE_LABELS.get(session.get("role"), session.get("role")),
+        passkeys=passkeys,
+        passkey_enabled=PASSKEY_ENABLED and WEBAUTHN_AVAILABLE,
+        passkey_enrollment_required=bool(session.get("passkey_enrollment_required") or (user and user["passkey_enrollment_required"])),
+    )
 
 
 if __name__ == "__main__":
@@ -2797,4 +3429,20 @@ if __name__ == "__main__":
     create_default_accounts()
     bootstrap_dev_certificates()
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(debug=debug_mode)
+    
+    # Parse command line arguments
+    port = 5000
+    if "--port" in sys.argv:
+        port_idx = sys.argv.index("--port")
+        if port_idx + 1 < len(sys.argv):
+            try:
+                port = int(sys.argv[port_idx + 1])
+            except ValueError:
+                print(f"Invalid port: {sys.argv[port_idx + 1]}")
+                sys.exit(1)
+    
+    # Auto-update PASSKEY_ORIGIN if port differs from 5000
+    if port != 5000 and "PASSKEY_ORIGIN" not in os.environ:
+        PASSKEY_ORIGIN = f"http://localhost:{port}"
+    
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)

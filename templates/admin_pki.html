@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centro de Control PKI | Casa Monarca</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="top">
+        <div>Casa Monarca | Centro de Control PKI</div>
+        <div>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/admin/identidades">Gestion de Identidades</a>
+            <a href="/usuarios">Gestion completa</a>
+            <a href="/logout">Cerrar sesion</a>
+        </div>
+    </div>
+
+    <div class="wrap">
+        <div class="grid-2col" style="margin-bottom:16px;">
+            <div class="box"><h2>Activos</h2><div style="font-size:28px; font-weight:700;">{{ resumen['activo'] }}</div></div>
+            <div class="box"><h2>Pendientes</h2><div style="font-size:28px; font-weight:700;">{{ resumen['pendiente'] }}</div></div>
+            <div class="box"><h2>Expirados</h2><div style="font-size:28px; font-weight:700;">{{ resumen['expirado'] }}</div></div>
+            <div class="box"><h2>Revocados</h2><div style="font-size:28px; font-weight:700;">{{ resumen['revocado'] }}</div></div>
+        </div>
+
+        <div class="box">
+            <h2>Inventario de certificados</h2>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Usuario</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Rol</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Estado</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Emitido</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Expira</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Huella</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Public FP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cert in certificados %}
+                    <tr>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['username'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['rol'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['status'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['issued_at'] or '-' }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['expires_at'] or '-' }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['hash_short'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['public_short'] }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="7" style="padding:8px;">No hay certificados registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

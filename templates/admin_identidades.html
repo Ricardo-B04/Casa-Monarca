@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestion de Identidades | Casa Monarca</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="top">
+        <div>Casa Monarca | Gestion de Identidades</div>
+        <div>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/admin/pki">Centro PKI</a>
+            <a href="/usuarios">Gestion completa</a>
+            <a href="/logout">Cerrar sesion</a>
+        </div>
+    </div>
+
+    <div class="wrap">
+        <div class="box" style="margin-bottom:16px;">
+            <h2>Resumen de identidades</h2>
+            <p>Esta vista separa el dominio de usuarios. Las altas, bajas y cambios se mantienen en la vista completa de gestion mientras se termina la migracion.</p>
+        </div>
+
+        <div class="box" style="margin-bottom:16px;">
+            <h2>Usuarios</h2>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Usuario</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Rol</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Area</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Activo</th>
+                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Contingencia</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in lista_usuarios %}
+                    <tr>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ u['username'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ role_labels.get(u['rol'], u['rol']) }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ u['area'] or '-' }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ 'Si' if u['activo'] else 'No' }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ 'Si' if u['is_contingency'] else 'No' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" style="padding:8px;">No hay usuarios.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="box">
+            <h2>Actividad reciente de identidad</h2>
+            <div style="font-size:13px;">
+                {% for lg in lista_logs[:25] %}
+                    <div style="padding:6px 0; border-bottom:1px solid #eef2f7;">
+                        <strong>{{ lg['usuario'] }}</strong> - {{ lg['accion'] }}
+                        <span style="color:#6a7382;">({{ lg['fecha'] }})</span>
+                    </div>
+                {% else %}
+                    <div>No hay eventos.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
