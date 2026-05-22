@@ -2,166 +2,557 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Panel Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel Admin | Casa Monarca</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-body {
-    margin: 0;
-    font-family: "Segoe UI", sans-serif;
-    background: #f2f4f8;
-}
-
-.top {
-    background: #141b2d;
-    color: white;
-    padding: 14px 20px;
+/* ── Page header ── */
+.page-header {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-2xl);
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
 }
 
-.top a {
-    color: white;
-    text-decoration: none;
-    margin-left: 10px;
+.page-header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--color-primary);
+    margin: 0;
 }
 
-.wrap {
-    max-width: 1150px;
-    margin: 20px auto;
-    padding: 0 16px;
-}
-
-.grid {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 14px;
-}
-
-.box {
-    background: white;
-    border: 1px solid #dce3ef;
-    border-radius: 12px;
-    padding: 14px;
-}
-
-.row {
-    border-bottom: 1px solid #edf1f6;
-    padding: 10px 0;
-}
-
-.row:last-child {
-    border-bottom: 0;
-}
-
-.meta {
-    color: #5f6c81;
+.page-header .subtitle {
     font-size: 13px;
+    color: var(--color-text-muted);
+    margin-top: 2px;
 }
 
-button {
-    border: 0;
-    border-radius: 8px;
-    background: #8a2f1a;
-    color: white;
-    padding: 8px 11px;
-    cursor: pointer;
+/* ── Summary cards ── */
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-2xl);
 }
 
-input[type="password"],
-input[type="file"] {
-    border: 1px solid #d1d7e3;
-    border-radius: 8px;
-    padding: 6px;
+.summary-card {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s;
+}
+
+.summary-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.summary-card strong {
+    display: block;
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--color-accent);
+    margin-bottom: 4px;
+}
+
+.summary-card label {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 600;
+}
+
+/* ── Search & filter bar ── */
+.search-bar {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.search-bar input,
+.search-bar select {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: 14px;
+    background: var(--color-white);
+    color: var(--color-text);
+    transition: border-color 0.2s;
+}
+
+.search-bar input:focus,
+.search-bar select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+}
+
+.search-bar input {
+    flex: 1;
+    min-width: 200px;
+}
+
+.search-bar .result-count {
+    font-size: 13px;
+    color: var(--color-text-muted);
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+/* ── Expediente rows ── */
+.expediente-row {
+    display: flex;
+    align-items: center;
+    padding: var(--spacing-md) var(--spacing-lg);
+    border-bottom: 1px solid var(--color-border);
+    gap: var(--spacing-lg);
+    transition: background 0.15s;
+}
+
+.expediente-row:last-child {
+    border-bottom: none;
+}
+
+.expediente-row:hover {
+    background: #f9fafb;
+}
+
+.expediente-row.hidden {
+    display: none;
+}
+
+.exp-id {
     font-size: 12px;
+    font-weight: 700;
+    color: var(--color-text-muted);
+    min-width: 32px;
+    text-align: center;
+    background: var(--color-light);
+    border-radius: var(--radius-sm);
+    padding: 3px 6px;
 }
 
-.badge {
+.exp-info {
+    flex: 1;
+}
+
+.exp-name {
+    font-weight: 600;
+    color: var(--color-text);
+    font-size: 15px;
+    margin-bottom: 3px;
+}
+
+.exp-meta {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    display: flex;
+    gap: var(--spacing-lg);
+    flex-wrap: wrap;
+}
+
+.exp-meta span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Estado badges con colores */
+.estado-badge {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.estado-borrador        { background: #f0f0f0; color: #666; }
+.estado-en_revision_operativa { background: #fff3cd; color: #856404; }
+.estado-en_revision_coordinacion { background: #cce5ff; color: #004085; }
+.estado-validado_coordinacion { background: #d4edda; color: #155724; }
+.estado-cerrado         { background: #e2e3e5; color: #383d41; }
+.estado-default         { background: #eef2fb; color: #35415a; }
+
+/* ── Solicitudes ── */
+.solicitud-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-lg);
+    margin-bottom: var(--spacing-md);
+    background: var(--color-white);
+    transition: box-shadow 0.2s;
+}
+
+.solicitud-card:last-child {
+    margin-bottom: 0;
+}
+
+.solicitud-card:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.solicitud-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--spacing-sm);
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+}
+
+.solicitud-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--color-primary);
+}
+
+.solicitud-meta {
     font-size: 12px;
-    background: #eef2fb;
-    color: #35415a;
+    color: var(--color-text-muted);
+    line-height: 1.8;
+    margin-bottom: var(--spacing-md);
+}
+
+.solicitud-meta strong {
+    color: var(--color-text);
+}
+
+.solicitud-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+}
+
+/* Firma inline compacta */
+.firma-inline {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    background: var(--color-light);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    margin-top: var(--spacing-md);
+}
+
+.firma-inline label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.firma-inline input[type="file"],
+.firma-inline input[type="text"] {
+    font-size: 13px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius-sm);
+}
+
+.firma-inline .firma-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-sm);
+}
+
+.firma-inline .btn-row {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+}
+
+/* ── Layout ── */
+.admin-grid {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr;
+    gap: var(--spacing-lg);
+    align-items: start;
+}
+
+.empty-state {
+    text-align: center;
+    padding: var(--spacing-2xl);
+    color: var(--color-text-muted);
+    font-size: 14px;
+}
+
+.empty-state .icon {
+    font-size: 32px;
+    margin-bottom: var(--spacing-md);
+    display: block;
 }
 
 @media (max-width: 900px) {
-    .grid {
+    .admin-grid {
+        grid-template-columns: 1fr;
+    }
+    .firma-inline .firma-row {
         grid-template-columns: 1fr;
     }
 }
 </style>
 </head>
 <body>
+
+<!-- NAVBAR -->
 <div class="top">
     <div>Casa Monarca | Administrador</div>
     <div>
+        
+        <a href="/admin">Panel Admin</a>
+        <a href="/admin/identidades">Identidades</a>
+        <a href="/admin/pki">Centro PKI</a>
         <a href="/dashboard">Dashboard</a>
-        <a href="/bandeja">Bandeja Admin</a>
         <a href="/usuarios">Usuarios</a>
         <a href="/logs">Bitacora</a>
+        
+        <a href="/bandeja">Bandeja</a>
+        <a href="/survey">Nuevo Registro</a>
+        <a href="/profile">Mi Perfil</a>
         <a href="/logout">Cerrar sesion</a>
     </div>
 </div>
 
 <div class="wrap">
+
+    <!-- FLASH -->
     {% with messages = get_flashed_messages() %}
         {% if messages %}
-            <div class="box" style="background:#eafaf0; border-color:#a7d8b7;">{{ messages[0] }}</div>
+            <div class="alert alert-success">{{ messages[0] }}</div>
         {% endif %}
     {% endwith %}
 
-    <div class="grid">
+    <!-- HEADER -->
+    <div class="page-header">
+        <div>
+            <h1>Panel de Administración</h1>
+            <div class="subtitle">Gestión de expedientes y solicitudes del sistema</div>
+        </div>
+    </div>
+
+    <!-- SUMMARY CARDS -->
+    <div class="summary-cards">
+        <div class="summary-card">
+            <strong id="count-total">{{ expedientes|length }}</strong>
+            <label>Expedientes</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ expedientes|selectattr('estado', 'equalto', 'borrador')|list|length }}</strong>
+            <label>Borrador</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ expedientes|selectattr('estado', 'equalto', 'validado_coordinacion')|list|length }}</strong>
+            <label>Validados</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ expedientes|selectattr('estado', 'equalto', 'cerrado')|list|length }}</strong>
+            <label>Cerrados</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ solicitudes|length }}</strong>
+            <label>Solicitudes</label>
+        </div>
+    </div>
+
+    <div class="admin-grid">
+
+        <!-- ── EXPEDIENTES ── -->
         <div class="box">
-            <h2 style="margin-top:0;">Expedientes del sistema</h2>
+            <h2>Expedientes del sistema</h2>
+
+            <!-- BARRA DE BÚSQUEDA -->
+            <div class="search-bar">
+                <input type="text" id="searchNombre" placeholder="Buscar por nombre" oninput="filtrarExpedientes()">
+                <select id="filtroEstado" onchange="filtrarExpedientes()">
+                    <option value="">Todos los estados</option>
+                    <option value="borrador">Borrador</option>
+                    <option value="en_revision_operativa">En revisión operativa</option>
+                    <option value="en_revision_coordinacion">En revisión coordinación</option>
+                    <option value="validado_coordinacion">Validado coordinación</option>
+                    <option value="cerrado">Cerrado</option>
+                </select>
+                <select id="filtroPais" onchange="filtrarExpedientes()">
+                    <option value="">Todos los países</option>
+                    {% set paises = [] %}
+                    {% for d in expedientes %}
+                        {% if d.pais and d.pais not in paises %}
+                            {% set _ = paises.append(d.pais) %}
+                            <option value="{{ d.pais|lower }}">{{ d.pais }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+                <span class="result-count" id="resultCount"></span>
+            </div>
+
+            <!-- LISTA -->
             {% if expedientes %}
-                {% for d in expedientes %}
-                    <div class="row">
-                        <strong>#{{ d.id }} {{ d.nombre }} {{ d.apellido_paterno }}</strong>
-                        <div class="meta">Creado por {{ d.creado_por }} | Estado: <span class="badge">{{ d.estado }}</span></div>
-                        <div class="meta">Pais: {{ d.pais }} | Edad: {{ d.edad }} | Estancia: {{ d.tiempo_estancia }} meses</div>
-                    </div>
-                {% endfor %}
+                <div id="expedientesList">
+                    {% for d in expedientes %}
+                        {% set estado_key = d.estado | replace(' ', '_') | lower %}
+                        <div class="expediente-row"
+                             data-nombre="{{ (d.nombre ~ ' ' ~ d.apellido_paterno)|lower }}"
+                             data-estado="{{ d.estado|lower }}"
+                             data-pais="{{ d.pais|lower if d.pais else '' }}">
+                            <div class="exp-id">#{{ d.id }}</div>
+                            <div class="exp-info">
+                                <div class="exp-name">{{ d.nombre }} {{ d.apellido_paterno }}</div>
+                                <div class="exp-meta">
+                                    <span> {{ d.creado_por or '—' }}</span>
+                                    <span> {{ d.pais or '—' }}</span>
+                                    <span> {{ d.edad }} años</span>
+                                    <span> {{ d.tiempo_estancia }} meses</span>
+                                </div>
+                            </div>
+                            <div>
+                                <span class="estado-badge estado-{{ estado_key if estado_key in ['borrador','en_revision_operativa','en_revision_coordinacion','validado_coordinacion','cerrado'] else 'default' }}">
+                                    {{ d.estado }}
+                                </span>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+                <div id="emptySearch" class="empty-state" style="display:none;">
+                    <span class="icon"></span>
+                    No se encontraron expedientes con ese criterio.
+                </div>
             {% else %}
-                <p>Sin expedientes.</p>
+                <div class="empty-state">
+                    <span class="icon"></span>
+                    Sin expedientes registrados.
+                </div>
             {% endif %}
         </div>
 
+        <!-- ── SOLICITUDES ── -->
         <div class="box">
-            <h2 style="margin-top:0;">Solicitudes de eliminacion</h2>
+            <h2>Solicitudes de eliminación</h2>
             {% if solicitudes %}
                 {% for s in solicitudes %}
-                    <div class="row">
-                        <div><strong>Solicitud #{{ s['id'] }}</strong></div>
-                        <div class="meta">Expediente: {{ s['encuesta_id'] }}</div>
-                        <div class="meta">Solicitante: {{ s['solicitante'] }}</div>
-                        <div class="meta">Motivo: {{ s['motivo'] }}</div>
-                        <div class="meta">Fecha: {{ s['fecha_solicitud'] }}</div>
-                        <div style="display:flex; gap:8px; margin-top:8px;">
-                            <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
-                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
-                                <input type="hidden" name="decision" value="aprobar">
-                                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                                <button type="submit">Aprobar</button>
-                            </form>
-                            <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
-                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
-                                <input type="hidden" name="decision" value="rechazar">
-                                <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                                <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                                <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                                <button type="submit" style="background:#445068;">Rechazar</button>
-                            </form>
+                    <div class="solicitud-card">
+                        <div class="solicitud-header">
+                            <div class="solicitud-title">Solicitud #{{ s['id'] }}</div>
+                            <span class="badge badge-warning">Pendiente</span>
                         </div>
+                        <div class="solicitud-meta">
+                            <div><strong>Expediente:</strong> #{{ s['encuesta_id'] }}</div>
+                            <div><strong>Solicitante:</strong> {{ s['solicitante'] }}</div>
+                            <div><strong>Motivo:</strong> {{ s['motivo'] }}</div>
+                            <div><strong>Fecha:</strong> {{ s['fecha_solicitud'] }}</div>
+                        </div>
+
+                        <!-- Aprobar -->
+                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                            <input type="hidden" name="decision" value="aprobar">
+                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                            <div class="firma-inline">
+                                <label>Firma para aprobar</label>
+                                <div class="firma-row">
+                                    <div>
+                                        <label>Certificado (.pem)</label>
+                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                                    </div>
+                                    <div>
+                                        <label>Firma Base64</label>
+                                        <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label>O archivo de firma (.sig)</label>
+                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
+                                </div>
+                                <div class="btn-row">
+                                    <button type="submit" class="btn btn-success btn-sm" style="background: var(--color-success);">✓ Aprobar</button>
+                                </div>
+                            </div>
+                        </form>
+
+                        <!-- Rechazar -->
+                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data" style="margin-top: var(--spacing-sm);">
+                            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                            <input type="hidden" name="decision" value="rechazar">
+                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
+                            <div class="firma-inline">
+                                <label>Firma para rechazar</label>
+                                <div class="firma-row">
+                                    <div>
+                                        <label>Certificado (.pem)</label>
+                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
+                                    </div>
+                                    <div>
+                                        <label>Firma Base64</label>
+                                        <input type="text" name="action_signature" placeholder="Firma Base64" required>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label>O archivo de firma (.sig)</label>
+                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
+                                </div>
+                                <div class="btn-row">
+                                    <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
+                                </div>
+                            </div>
+                        </form>
                     </div>
                 {% endfor %}
             {% else %}
-                <p>No hay solicitudes pendientes.</p>
+                <div class="empty-state">
+                    <span class="icon"></span>
+                    No hay solicitudes pendientes.
+                </div>
             {% endif %}
         </div>
+
     </div>
 </div>
+
+<script>
+function filtrarExpedientes() {
+    const nombre = document.getElementById('searchNombre').value.toLowerCase();
+    const estado = document.getElementById('filtroEstado').value.toLowerCase();
+    const pais   = document.getElementById('filtroPais').value.toLowerCase();
+
+    const rows = document.querySelectorAll('.expediente-row');
+    let visible = 0;
+
+    rows.forEach(row => {
+        const matchNombre = !nombre || row.dataset.nombre.includes(nombre);
+        const matchEstado = !estado || row.dataset.estado === estado;
+        const matchPais   = !pais   || row.dataset.pais === pais;
+
+        if (matchNombre && matchEstado && matchPais) {
+            row.classList.remove('hidden');
+            visible++;
+        } else {
+            row.classList.add('hidden');
+        }
+    });
+
+    const countEl = document.getElementById('resultCount');
+    countEl.textContent = visible + ' de ' + rows.length + ' expedientes';
+
+    const emptyEl = document.getElementById('emptySearch');
+    if (emptyEl) emptyEl.style.display = visible === 0 ? 'block' : 'none';
+}
+
+// Inicializar conteo
+document.addEventListener('DOMContentLoaded', () => {
+    const rows = document.querySelectorAll('.expediente-row');
+    const countEl = document.getElementById('resultCount');
+    if (countEl && rows.length) countEl.textContent = rows.length + ' expedientes';
+});
+</script>
 </body>
 </html>

@@ -3,95 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <title>Bandeja de trabajo</title>
-<style>
-body {
-    margin: 0;
-    font-family: "Segoe UI", sans-serif;
-    background: #f4f5f8;
-}
-
-.top {
-    background: #111827;
-    color: white;
-    padding: 14px 20px;
-    display: flex;
-    justify-content: space-between;
-}
-
-.top a {
-    color: #fff;
-    text-decoration: none;
-    margin-left: 10px;
-}
-
-.wrap {
-    max-width: 1080px;
-    margin: 18px auto;
-    padding: 0 16px;
-}
-
-.banner {
-    background: #fff4d6;
-    border: 1px solid #ebd89a;
-    padding: 10px;
-    border-radius: 10px;
-    margin-bottom: 12px;
-}
-
-.card {
-    background: white;
-    border: 1px solid #e2e6ef;
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 10px;
-}
-
-.meta {
-    color: #667085;
-    font-size: 13px;
-    margin: 2px 0;
-}
-
-.actions {
-    margin-top: 8px;
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-button {
-    border: 0;
-    border-radius: 8px;
-    padding: 8px 11px;
-    cursor: pointer;
-    color: white;
-    background: #8b2c14;
-}
-
-input[type="text"],
-input[type="password"] {
-    padding: 8px;
-    border: 1px solid #d6dce9;
-    border-radius: 8px;
-    min-width: 220px;
-}
-
-.empty {
-    text-align: center;
-    padding: 40px;
-    color: #7a8190;
-    background: white;
-    border: 1px solid #e2e6ef;
-    border-radius: 12px;
-}
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 
 <div class="top">
     <div>Bandeja | Rol: {{ role }}</div>
     <div>
+        
+        <a href="/admin">Panel Admin</a>
+        <a href="/admin/identidades">Identidades</a>
+        <a href="/admin/pki">Centro PKI</a>
         <a href="/dashboard">Dashboard</a>
+        <a href="/usuarios">Usuarios</a>
+        
+        <a href="/logs">Bitacora</a>
+        <a href="/bandeja">Bandeja</a>
+        <a href="/survey">Nuevo Registro</a>
+        <a href="/profile">Mi Perfil</a>
         <a href="/logout">Cerrar sesion</a>
     </div>
 </div>

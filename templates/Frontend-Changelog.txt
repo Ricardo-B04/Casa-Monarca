@@ -1,0 +1,7 @@
+Se han realizado cambios a la interfaz
+
+Nota: 
+    Tag de Admin no está bien guardada en admin_cont, se removió temporalmente la necesidad de esta en la barra 
+    de exploración con el fin de la demostración.
+
+    can_access_bandeja y can_create tampoco servían.

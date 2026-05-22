@@ -11,7 +11,7 @@
         }
 
         .top {
-            background: #1b263b;
+            background: #F16622;
             color: white;
             padding: 14px 22px;
             display: flex;
@@ -62,11 +62,16 @@
             margin-top: 14px;
             border: 0;
             border-radius: 10px;
-            background: #8a2f18;
+            background: #8f3219;
             color: white;
             padding: 10px 16px;
             font-weight: 600;
             cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #ca8c06;
         }
 
         @media (max-width: 700px) {
@@ -80,10 +85,19 @@
     <div class="top">
         <div>Casa Monarca | Nuevo expediente</div>
         <div>
+            <a href="/admin">Panel Admin</a>
+            <a href="/admin/identidades">Identidades</a>
+            <a href="/admin/pki">Centro PKI</a>
             <a href="/dashboard">Dashboard</a>
+            <a href="/usuarios">Usuarios</a>
+            <a href="/logs">Bitacora</a>
+            <a href="/bandeja">Bandeja</a>
+            <a href="/survey">Nuevo Registro</a>
+            <a href="/profile">Mi Perfil</a>
             <a href="/logout">Cerrar sesion</a>
         </div>
     </div>
+
 
     <div class="container">
         <h2>Registro de beneficiario</h2>

@@ -3,32 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <title>Mi Perfil</title>
-    <style>
-        body { font-family: "Segoe UI", sans-serif; background: #f4f5f8; color: #222; }
-        .top { background: #132034; color: white; padding: 12px 20px; display:flex; justify-content:space-between; align-items:center }
-        .top a { color: white; text-decoration:none; margin-left:12px }
-        .wrap { max-width:900px; margin:26px auto; padding:0 18px }
-        .card { background:white; border:1px solid #dfe3eb; border-radius:12px; padding:16px; margin-bottom:14px }
-        label { display:block; font-size:13px; color:#616b7c; margin-top:8px }
-        input[type=text], input[type=password], input[type=email] { width:100%; padding:8px; border:1px solid #e2e8f0; border-radius:8px }
-        .btn { background:#8c2f1d; color:white; border:0; padding:8px 12px; border-radius:8px; margin-top:12px }
-        .btn-secondary { background:#334155; color:white; border:0; padding:8px 12px; border-radius:8px; margin-top:12px; cursor:pointer }
-        .table { width:100%; border-collapse:collapse; margin-top:12px; font-size:13px }
-        .table th, .table td { border-bottom:1px solid #e7ebf3; padding:8px; text-align:left }
-        .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600 }
-        .badge.ok { background:#dcfce7; color:#166534 }
-        .badge.off { background:#fee2e2; color:#991b1b }
-        .hint { color:#6b7280; font-size:12px; margin-top:8px }
-        .status-msg { margin-top:10px; font-size:13px; color:#334155 }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="top">
         <div>Casa Monarca | Mi Perfil</div>
         <div>
-            <a href="/dashboard">Inicio</a>
+            <a href="/admin">Panel Admin</a>
+            <a href="/admin/identidades">Identidades</a>
+            <a href="/admin/pki">Centro PKI</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/usuarios">Usuarios</a>
+            <a href="/logs">Bitacora</a>
+            <a href="/bandeja">Bandeja</a>
+            <a href="/survey">Nuevo Registro</a>
+            <a href="/profile">Mi Perfil</a>
             <a href="/logout">Cerrar sesion</a>
-        </div>
+    </div>
     </div>
 
     <div class="wrap">

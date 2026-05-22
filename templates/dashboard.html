@@ -12,7 +12,7 @@
         }
 
         .top {
-            background: #132034;
+            background: #F16622;
             color: white;
             padding: 16px 26px;
             display: flex;
@@ -76,7 +76,7 @@
             margin-top: 8px;
             border: 0;
             border-radius: 9px;
-            background: #8c2f1d;
+            background: #8f3219;
             color: white;
             padding: 9px 12px;
             text-decoration: none;
@@ -108,19 +108,22 @@
 </head>
 <body>
     <div class="top">
-        <div>Casa Monarca | Rol: {{ role }}</div>
+        <div> <strong>Casa Monarca | Rol:{{ role }}</strong></div>
         <div>
-            {% if role_key == "admin" %}
-                <a href="/admin">Panel Admin</a>
-                <a href="/usuarios">Usuarios</a>
-                <a href="/logs">Bitacora</a>
-            {% endif %}
-            {% if can_access_bandeja %}<a href="/bandeja">Bandeja</a>{% endif %}
-            {% if can_create %}<a href="/survey">Nuevo Registro</a>{% endif %}
+            
+            <a href="/admin">Panel Admin</a>
+            <a href="/admin/identidades">Identidades</a>
+            <a href="/admin/pki">Centro PKI</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/usuarios">Usuarios</a>
+            <a href="/logs">Bitacora</a>
+            <a href="/bandeja">Bandeja</a>
+            <a href="/survey">Nuevo Registro</a>
             <a href="/profile">Mi Perfil</a>
             <a href="/logout">Cerrar sesion</a>
         </div>
     </div>
+
 
     <div class="wrap">
         {% with messages = get_flashed_messages() %}
@@ -139,8 +142,7 @@
                 {% if can_update %}U {% endif %}
                 {% if can_delete %}D{% endif %}
             </div>
-            {% if can_create %}<a class="btn" href="/survey">Registrar expediente</a>{% endif %}
-            {% if can_access_bandeja %}<a class="btn" href="/bandeja">Ver bandeja</a>{% endif %}
+
         </div>
 
         <div class="grid">
