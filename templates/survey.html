@@ -11,7 +11,7 @@
         }
 
         .top {
-            background: #1b263b;
+            background: #F16622;
             color: white;
             padding: 14px 22px;
             display: flex;
@@ -43,6 +43,10 @@
             gap: 12px;
         }
 
+        .full {
+            grid-column: 1 / -1;
+        }
+
         label {
             display: block;
             font-size: 13px;
@@ -50,28 +54,46 @@
             color: #505b6f;
         }
 
-        input {
+        input, select {
             width: 100%;
             padding: 10px;
             border-radius: 9px;
             border: 1px solid #cfd6e4;
             box-sizing: border-box;
+            background: white;
+            font-family: "Segoe UI", sans-serif;
+            font-size: 14px;
+        }
+
+        small {
+            display: block;
+            font-size: 11px;
+            color: #8a94a6;
+            margin-top: 3px;
         }
 
         button {
             margin-top: 14px;
             border: 0;
             border-radius: 10px;
-            background: #8a2f18;
+            background: #8f3219;
             color: white;
             padding: 10px 16px;
             font-weight: 600;
             cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #ca8c06;
         }
 
         @media (max-width: 700px) {
             .grid {
                 grid-template-columns: 1fr;
+            }
+            .full {
+                grid-column: 1;
             }
         }
     </style>
@@ -80,7 +102,15 @@
     <div class="top">
         <div>Casa Monarca | Nuevo expediente</div>
         <div>
+            <a href="/admin">Panel Admin</a>
+            <a href="/admin/identidades">Identidades</a>
+            <a href="/admin/pki">Centro PKI</a>
             <a href="/dashboard">Dashboard</a>
+            <a href="/usuarios">Usuarios</a>
+            <a href="/logs">Bitacora</a>
+            <a href="/bandeja">Bandeja</a>
+            <a href="/survey">Nuevo Registro</a>
+            <a href="/profile">Mi Perfil</a>
             <a href="/logout">Cerrar sesion</a>
         </div>
     </div>
@@ -90,30 +120,133 @@
         <form method="POST">
             <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <div class="grid">
+
+                <!-- 1. Fecha de atención -->
                 <div>
-                    <label>Nombre</label>
-                    <input name="nombre" required>
+                    <label>1. Fecha de atención</label>
+                    <input type="date" name="fecha_atencion" required>
                 </div>
+
+                <!-- 2. Nombre de pila -->
                 <div>
-                    <label>Apellido paterno</label>
-                    <input name="apellido_paterno" required>
+                    <label>2. Nombre de pila (sin apellidos)</label>
+                    <input type="text" name="nombre_pila" placeholder="Nombre de pila" required>
                 </div>
+
+                <!-- 3. Primer apellido -->
                 <div>
-                    <label>Apellido materno</label>
-                    <input name="apellido_materno" required>
+                    <label>3. Primer apellido</label>
+                    <input type="text" name="primer_apellido" placeholder="Primer apellido" required>
                 </div>
+
+                <!-- 4. Segundo apellido -->
                 <div>
-                    <label>Pais</label>
-                    <input name="pais" required>
+                    <label>4. Segundo apellido</label>
+                    <input type="text" name="segundo_apellido" placeholder="Segundo apellido o X">
+                    <small>En caso de no tener segundo apellido, poner "X"</small>
                 </div>
+
+                <!-- 5. Teléfono -->
                 <div>
-                    <label>Edad</label>
-                    <input type="number" name="edad" min="0" required>
+                    <label>5. Número telefónico de contacto</label>
+                    <input type="tel" name="telefono" placeholder="+52 800 000 0000" required>
                 </div>
+
+                <!-- 6. Género -->
                 <div>
-                    <label>Tiempo de estancia (meses)</label>
-                    <input type="number" name="tiempo_estancia" min="0" required>
+                    <label>6. Género</label>
+                    <select name="genero" required>
+                        <option value="" disabled selected>Seleccionar...</option>
+                        <option value="femenino">Femenino</option>
+                        <option value="masculino">Masculino</option>
+                        <option value="no_binario">No binario</option>
+                        <option value="lgbtiq">LGBTIQ+</option>
+                    </select>
                 </div>
+
+                <!-- 7. País de origen -->
+                <div>
+                    <label>7. País de origen</label>
+                    <select name="pais_origen" required>
+                        <option value="" disabled selected>Seleccionar...</option>
+                        <option>México</option>
+                        <option>Guatemala</option>
+                        <option>Honduras</option>
+                        <option>El Salvador</option>
+                        <option>Nicaragua</option>
+                        <option>Costa Rica</option>
+                        <option>Panamá</option>
+                        <option>Colombia</option>
+                        <option>Venezuela</option>
+                        <option>Ecuador</option>
+                        <option>Perú</option>
+                        <option>Bolivia</option>
+                        <option>Brasil</option>
+                        <option>Argentina</option>
+                        <option>Chile</option>
+                        <option>Cuba</option>
+                        <option>Haití</option>
+                        <option>República Dominicana</option>
+                        <option>Otro</option>
+                    </select>
+                </div>
+
+                <!-- 8. Departamento / Estado -->
+                <div>
+                    <label>8. Departamento / Estado</label>
+                    <input type="text" name="departamento_estado" placeholder="Departamento o estado" required>
+                </div>
+
+                <!-- 9. Estado civil -->
+                <div>
+                    <label>9. Estado civil</label>
+                    <select name="estado_civil" required>
+                        <option value="" disabled selected>Seleccionar...</option>
+                        <option value="soltero">Soltero/a</option>
+                        <option value="casado">Casado/a</option>
+                        <option value="union_libre">Unión libre</option>
+                        <option value="divorciado">Divorciado/a</option>
+                        <option value="viudo">Viudo/a</option>
+                        <option value="separado">Separado/a</option>
+                    </select>
+                </div>
+
+                <!-- 10. Fecha de nacimiento -->
+                <div>
+                    <label>10. Fecha de nacimiento</label>
+                    <input type="date" name="fecha_nacimiento" required>
+                </div>
+
+                <!-- 11. Edad -->
+                <div>
+                    <label>11. Edad</label>
+                    <select name="edad" required>
+                        <option value="" disabled selected>Seleccionar...</option>
+                        <option>0–5 años</option>
+                        <option>6–11 años</option>
+                        <option>12–17 años</option>
+                        <option>18–29 años</option>
+                        <option>30–44 años</option>
+                        <option>45–59 años</option>
+                        <option>60 años o más</option>
+                    </select>
+                </div>
+
+                <!-- 12. Grupo de población -->
+                <div class="full">
+                    <label>12. ¿A qué grupo de población pertenece?</label>
+                    <select name="grupo_poblacion" required>
+                        <option value="" disabled selected>Seleccionar...</option>
+                        <option value="adulto">Adulto (18–59 años)</option>
+                        <option value="adulto_mayor">Adulto mayor (+60 años)</option>
+                        <option value="nina_acompanada">Niña acompañada</option>
+                        <option value="nino_acompanado">Niño acompañado</option>
+                        <option value="adolescente_hombre">Adolescente hombre acompañado</option>
+                        <option value="adolescente_mujer">Adolescente mujer acompañada</option>
+                        <option value="nna_no_acompanado">NNA no acompañado</option>
+                    </select>
+                </div>
+
             </div>
             <button type="submit">Guardar registro</button>
         </form>

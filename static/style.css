@@ -7,27 +7,35 @@
    ───────────────────────────────────────────────────────── */
 
 :root {
-    /* Paleta de colores */
-    --color-primary: #161d2f;
-    --color-secondary: #44506a;
-    --color-accent: #8f3219;
+
+    /* Institucional */
+    --color-primary: #F16622;      /* naranja principal */
+    --color-secondary: #986901;    /* dorado/café */
+    --color-accent: #8f3219;       /* vino/café oscuro */
+
+    /* Estados */
     --color-success: #28a745;
     --color-warning: #ffc107;
     --color-danger: #dc3545;
     --color-info: #17a2b8;
-    
+
     /* Roles */
-    --role-admin: #dc3545;
-    --role-coordinador: #fd7e14;
-    --role-operativo: #0d6efd;
+    --role-admin: #986901;
+    --role-coordinador: #c98200;
+    --role-operativo: #4b5563;
     --role-usuario: #6c757d;
-    
+
     /* Neutros */
     --color-white: #ffffff;
     --color-light: #f4f6fa;
     --color-border: #dbe2ef;
     --color-text: #2d3748;
     --color-text-muted: #6a7382;
+
+    /* Fondos */
+    --bg-dark: #222222;
+    --bg-brown: #35241C;
+
     
     /* Espaciado */
     --spacing-xs: 4px;
@@ -293,19 +301,19 @@ button[type="submit"],
 
 button[type="submit"]:hover:not(:disabled),
 .btn-primary:hover:not(:disabled) {
-    background: #7a2817;
+    background: #986901;
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
 
 /* Secondary button */
 .btn-secondary {
-    background: var(--color-secondary);
+    background: var(--color-accent);
     color: var(--color-white);
 }
 
 .btn-secondary:hover:not(:disabled) {
-    background: #35394f;
+    background: #ca8c06;
     box-shadow: var(--shadow-md);
 }
 
@@ -316,7 +324,7 @@ button[type="submit"]:hover:not(:disabled),
 }
 
 .btn-danger:hover:not(:disabled) {
-    background: #c82333;
+    background: #ca8c06;
     box-shadow: var(--shadow-md);
 }
 
