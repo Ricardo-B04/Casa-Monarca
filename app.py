@@ -112,10 +112,61 @@ ROLE_LABELS = {
 }
 
 # Cargar llave de cifrado para datos sensibles
-with open("key.key", "rb") as f:
-    key = f.read()
+ENCRYPTION_KEY_PATH = app.config.get("ENCRYPTION_KEY_PATH", "key.key")
+ENCRYPTION_LEGACY_KEY_PATHS = app.config.get("ENCRYPTION_LEGACY_KEY_PATHS", [])
+DATA_ENCRYPTION_LATENCY_WARNING_SECONDS = app.config.get(
+    "ENCRYPTION_LATENCY_WARNING_SECONDS", 0.25
+)
 
-cipher = Fernet(key)
+def _load_key_bytes(key_path):
+    with open(key_path, "rb") as f:
+        return f.read()
+
+
+def _build_keyring(primary_path, legacy_paths):
+    keyring = []
+    seen_fingerprints = set()
+
+    ordered_paths = [primary_path] + list(legacy_paths or [])
+    for index, key_path in enumerate(ordered_paths):
+        try:
+            key_bytes = _load_key_bytes(key_path)
+        except FileNotFoundError:
+            continue
+
+        fingerprint = hashlib.sha256(key_bytes).hexdigest()
+        if fingerprint in seen_fingerprints:
+            continue
+
+        seen_fingerprints.add(fingerprint)
+        keyring.append(
+            {
+                "path": key_path,
+                "fingerprint": fingerprint,
+                "key_bytes": key_bytes,
+                "cipher": Fernet(key_bytes),
+                "is_primary": index == 0,
+            }
+        )
+
+    return keyring
+
+
+ENCRYPTION_KEYRING = _build_keyring(ENCRYPTION_KEY_PATH, ENCRYPTION_LEGACY_KEY_PATHS)
+if not ENCRYPTION_KEYRING:
+    raise FileNotFoundError(f"No se pudo cargar ninguna llave de cifrado desde {ENCRYPTION_KEY_PATH}")
+
+DATA_ENCRYPTION_KEY_FINGERPRINT = ENCRYPTION_KEYRING[0]["fingerprint"]
+cipher = ENCRYPTION_KEYRING[0]["cipher"]
+
+
+def get_cipher_for_fingerprint(fingerprint=None):
+    if fingerprint:
+        for entry in ENCRYPTION_KEYRING:
+            if entry["fingerprint"] == fingerprint:
+                return entry["cipher"]
+
+    return cipher
 
 
 def get_conn():
@@ -142,6 +193,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS encuestas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             datos BLOB,
+            encryption_key_fingerprint TEXT,
+            encrypted_at TEXT,
             estado TEXT DEFAULT 'borrador',
             creado_por TEXT,
             nivel_actual TEXT,
@@ -173,7 +226,27 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             usuario TEXT,
             accion TEXT,
-            fecha TEXT
+            fecha TEXT,
+            categoria TEXT DEFAULT 'operacion',
+            detalle TEXT
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS encryption_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_fingerprint TEXT UNIQUE,
+            source_path TEXT,
+            state TEXT DEFAULT 'activo',
+            created_at TEXT,
+            activated_at TEXT,
+            retired_at TEXT,
+            last_seen_at TEXT,
+            usage_count INTEGER DEFAULT 0,
+            last_operation TEXT,
+            notes TEXT
         )
         """
     )
@@ -260,6 +333,8 @@ def init_db():
     ensure_column(c, "encuestas", "nivel_actual", "TEXT")
     ensure_column(c, "encuestas", "created_at", "TEXT")
     ensure_column(c, "encuestas", "updated_at", "TEXT")
+    ensure_column(c, "encuestas", "encryption_key_fingerprint", "TEXT")
+    ensure_column(c, "encuestas", "encrypted_at", "TEXT")
 
     ensure_column(c, "usuarios", "password_hash", "TEXT")
     ensure_column(c, "usuarios", "area", "TEXT")
@@ -275,6 +350,49 @@ def init_db():
     ensure_column(c, "usuarios", "phone", "TEXT")
     ensure_column(c, "usuarios", "full_name", "TEXT")
     ensure_column(c, "usuarios", "passkey_enrollment_required", "INTEGER DEFAULT 0")
+
+    ensure_column(c, "logs", "categoria", "TEXT DEFAULT 'operacion'")
+    ensure_column(c, "logs", "detalle", "TEXT")
+
+    now = str(datetime.datetime.now())
+    for entry in ENCRYPTION_KEYRING:
+        is_primary = 1 if entry["fingerprint"] == DATA_ENCRYPTION_KEY_FINGERPRINT else 0
+        state = "activo" if is_primary else "legada"
+        notes = (
+            "Llave activa cargada al iniciar la aplicacion"
+            if is_primary
+            else "Llave historica disponible para descifrado"
+        )
+        c.execute(
+            """
+            INSERT OR IGNORE INTO encryption_keys (
+                key_fingerprint, source_path, state, created_at, activated_at, last_seen_at, usage_count, last_operation, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'bootstrap', ?)
+            """,
+            (
+                entry["fingerprint"],
+                entry["path"],
+                state,
+                now,
+                now,
+                now,
+                notes,
+            ),
+        )
+        c.execute(
+            """
+            UPDATE encryption_keys
+            SET source_path=?, state=?, last_seen_at=?, last_operation=?
+            WHERE key_fingerprint=?
+            """,
+            (
+                entry["path"],
+                state,
+                now,
+                "bootstrap",
+                entry["fingerprint"],
+            ),
+        )
 
     ensure_column(c, "certificados", "rol", "TEXT")
     ensure_column(c, "certificados", "issued_by", "TEXT")
@@ -371,14 +489,35 @@ def has_permission(action):
     return action in PERMISSIONS.get(role, set())
 
 
-def log(usuario, accion):
+def log(usuario, accion, categoria="operacion", detalle=None):
     conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO logs (usuario, accion, fecha) VALUES (?, ?, ?)",
-        (usuario, accion, str(datetime.datetime.now())),
+        "INSERT INTO logs (usuario, accion, fecha, categoria, detalle) VALUES (?, ?, ?, ?, ?)",
+        (usuario, accion, str(datetime.datetime.now()), categoria, detalle),
     )
     conn.commit()
+    conn.close()
+
+
+def _touch_encryption_key(operation, fingerprint=None):
+    target_fingerprint = fingerprint or DATA_ENCRYPTION_KEY_FINGERPRINT
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            UPDATE encryption_keys
+            SET usage_count = usage_count + 1,
+                last_seen_at = ?,
+                last_operation = ?
+            WHERE key_fingerprint = ?
+            """,
+            (str(datetime.datetime.now()), operation, target_fingerprint),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     conn.close()
 
 
@@ -1764,12 +1903,146 @@ def verify_action_certificate(action_label):
     return True, public_fp
 
 
-def decrypt_data(blob_value):
+def _decrypt_payload_with_keyring(blob_value):
+    payload_fingerprint = None
+    payload = None
+
+    if isinstance(blob_value, (bytes, bytearray)) and blob_value.startswith(b"fp:"):
+        header, _, encrypted_payload = blob_value.partition(b"\n")
+        if header.startswith(b"fp:"):
+            payload_fingerprint = header[3:].decode(errors="ignore") or None
+            blob_value = encrypted_payload
+
+    decode_candidates = []
+    if payload_fingerprint:
+        decode_candidates.append(
+            (payload_fingerprint, get_cipher_for_fingerprint(payload_fingerprint))
+        )
+
+    decode_candidates.append((DATA_ENCRYPTION_KEY_FINGERPRINT, cipher))
+    for entry in ENCRYPTION_KEYRING:
+        candidate = (entry["fingerprint"], entry["cipher"])
+        if candidate not in decode_candidates:
+            decode_candidates.append(candidate)
+
+    last_error = None
+    used_fingerprint = None
+    for candidate_fingerprint, candidate_cipher in decode_candidates:
+        try:
+            decoded = candidate_cipher.decrypt(blob_value).decode()
+            payload = ast.literal_eval(decoded)
+            used_fingerprint = candidate_fingerprint
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if payload is None:
+        raise last_error or ValueError("No fue posible descifrar el expediente")
+
+    return payload, used_fingerprint
+
+
+def decrypt_data(blob_value, log_events=True):
+    started_at = time.perf_counter()
     try:
-        decoded = cipher.decrypt(blob_value).decode()
-        return ast.literal_eval(decoded)
+        payload, used_fingerprint = _decrypt_payload_with_keyring(blob_value)
+
+        elapsed = time.perf_counter() - started_at
+        _touch_encryption_key("decrypt", used_fingerprint)
+        if log_events and elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
+            log(
+                "sistema",
+                "Descifrado de expediente con latencia moderada",
+                categoria="seguridad",
+                detalle=f"latencia={elapsed:.3f}s; llave={used_fingerprint[:12] if used_fingerprint else DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+            )
+        return payload
     except Exception:
+        if log_events:
+            log(
+                "sistema",
+                "Fallo el descifrado de un expediente",
+                categoria="seguridad",
+                detalle=f"llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+            )
         return None
+
+
+def encrypt_data(payload):
+    started_at = time.perf_counter()
+    token = cipher.encrypt(str(payload).encode())
+    elapsed = time.perf_counter() - started_at
+    _touch_encryption_key("encrypt", DATA_ENCRYPTION_KEY_FINGERPRINT)
+    if elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
+        log(
+            "sistema",
+            "Cifrado de expediente con latencia moderada",
+            categoria="seguridad",
+            detalle=f"latencia={elapsed:.3f}s; llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+        )
+    return b"fp:" + DATA_ENCRYPTION_KEY_FINGERPRINT.encode() + b"\n" + token
+
+
+def get_encryption_inventory():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT key_fingerprint, source_path, state, created_at, activated_at,
+               retired_at, last_seen_at, usage_count, last_operation, notes
+        FROM encryption_keys
+        ORDER BY created_at DESC, id DESC
+        """
+    )
+    rows = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def reencrypt_all_surveys():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, datos, encryption_key_fingerprint FROM encuestas ORDER BY id ASC")
+    rows = c.fetchall()
+
+    updated = 0
+    skipped = 0
+    failed = []
+
+    for row in rows:
+        current_fp = row["encryption_key_fingerprint"]
+        if current_fp == DATA_ENCRYPTION_KEY_FINGERPRINT:
+            skipped += 1
+            continue
+
+        try:
+            payload = decrypt_data(row["datos"], log_events=False)
+            if payload is None:
+                raise ValueError("No fue posible descifrar el expediente")
+
+            refreshed = encrypt_data(payload)
+            c.execute(
+                """
+                UPDATE encuestas
+                SET datos=?, encryption_key_fingerprint=?, encrypted_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    refreshed,
+                    DATA_ENCRYPTION_KEY_FINGERPRINT,
+                    str(datetime.datetime.now()),
+                    str(datetime.datetime.now()),
+                    row["id"],
+                ),
+            )
+            updated += 1
+        except Exception as exc:
+            failed.append({"id": row["id"], "error": str(exc)})
+
+    conn.commit()
+    conn.close()
+
+    return {"updated": updated, "skipped": skipped, "failed": failed}
 
 
 def parse_datetime(value):
@@ -2659,17 +2932,29 @@ def survey():
             "rol_capturador": session.get("role"),
         }
 
-        encrypted = cipher.encrypt(str(data).encode())
+        encrypted = encrypt_data(data)
+        encrypted_at = str(datetime.datetime.now())
 
         conn = get_conn()
         c = conn.cursor()
         c.execute(
             """
-            INSERT INTO encuestas (datos, estado, creado_por, nivel_actual, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO encuestas (
+                datos,
+                encryption_key_fingerprint,
+                encrypted_at,
+                estado,
+                creado_por,
+                nivel_actual,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 encrypted,
+                DATA_ENCRYPTION_KEY_FINGERPRINT,
+                encrypted_at,
                 "borrador" if session.get("role") == "usuario" else "en_revision_operativa",
                 session.get("user"),
                 "usuario" if session.get("role") == "usuario" else "operativo",
@@ -3065,7 +3350,36 @@ def admin_pki():
         if cert["status"] in resumen:
             resumen[cert["status"]] += 1
 
-    return render_template("admin_pki.html", certificados=certificados, resumen=resumen)
+    return render_template(
+        "admin_pki.html",
+        certificados=certificados,
+        resumen=resumen,
+    )
+
+
+@app.route("/admin/cifrado", methods=["GET", "POST"])
+def admin_cifrado():
+    if not require_role("admin"):
+        return redirect("/")
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action != "reencrypt":
+            return jsonify({"ok": False, "message": "Accion no reconocida."}), 400
+
+        result = reencrypt_all_surveys()
+        log(
+            session.get("user"),
+            f"Re-cifro expedientes: {result['updated']} actualizados, {result['skipped']} omitidos",
+            categoria="seguridad",
+            detalle=json.dumps(result, ensure_ascii=False),
+        )
+        return jsonify({"ok": True, **result})
+
+    return render_template(
+        "admin_cifrado.html",
+        encryption_inventory=get_encryption_inventory(),
+    )
 
 
 @app.route("/eliminar-usuario/<int:user_id>", methods=["POST"])

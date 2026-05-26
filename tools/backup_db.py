@@ -3,7 +3,10 @@ import os
 import datetime
 from cryptography.fernet import Fernet
 
-KEY_PATH = os.path.join(os.path.dirname(__file__), '..', 'key.key')
+KEY_PATH = os.environ.get(
+    'ENCRYPTION_KEY_PATH',
+    os.path.join(os.path.dirname(__file__), '..', 'key.key')
+)
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'database.db')
 BACKUP_DIR = os.path.join(os.path.dirname(__file__), '..', 'backups')
 

@@ -14,3 +14,11 @@ Plan de trabajo pendiente
   - Alinear las acciones críticas con la verificación que ya usa el sistema.
 - Documentación:
   - Mantener este changelog como referencia del avance y del alcance de cada iteración.
+
+[0.2.8] - 2026-05-26
+- Added: inventario de llaves de cifrado, huella por expediente y pestaña administrativa propia para cifrado.
+- Changed: configuracion centralizada de llave activa y soporte de llaves historicas para descifrado.
+- Fixed: conteo de uso por huella y CSRF en la nueva pantalla de cifrado.
+- Security: medicion de latencia y re-cifrado controlado de expedientes con ventana de rotacion.
+- Documentation: el cifrado y descifrado de expedientes usan Fernet, es decir, un esquema simetrico autenticado basado en AES-128-CBC con HMAC-SHA256.
+- Documentation: la rotacion y el ciclo de vida de llaves ya cuentan con una base operativa en la app (llave activa, llaves historicas, inventario y re-cifrado manual); queda pendiente automatizar la emision y retiro de llaves.

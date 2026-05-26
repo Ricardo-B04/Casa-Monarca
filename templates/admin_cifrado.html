@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventario de Cifrado | Casa Monarca</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="top">
+        <div>Casa Monarca | Inventario de Cifrado</div>
+        <div>
+            <a href="/admin">Panel Admin</a>
+            <a href="/admin/identidades">Identidades</a>
+            <a href="/admin/pki">Centro PKI</a>
+            <a href="/admin/cifrado">Cifrado</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/usuarios">Usuarios</a>
+            <a href="/logs">Bitacora</a>
+            <a href="/bandeja">Bandeja</a>
+            <a href="/survey">Nuevo Registro</a>
+            <a href="/profile">Mi Perfil</a>
+            <a href="/logout">Cerrar sesion</a>
+        </div>
+    </div>
+
+    <div class="wrap">
+        <div class="box" style="margin-bottom:16px;">
+            <h2>Estado del cifrado</h2>
+            <p style="color:#6a7382; font-size:13px; margin-bottom:12px;">
+                La llave activa cifra expedientes nuevos. Las llaves históricas permanecen disponibles durante la ventana de rotación para descifrar registros previos.
+            </p>
+            <div class="grid-2col">
+                <div class="box">
+                    <h3>Llaves registradas</h3>
+                    <div style="font-size:28px; font-weight:700; color:var(--color-accent);">{{ encryption_inventory|length }}</div>
+                </div>
+                <div class="box">
+                    <h3>Operación de mantenimiento</h3>
+                    <p style="font-size:13px; color:#6a7382; margin-bottom:12px;">Re-cifra todos los expedientes que no estén usando la llave activa.</p>
+                    <form id="reencrypt-form">
+                        <input type="hidden" id="csrf-token" value="{{ session.get('csrf_token', '') }}">
+                        <button type="submit" class="btn btn-secondary" id="reencrypt-surveys-btn">Re-cifrar expedientes</button>
+                    </form>
+                    <div id="reencrypt-status" style="margin-top:10px; font-size:13px; color:#6a7382;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="box">
+            <h2>Inventario de llaves de cifrado</h2>
+            <div style="overflow:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Huella</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Ruta</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Estado</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Uso</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Ultimo uso</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operacion</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for key in encryption_inventory %}
+                        <tr>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace;">{{ key['key_fingerprint'][:12] }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['source_path'] }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['state'] }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['usage_count'] }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['last_seen_at'] or '-' }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['last_operation'] or '-' }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="6" style="padding:8px;">No hay llaves registradas.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const form = document.getElementById('reencrypt-form');
+    const button = document.getElementById('reencrypt-surveys-btn');
+    const status = document.getElementById('reencrypt-status');
+    const csrfToken = document.getElementById('csrf-token');
+
+    if (form) {
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            if (!confirm('Esto re-cifrará los expedientes existentes con la llave activa. ¿Deseas continuar?')) {
+                return;
+            }
+
+            button.disabled = true;
+            status.textContent = 'Re-cifrando expedientes, espera un momento...';
+
+            try {
+                const formData = new FormData();
+                formData.append('action', 'reencrypt');
+                if (csrfToken && csrfToken.value) {
+                    formData.append('csrf_token', csrfToken.value);
+                }
+
+                const response = await fetch('/admin/cifrado', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const payload = await response.json();
+
+                if (!response.ok || !payload.ok) {
+                    throw new Error(payload.message || 'No se pudo completar el re-cifrado.');
+                }
+
+                status.textContent = `Listo: ${payload.updated} actualizados, ${payload.skipped} omitidos.`;
+                window.location.reload();
+            } catch (error) {
+                status.textContent = error.message || 'Error al re-cifrar expedientes.';
+            } finally {
+                button.disabled = false;
+            }
+        });
+    }
+    </script>
+</body>
+</html>

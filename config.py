@@ -7,6 +7,17 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
     PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
+
+    # Cifrado de datos sensibles
+    ENCRYPTION_KEY_PATH = os.environ.get("ENCRYPTION_KEY_PATH", "key.key")
+    ENCRYPTION_LEGACY_KEY_PATHS = [
+        path.strip()
+        for path in os.environ.get("ENCRYPTION_LEGACY_KEY_PATHS", "").split(",")
+        if path.strip()
+    ]
+    ENCRYPTION_LATENCY_WARNING_SECONDS = float(
+        os.environ.get("ENCRYPTION_LATENCY_WARNING_SECONDS", "0.25")
+    )
     
     # PKI
     CERT_CA_CERT_PATH = os.environ.get("CERT_CA_CERT_PATH", "certs/ca_cert.pem")
