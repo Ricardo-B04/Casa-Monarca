@@ -18,6 +18,7 @@ import urllib.request
 import urllib.error
 import time
 import re
+import socket
 import sys
 import json
 import traceback
@@ -3431,7 +3432,7 @@ if __name__ == "__main__":
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
     
     # Parse command line arguments
-    port = 5000
+    port = int(os.environ.get("PORT", os.environ.get("APP_PORT", "5000")))
     if "--port" in sys.argv:
         port_idx = sys.argv.index("--port")
         if port_idx + 1 < len(sys.argv):
@@ -3441,6 +3442,18 @@ if __name__ == "__main__":
                 print(f"Invalid port: {sys.argv[port_idx + 1]}")
                 sys.exit(1)
     
+    def _port_is_available(candidate_port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return sock.connect_ex(("127.0.0.1", candidate_port)) != 0
+
+    requested_port = port
+    while port < requested_port + 20 and not _port_is_available(port):
+        port += 1
+
+    if port != requested_port:
+        print(f"Port {requested_port} is in use; starting on {port} instead.")
+
     # Auto-update PASSKEY_ORIGIN if port differs from 5000
     if port != 5000 and "PASSKEY_ORIGIN" not in os.environ:
         PASSKEY_ORIGIN = f"http://localhost:{port}"
