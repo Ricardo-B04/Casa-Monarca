@@ -1,0 +1,12 @@
+Se han realizado cambios a la interfaz
+
+Plan de trabajo pendiente
+- Actualizar la pestaña de mi perfil para reflejar el flujo actual del sistema.
+- Añadir la imagen del forms de Casa Monarca al formulario principal.
+- Validar mensajes de espera o carga si el cifrado y descifrado de expedientes requiere más tiempo del esperado.
+
+Nota: 
+    Tag de Admin no está bien guardada en admin_cont, se removió temporalmente la necesidad de esta en la barra 
+    de exploración con el fin de la demostración.
+
+    can_access_bandeja y can_create tampoco servían.

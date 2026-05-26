@@ -1,0 +1,16 @@
+Plan de trabajo pendiente
+- Base de datos y cifrado:
+  - Revisar la latencia real de cifrado y descifrado sobre expedientes SQLite.
+  - Si la operación tarda de forma perceptible, preparar un mensaje de espera para el frontend.
+  - Identificar y documentar los modos de operación usados para cifrado y descifrado.
+  - Diseñar la rotación y el ciclo de vida de claves de cifrado para la base de datos.
+  - Registrar en SQLite el inventario de llaves, su estado y su uso.
+- Politicas y derechos ARCO:
+  - Definir la política de derechos ARCO para expedientes y solicitudes de eliminación.
+  - Registrar estas acciones con trazabilidad en la bitácora del sistema.
+  - Mantener el flujo de canalización ya implementado al introducir validaciones adicionales.
+- Backend:
+  - Migrar el flujo de firmado de acciones legacy al flujo actual con passkeys.
+  - Alinear las acciones críticas con la verificación que ya usa el sistema.
+- Documentación:
+  - Mantener este changelog como referencia del avance y del alcance de cada iteración.
