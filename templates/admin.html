@@ -310,14 +310,12 @@
 <div class="top">
     <div>Casa Monarca | Administrador</div>
     <div>
-        
         <a href="/admin">Panel Admin</a>
         <a href="/admin/identidades">Identidades</a>
         <a href="/admin/pki">Centro PKI</a>
         <a href="/dashboard">Dashboard</a>
         <a href="/usuarios">Usuarios</a>
         <a href="/logs">Bitacora</a>
-        
         <a href="/bandeja">Bandeja</a>
         <a href="/survey">Nuevo Registro</a>
         <a href="/profile">Mi Perfil</a>
@@ -387,11 +385,30 @@
                     <option value="">Todos los países</option>
                     {% set paises = [] %}
                     {% for d in expedientes %}
-                        {% if d.pais and d.pais not in paises %}
-                            {% set _ = paises.append(d.pais) %}
-                            <option value="{{ d.pais|lower }}">{{ d.pais }}</option>
+                        {% if d.pais_origen and d.pais_origen not in paises %}
+                            {% set _ = paises.append(d.pais_origen) %}
+                            <option value="{{ d.pais_origen|lower }}">{{ d.pais_origen }}</option>
                         {% endif %}
                     {% endfor %}
+                </select>
+                <!-- NUEVO: Filtro género -->
+                <select id="filtroGenero" onchange="filtrarExpedientes()">
+                    <option value="">Todos los géneros</option>
+                    <option value="femenino">Femenino</option>
+                    <option value="masculino">Masculino</option>
+                    <option value="no_binario">No binario</option>
+                    <option value="lgbtiq">LGBTIQ+</option>
+                </select>
+                <!-- NUEVO: Filtro grupo de población -->
+                <select id="filtroGrupo" onchange="filtrarExpedientes()">
+                    <option value="">Todos los grupos</option>
+                    <option value="adulto">Adulto (18–59 años)</option>
+                    <option value="adulto_mayor">Adulto mayor (+60 años)</option>
+                    <option value="nina_acompanada">Niña acompañada</option>
+                    <option value="nino_acompanado">Niño acompañado</option>
+                    <option value="adolescente_hombre">Adolescente hombre acompañado</option>
+                    <option value="adolescente_mujer">Adolescente mujer acompañada</option>
+                    <option value="nna_no_acompanado">NNA no acompañado</option>
                 </select>
                 <span class="result-count" id="resultCount"></span>
             </div>
@@ -402,17 +419,19 @@
                     {% for d in expedientes %}
                         {% set estado_key = d.estado | replace(' ', '_') | lower %}
                         <div class="expediente-row"
-                             data-nombre="{{ (d.nombre ~ ' ' ~ d.apellido_paterno)|lower }}"
+                             data-nombre="{{ (d.nombre_pila ~ ' ' ~ d.primer_apellido)|lower }}"
                              data-estado="{{ d.estado|lower }}"
-                             data-pais="{{ d.pais|lower if d.pais else '' }}">
+                             data-pais="{{ d.pais_origen|lower if d.pais_origen else '' }}"
+                             data-genero="{{ d.genero|lower if d.genero else '' }}"
+                             data-grupo="{{ d.grupo_poblacion|lower if d.grupo_poblacion else '' }}">
                             <div class="exp-id">#{{ d.id }}</div>
                             <div class="exp-info">
-                                <div class="exp-name">{{ d.nombre }} {{ d.apellido_paterno }}</div>
+                                <div class="exp-name">{{ d.nombre_pila }} {{ d.primer_apellido }}</div>
                                 <div class="exp-meta">
-                                    <span> {{ d.creado_por or '—' }}</span>
-                                    <span> {{ d.pais or '—' }}</span>
-                                    <span> {{ d.edad }} años</span>
-                                    <span> {{ d.tiempo_estancia }} meses</span>
+                                    <span>{{ d.creado_por or '—' }}</span>
+                                    <span>{{ d.pais_origen or '—' }}</span>
+                                    <span>{{ d.genero or '—' }}</span>
+                                    <span>{{ d.grupo_poblacion or '—' }}</span>
                                 </div>
                             </div>
                             <div>
@@ -523,6 +542,8 @@ function filtrarExpedientes() {
     const nombre = document.getElementById('searchNombre').value.toLowerCase();
     const estado = document.getElementById('filtroEstado').value.toLowerCase();
     const pais   = document.getElementById('filtroPais').value.toLowerCase();
+    const genero = document.getElementById('filtroGenero').value.toLowerCase();
+    const grupo  = document.getElementById('filtroGrupo').value.toLowerCase();
 
     const rows = document.querySelectorAll('.expediente-row');
     let visible = 0;
@@ -531,8 +552,10 @@ function filtrarExpedientes() {
         const matchNombre = !nombre || row.dataset.nombre.includes(nombre);
         const matchEstado = !estado || row.dataset.estado === estado;
         const matchPais   = !pais   || row.dataset.pais === pais;
+        const matchGenero = !genero || row.dataset.genero === genero;
+        const matchGrupo  = !grupo  || row.dataset.grupo === grupo;
 
-        if (matchNombre && matchEstado && matchPais) {
+        if (matchNombre && matchEstado && matchPais && matchGenero && matchGrupo) {
             row.classList.remove('hidden');
             visible++;
         } else {
@@ -547,7 +570,6 @@ function filtrarExpedientes() {
     if (emptyEl) emptyEl.style.display = visible === 0 ? 'block' : 'none';
 }
 
-// Inicializar conteo
 document.addEventListener('DOMContentLoaded', () => {
     const rows = document.querySelectorAll('.expediente-row');
     const countEl = document.getElementById('resultCount');
