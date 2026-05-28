@@ -159,7 +159,7 @@
                 <div class="msg">{{ error }}</div>
             {% endif %}
 
-            <form method="POST" enctype="multipart/form-data">
+            <form method="POST" enctype="multipart/form-data" id="login-form">
                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                 <input type="hidden" name="login_challenge" value="{{ login_signature_challenge }}">
                 <div class="row">
@@ -172,16 +172,12 @@
                     <input type="password" name="password" required>
                 </div>
 
-                {% if passkey_enabled %}
-                <button type="button" class="btn-secondary" id="passkey-login-btn">Entrar con passkey</button>
-                <div class="status" id="passkey-status">Para cuentas admin/coordinador, este es el flujo recomendado.</div>
-                {% endif %}
-
                 <div class="note" style="margin-top:12px; margin-bottom:12px;">
-                    Para cuentas administrativas, recomendamos registrar una passkey desde tu perfil y usar "Entrar con passkey".
+                    Para cuentas administrativas, recomendamos registrar una passkey desde tu perfil y usar el método de entrada automático.
                 </div>
 
-                <button type="submit">Entrar</button>
+                <button type="submit" id="login-btn">Entrar</button>
+                <div class="status" id="login-status"></div>
             </form>
 
             <div class="note">
@@ -237,26 +233,23 @@
             };
         }
 
-        async function loginWithPasskey() {
-            const statusNode = document.getElementById('passkey-status');
-            const username = (document.querySelector('input[name="username"]') || {}).value || '';
-            const password = (document.querySelector('input[name="password"]') || {}).value || '';
+        async function loginWithPasskey(username, password) {
+            const statusNode = document.getElementById('login-status');
 
             if (!window.PublicKeyCredential) {
                 statusNode.textContent = 'Este navegador no soporta passkeys.';
-                return;
-            }
-            if (!username || !password) {
-                statusNode.textContent = 'Captura usuario y contrasena antes de continuar.';
-                return;
+                statusNode.style.color = '#c53030';
+                return false;
             }
 
-            statusNode.textContent = 'Validando credenciales...';
+            statusNode.textContent = 'Autenticando con passkey...';
+            statusNode.style.color = '#4b5563';
+            
             const optionsResp = await fetch('/auth/passkey/login/options', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRF-Token': '{{ session['csrf_token'] }}',
+                    'X-CSRF-Token': document.querySelector('input[name="csrf_token"]').value,
                 },
                 body: JSON.stringify({ username, password }),
             });
@@ -264,22 +257,30 @@
             if (!optionsResp.ok || !optionsData.ok) {
                 if (optionsData.redirect) {
                     window.location.href = optionsData.redirect;
-                    return;
+                    return false;
                 }
                 statusNode.textContent = optionsData.message || 'No se pudo iniciar la autenticacion con passkey.';
-                return;
+                statusNode.style.color = '#c53030';
+                return false;
             }
 
             statusNode.textContent = 'Confirma tu passkey en el dispositivo...';
-            const assertion = await navigator.credentials.get({
-                publicKey: normalizeAuthOptions(optionsData.publicKey),
-            });
+            let assertion;
+            try {
+                assertion = await navigator.credentials.get({
+                    publicKey: normalizeAuthOptions(optionsData.publicKey),
+                });
+            } catch (err) {
+                statusNode.textContent = 'Autenticacion con passkey cancelada o fallida: ' + (err.message || err);
+                statusNode.style.color = '#c53030';
+                return false;
+            }
 
             const verifyResp = await fetch('/auth/passkey/login/verify', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRF-Token': '{{ session['csrf_token'] }}',
+                    'X-CSRF-Token': document.querySelector('input[name="csrf_token"]').value,
                 },
                 body: JSON.stringify({
                     credential: normalizeAssertion(assertion),
@@ -288,21 +289,77 @@
             const verifyData = await verifyResp.json();
             if (!verifyResp.ok || !verifyData.ok) {
                 statusNode.textContent = verifyData.message || 'No se pudo completar el login con passkey.';
-                return;
+                statusNode.style.color = '#c53030';
+                return false;
             }
 
             window.location.href = verifyData.redirect || '/dashboard';
+            return true;
         }
 
-        const passkeyButton = document.getElementById('passkey-login-btn');
-        if (passkeyButton) {
-            passkeyButton.addEventListener('click', () => {
-                loginWithPasskey().catch((err) => {
-                    const statusNode = document.getElementById('passkey-status');
-                    statusNode.textContent = err && err.message ? err.message : 'Error inesperado en autenticacion passkey.';
+        const form = document.getElementById('login-form');
+        const statusNode = document.getElementById('login-status');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = document.querySelector('input[name="username"]').value.trim();
+            const password = document.querySelector('input[name="password"]').value;
+
+            if (!username || !password) {
+                statusNode.textContent = 'Usuario y contraseña son obligatorios.';
+                statusNode.style.color = '#c53030';
+                return;
+            }
+
+            statusNode.textContent = 'Validando credenciales...';
+            statusNode.style.color = '#4b5563';
+
+            try {
+                const checkResp = await fetch('/auth/check-passkey-required', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': document.querySelector('input[name="csrf_token"]').value,
+                    },
+                    body: JSON.stringify({ username, password }),
                 });
-            });
-        }
+
+                const checkData = await checkResp.json();
+
+                if (!checkResp.ok || !checkData.ok) {
+                    statusNode.textContent = checkData.message || 'Error al validar credenciales.';
+                    statusNode.style.color = '#c53030';
+                    return;
+                }
+
+                // Si el usuario requiere passkey, procesarlo automáticamente
+                if (checkData.requires_passkey) {
+                    const success = await loginWithPasskey(username, password);
+                    if (!success) {
+                        // Error ya mostrado en statusNode
+                    }
+                } else {
+                    // Proceder con login normal
+                    if (checkData.redirect) {
+                        // Hay redirección especial (ej: cambio de contraseña)
+                        statusNode.textContent = checkData.message;
+                        statusNode.style.color = '#4b5563';
+                        // Esperar un poco y luego redirigir
+                        setTimeout(() => {
+                            window.location.href = checkData.redirect;
+                        }, 500);
+                    } else {
+                        // Submit del formulario normalmente
+                        statusNode.textContent = '';
+                        form.submit();
+                    }
+                }
+            } catch (err) {
+                statusNode.textContent = 'Error de conexión: ' + (err.message || err);
+                statusNode.style.color = '#c53030';
+            }
+        });
     </script>
 </body>
 </html>

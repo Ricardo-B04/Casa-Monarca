@@ -2871,6 +2871,71 @@ def passkey_register_verify():
     return jsonify({"ok": True, "message": "Passkey registrada correctamente."})
 
 
+@app.route("/auth/check-passkey-required", methods=["POST"])
+def check_passkey_required():
+    """
+    Valida credenciales de usuario y retorna si requiere passkey.
+    Útil para password managers que necesitan saber si continuar con passkey automáticamente.
+    """
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": True, "requires_passkey": False, "message": "Passkeys deshabilitadas"}), 200
+
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": True, "requires_passkey": False, "message": "WebAuthn no disponible"}), 200
+
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"ok": False, "message": "Usuario y contraseña son obligatorios."}), 400
+
+    identifier = _login_identifier_from_request(username)
+    locked, until = _is_locked(identifier)
+    if locked:
+        lock_minutes = int((until - time.time()) // 60) + 1
+        return jsonify({
+            "ok": False,
+            "message": f"Cuenta bloqueada por intentos fallidos. Intenta en {lock_minutes} minutos.",
+        }), 429
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM usuarios WHERE username=? AND activo=1", (username,))
+    user = c.fetchone()
+    
+    if not user or not user["password_hash"] or not verify_user_password(user, password):
+        conn.close()
+        _record_failed(identifier)
+        return jsonify({"ok": False, "message": "Usuario o contraseña incorrectos."}), 401
+
+    # Check if password is legacy or weak - if so, don't allow passkey flow
+    if password_is_legacy_or_weak(user, password):
+        conn.close()
+        return jsonify({
+            "ok": True,
+            "requires_passkey": False,
+            "message": "Debe cambiar contraseña antes de continuar",
+            "redirect": "/password/update"
+        }), 200
+
+    # Check if user is admin/coordinador and has active passkeys
+    requires_passkey = False
+    if user["rol"] in ("admin", "coordinador"):
+        active_passkeys = get_active_passkeys(conn, user["username"])
+        if active_passkeys:
+            requires_passkey = True
+
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "requires_passkey": requires_passkey,
+        "username": user["username"],
+        "role": user["rol"],
+    }), 200
+
+
 @app.route("/auth/passkey/login/options", methods=["POST"])
 def passkey_login_options():
     if not PASSKEY_ENABLED:
