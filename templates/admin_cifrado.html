@@ -78,6 +78,63 @@
                 </table>
             </div>
         </div>
+        
+        <div class="box">
+            <h2>Cola de trabajos de re-cifrado</h2>
+            <div style="overflow:auto;">
+                <table id="jobs-table" style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Job ID</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Target FP</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Solicitado por</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Estado</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Progreso</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Notas</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-body">
+                        <tr><td colspan="6" style="padding:8px;">Cargando trabajos...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="box">
+            <h2>Métricas de cifrado</h2>
+            <p style="color:#6a7382; font-size:13px; margin-bottom:12px;">Resumen simple de latencias y últimos eventos registrados.</p>
+            <div style="overflow:auto; margin-bottom:16px;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operación</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Registros</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Promedio (ms)</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Mín (ms)</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Máx (ms)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="metrics-summary-body">
+                        <tr><td colspan="5" style="padding:8px;">Cargando métricas...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="overflow:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operación</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Timestamp</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Duración (ms)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="metrics-recent-body">
+                        <tr><td colspan="3" style="padding:8px;">Cargando métricas recientes...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -85,6 +142,8 @@
     const button = document.getElementById('reencrypt-surveys-btn');
     const status = document.getElementById('reencrypt-status');
     const csrfToken = document.getElementById('csrf-token');
+    const metricsSummaryBody = document.getElementById('metrics-summary-body');
+    const metricsRecentBody = document.getElementById('metrics-recent-body');
 
     if (form) {
         form.addEventListener('submit', async (event) => {
@@ -123,6 +182,101 @@
             }
         });
     }
+
+        // Jobs polling
+        const jobsBody = document.getElementById('jobs-body');
+        async function fetchJobs() {
+            try {
+                const resp = await fetch('/admin/cifrado/jobs');
+                const data = await resp.json();
+                if (!data.ok) return;
+                const jobs = data.jobs || [];
+                if (!jobs.length) {
+                    jobsBody.innerHTML = '<tr><td colspan="6" style="padding:8px;">Sin trabajos en cola.</td></tr>';
+                    return;
+                }
+                jobsBody.innerHTML = '';
+                for (const j of jobs) {
+                    const prog = (j.total_count && j.total_count>0) ? `${j.processed_count}/${j.total_count}` : '-';
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.id}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace;">${j.new_key_fingerprint_short}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.requested_by || '-'}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.status}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${prog}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.notes || '-'}</td>
+                    `;
+                    jobsBody.appendChild(tr);
+                }
+            } catch (e) {
+                console.error('jobs fetch error', e);
+            }
+        }
+
+        fetchJobs();
+        setInterval(fetchJobs, 5000);
+
+        // Metrics table
+        async function fetchMetrics() {
+            try {
+                const resp = await fetch('/admin/cifrado/metrics');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                return data;
+            } catch (e) {
+                console.error('metrics fetch error', e);
+                return null;
+            }
+        }
+
+        async function renderMetricsTable() {
+            const payload = await fetchMetrics();
+            if (!payload) return;
+            const series = payload.series || {};
+            const stats = payload.stats || {};
+
+            if (metricsSummaryBody) {
+                const rows = [];
+                ['encrypt', 'decrypt'].forEach((op) => {
+                    const info = stats[op] || {count: 0, avg: 0, min: 0, max: 0};
+                    rows.push(`
+                        <tr>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${op}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${info.count}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.avg || 0).toFixed(3)}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.min || 0).toFixed(3)}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.max || 0).toFixed(3)}</td>
+                        </tr>
+                    `);
+                });
+                metricsSummaryBody.innerHTML = rows.join('');
+            }
+
+            if (metricsRecentBody) {
+                const recent = [];
+                Object.keys(series).forEach((op) => {
+                    (series[op] || []).slice(-5).forEach((item) => {
+                        recent.push({op, ...item});
+                    });
+                });
+                recent.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+                if (!recent.length) {
+                    metricsRecentBody.innerHTML = '<tr><td colspan="3" style="padding:8px;">Sin métricas registradas.</td></tr>';
+                } else {
+                    metricsRecentBody.innerHTML = recent.slice(-10).map((item) => `
+                        <tr>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.op}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.timestamp}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${Number(item.duration_ms || 0).toFixed(3)}</td>
+                        </tr>
+                    `).join('');
+                }
+            }
+        }
+
+        renderMetricsTable();
+        setInterval(renderMetricsTable, 5000);
     </script>
 </body>
 </html>

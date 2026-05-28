@@ -253,6 +253,39 @@ def init_db():
 
     c.execute(
         """
+        CREATE TABLE IF NOT EXISTS encryption_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            op_type TEXT,
+            duration_ms REAL,
+            key_fingerprint TEXT,
+            record_id INTEGER,
+            status TEXT
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reencrypt_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            new_key_fingerprint TEXT,
+            requested_by TEXT,
+            status TEXT DEFAULT 'queued',
+            created_at TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            batch_size INTEGER DEFAULT 500,
+            processed_count INTEGER DEFAULT 0,
+            total_count INTEGER,
+            last_update TEXT,
+            notes TEXT
+        )
+        """
+    )
+
+    c.execute(
+        """
         CREATE TABLE IF NOT EXISTS solicitudes_eliminacion (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             encuesta_id INTEGER,
@@ -519,6 +552,131 @@ def _touch_encryption_key(operation, fingerprint=None):
     except sqlite3.OperationalError:
         pass
     conn.close()
+
+
+def record_encryption_metric(op_type, duration_ms, key_fingerprint=None, record_id=None, status='ok'):
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO encryption_metrics (timestamp, op_type, duration_ms, key_fingerprint, record_id, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(datetime.datetime.now()), op_type, float(duration_ms) * 1000.0, key_fingerprint, record_id, status),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        # avoid metric failures affecting main flow
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_encryption_metrics(limit=500):
+    """Return recent encryption metrics grouped by op_type (chronological)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT op_type, duration_ms, timestamp FROM encryption_metrics ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    data = {"encrypt": [], "decrypt": []}
+    # rows are newest first; reverse to get chronological order
+    for r in reversed(rows):
+        op = r[0]
+        duration = float(r[1]) if r[1] is not None else 0.0
+        ts = r[2]
+        if op not in data:
+            data[op] = []
+        data[op].append({"duration_ms": duration, "timestamp": ts})
+
+    stats = {}
+    for op, items in data.items():
+        durations = [it["duration_ms"] for it in items]
+        if durations:
+            avg = sum(durations) / len(durations)
+            mn = min(durations)
+            mx = max(durations)
+        else:
+            avg = mn = mx = 0.0
+        stats[op] = {"avg": avg, "min": mn, "max": mx, "count": len(durations)}
+
+    return {"series": data, "stats": stats}
+
+
+@app.route('/admin/cifrado/metrics')
+def admin_cifrado_metrics():
+    if not require_role('admin'):
+        return jsonify({"error": "unauthorized"}), 403
+    res = get_encryption_metrics(limit=500)
+    return jsonify(res)
+
+def enqueue_reencrypt_job(new_key_fingerprint, requested_by, batch_size=500, notes=None):
+    conn = get_conn()
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    c.execute(
+        """
+        INSERT INTO reencrypt_jobs (new_key_fingerprint, requested_by, status, created_at, batch_size, processed_count, last_update, notes)
+        VALUES (?, ?, 'queued', ?, ?, 0, ?, ?)
+        """,
+        (new_key_fingerprint, requested_by, now, batch_size, now, notes),
+    )
+    job_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return job_id
+
+
+@app.route("/admin/keys/<fp>/activate", methods=["POST"])
+def admin_activate_key(fp):
+    if not require_role("admin"):
+        return redirect("/")
+
+    # CSRF protection
+    if not validate_csrf():
+        return "CSRF token missing or invalid", 400
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM encryption_keys WHERE key_fingerprint=?", (fp,))
+    row = c.fetchone()
+    now = str(datetime.datetime.now())
+
+    if not row:
+        # Insert a new record if provided key not present; source_path optional
+        source_path = request.form.get("source_path") or request.json.get("source_path") if request.is_json else None
+        c.execute(
+            """
+            INSERT INTO encryption_keys (key_fingerprint, source_path, state, created_at, activated_at, last_seen_at, last_operation)
+            VALUES (?, ?, 'activo', ?, ?, ?, 'activated')
+            """,
+            (fp, source_path or '', now, now, now),
+        )
+    else:
+        # Mark existing active key(s) as retiring (except the one being activated)
+        c.execute(
+            "UPDATE encryption_keys SET state='retiring' WHERE state='activo' AND key_fingerprint != ?",
+            (fp,),
+        )
+        # Activate selected key
+        c.execute(
+            "UPDATE encryption_keys SET state='activo', activated_at=?, last_seen_at=?, last_operation='activated' WHERE key_fingerprint=?",
+            (now, now, fp),
+        )
+
+    conn.commit()
+    conn.close()
+
+    # Enqueue re-encrypt job
+    job_id = enqueue_reencrypt_job(fp, session.get("user") or "sistema")
+
+    log(session.get("user"), f"Activo llave de cifrado {fp[:12]} y encolo re-cifrado job {job_id}", categoria="seguridad")
+
+    return jsonify({"ok": True, "job_id": job_id, "message": "Key activated and re-encrypt enqueued"})
 
 
 def _login_identifier_from_request(provided_username=None):
@@ -1949,6 +2107,7 @@ def decrypt_data(blob_value, log_events=True):
 
         elapsed = time.perf_counter() - started_at
         _touch_encryption_key("decrypt", used_fingerprint)
+        record_encryption_metric('decrypt', elapsed, used_fingerprint, None, 'ok')
         if log_events and elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
             log(
                 "sistema",
@@ -1958,6 +2117,12 @@ def decrypt_data(blob_value, log_events=True):
             )
         return payload
     except Exception:
+        elapsed = time.perf_counter() - started_at
+        # record failing decrypt metric
+        try:
+            record_encryption_metric('decrypt', elapsed, None, None, 'error')
+        except Exception:
+            pass
         if log_events:
             log(
                 "sistema",
@@ -1973,6 +2138,10 @@ def encrypt_data(payload):
     token = cipher.encrypt(str(payload).encode())
     elapsed = time.perf_counter() - started_at
     _touch_encryption_key("encrypt", DATA_ENCRYPTION_KEY_FINGERPRINT)
+    try:
+        record_encryption_metric('encrypt', elapsed, DATA_ENCRYPTION_KEY_FINGERPRINT, None, 'ok')
+    except Exception:
+        pass
     if elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
         log(
             "sistema",
@@ -3380,6 +3549,24 @@ def admin_cifrado():
         "admin_cifrado.html",
         encryption_inventory=get_encryption_inventory(),
     )
+
+
+@app.route('/admin/cifrado/jobs')
+def admin_cifrado_jobs():
+    if not require_role('admin'):
+        return jsonify({'ok': False, 'message': 'unauthorized'}), 403
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id,new_key_fingerprint,requested_by,status,created_at,started_at,finished_at,processed_count,total_count,notes FROM reencrypt_jobs ORDER BY id DESC"
+    )
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    # shorten fingerprints for display
+    for r in rows:
+        r['new_key_fingerprint_short'] = (r.get('new_key_fingerprint') or '')[:12]
+    return jsonify({'ok': True, 'jobs': rows})
 
 
 @app.route("/eliminar-usuario/<int:user_id>", methods=["POST"])
