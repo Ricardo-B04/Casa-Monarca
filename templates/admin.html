@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Panel Admin | Casa Monarca</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="{{ url_for('static', filename='action-passkey.js') }}"></script>
 <style>
 /* ── Page header ── */
 .page-header {
@@ -473,57 +474,33 @@
                         </div>
 
                         <!-- Aprobar -->
-                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data">
+                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data" class="decision-form">
                             <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                             <input type="hidden" name="decision" value="aprobar">
-                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                            <div class="firma-inline">
-                                <label>Firma para aprobar</label>
-                                <div class="firma-row">
-                                    <div>
-                                        <label>Certificado (.pem)</label>
-                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                    </div>
-                                    <div>
-                                        <label>Firma Base64</label>
-                                        <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                                    </div>
-                                </div>
-                                <div>
-                                    <label>O archivo de firma (.sig)</label>
-                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                                </div>
-                                <div class="btn-row">
-                                    <button type="submit" class="btn btn-success btn-sm" style="background: var(--color-success);">✓ Aprobar</button>
-                                </div>
+                            <div style="background: #e8f5e9; border: 1px solid #4caf50; border-radius: var(--radius-md); padding: var(--spacing-lg); margin-bottom: var(--spacing-md);">
+                                <strong>🔐 Acción Sensible:</strong> Se requiere firma mediante passkey. Quedará registrada para no repudio.
                             </div>
+                            <div class="btn-row">
+                                <button type="button" class="btn btn-success btn-sm sign-decision-btn" data-solicitud="{{ s['id'] }}" data-decision="aprobar" style="background: var(--color-success);">
+                                    ✓ Firmar y Aprobar
+                                </button>
+                            </div>
+                            <div class="decision-status" style="margin-top: var(--spacing-md); font-size: 13px; color: #4b5563;"></div>
                         </form>
 
                         <!-- Rechazar -->
-                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data" style="margin-top: var(--spacing-sm);">
+                        <form method="POST" action="/solicitud/{{ s['id'] }}/resolver" enctype="multipart/form-data" class="decision-form" style="margin-top: var(--spacing-sm);">
                             <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                             <input type="hidden" name="decision" value="rechazar">
-                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                            <div class="firma-inline">
-                                <label>Firma para rechazar</label>
-                                <div class="firma-row">
-                                    <div>
-                                        <label>Certificado (.pem)</label>
-                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                                    </div>
-                                    <div>
-                                        <label>Firma Base64</label>
-                                        <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                                    </div>
-                                </div>
-                                <div>
-                                    <label>O archivo de firma (.sig)</label>
-                                    <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                                </div>
-                                <div class="btn-row">
-                                    <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
-                                </div>
+                            <div style="background: #ffebee; border: 1px solid #f44336; border-radius: var(--radius-md); padding: var(--spacing-lg); margin-bottom: var(--spacing-md);">
+                                <strong>🔐 Acción Sensible:</strong> Se requiere firma mediante passkey. Quedará registrada para no repudio.
                             </div>
+                            <div class="btn-row">
+                                <button type="button" class="btn btn-danger btn-sm sign-decision-btn" data-solicitud="{{ s['id'] }}" data-decision="rechazar">
+                                    ✗ Firmar y Rechazar
+                                </button>
+                            </div>
+                            <div class="decision-status" style="margin-top: var(--spacing-md); font-size: 13px; color: #4b5563;"></div>
                         </form>
                     </div>
                 {% endfor %}
@@ -575,6 +552,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = document.querySelectorAll('.expediente-row');
     const countEl = document.getElementById('resultCount');
     if (countEl && rows.length) countEl.textContent = rows.length + ' expedientes';
+
+    // Manejador para firma de decisiones de solicitudes con passkey
+    const signBtns = document.querySelectorAll('.sign-decision-btn');
+    signBtns.forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.preventDefault();
+            
+            const solicitudId = this.dataset.solicitud;
+            const decision = this.dataset.decision;
+            const form = this.closest('.decision-form');
+            const statusNode = form.querySelector('.decision-status');
+            
+            this.disabled = true;
+            const csrfToken = form.querySelector('input[name="csrf_token"]').value;
+            
+            const actionLabel = `resolucion de solicitud (${decision})`;
+            const success = await signActionWithPasskey(
+                actionLabel,
+                statusNode,
+                csrfToken,
+                function() {
+                    // Después de firmar exitosamente, submit el formulario
+                    setTimeout(() => {
+                        form.submit();
+                    }, 500);
+                }
+            );
+            
+            if (!success) {
+                this.disabled = false;
+            }
+        });
+    });
 });
 </script>
 </body>

@@ -3104,6 +3104,148 @@ def passkey_login_verify():
     return jsonify({"ok": True, "redirect": role_home(session.get("role"))})
 
 
+@app.route("/action/passkey/options", methods=["POST"])
+def action_passkey_options():
+    """Genera opciones de desafío WebAuthn para firmar una acción sensible."""
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+    
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+    
+    if not require_login():
+        return jsonify({"ok": False, "message": "No autenticado."}), 401
+    
+    username = session.get("user")
+    role = session.get("role")
+    
+    if role not in ("admin", "coordinador"):
+        return jsonify({"ok": False, "message": "Este usuario no puede firmar acciones sensibles."}), 403
+    
+    conn = get_conn()
+    active_passkeys = get_active_passkeys(conn, username)
+    conn.close()
+    
+    if not active_passkeys:
+        return jsonify({"ok": False, "message": "No hay passkeys activas. Registra una desde tu perfil."}), 400
+    
+    allow_credentials = [
+        PublicKeyCredentialDescriptor(id=b64url_decode(row["credential_id"]))
+        for row in active_passkeys
+    ]
+    
+    options = generate_authentication_options(
+        rp_id=PASSKEY_RP_ID,
+        timeout=PASSKEY_TIMEOUT_MS,
+        user_verification=UserVerificationRequirement.REQUIRED,
+        allow_credentials=allow_credentials,
+    )
+    options_json = json.loads(options_to_json(options))
+    
+    # Guardar en sesión para verificación posterior
+    session["pending_action_passkey"] = {
+        "username": username,
+        "challenge": options_json["challenge"],
+        "issued_at": time.time(),
+    }
+    
+    return jsonify({"ok": True, "publicKey": options_json})
+
+
+@app.route("/action/passkey/verify", methods=["POST"])
+def action_passkey_verify():
+    """Verifica la firma WebAuthn de una acción sensible."""
+    if not PASSKEY_ENABLED:
+        return jsonify({"ok": False, "message": "Passkeys deshabilitadas por configuracion."}), 503
+    
+    if not WEBAUTHN_AVAILABLE:
+        return jsonify({"ok": False, "message": "Dependencia WebAuthn no disponible en el servidor."}), 503
+    
+    if not require_login():
+        return jsonify({"ok": False, "message": "No autenticado."}), 401
+    
+    pending = session.get("pending_action_passkey")
+    if not pending:
+        return jsonify({"ok": False, "message": "No hay firma de accion pendiente."}), 400
+    
+    # Verificar que el desafío no haya expirado
+    if time.time() - pending.get("issued_at", 0) > SIGNATURE_CHALLENGE_TTL_SECONDS:
+        session.pop("pending_action_passkey", None)
+        return jsonify({"ok": False, "message": "El desafio de firma expiro."}), 400
+    
+    body = request.get_json(silent=True) or {}
+    credential_payload = body.get("credential")
+    if not credential_payload:
+        return jsonify({"ok": False, "message": "Falta la assertion WebAuthn."}), 400
+    
+    credential_id = credential_payload.get("id") or credential_payload.get("rawId")
+    if not credential_id:
+        return jsonify({"ok": False, "message": "Credential ID invalido."}), 400
+    
+    username = session.get("user")
+    action_label = body.get("action_label", "accion sensible")
+    
+    conn = get_conn()
+    passkey_row = get_active_passkey_by_credential(conn, username, credential_id)
+    if not passkey_row:
+        conn.close()
+        session.pop("pending_action_passkey", None)
+        return jsonify({"ok": False, "message": "Passkey no encontrada o revocada."}), 401
+    
+    try:
+        # Normalizar el payload de autenticación y decodificar campos base64url
+        cred = dict(credential_payload)
+        if "rawId" in cred:
+            cred["raw_id"] = b64url_decode(cred.pop("rawId"))
+        resp = cred.get("response") or {}
+        client_data = b64url_decode(resp.get("clientDataJSON")) if "clientDataJSON" in resp else None
+        auth_data = b64url_decode(resp.get("authenticatorData")) if "authenticatorData" in resp else None
+        signature = b64url_decode(resp.get("signature")) if "signature" in resp else None
+        user_handle = b64url_decode(resp.get("userHandle")) if "userHandle" in resp else None
+        resp_obj = AuthenticatorAssertionResponse(
+            client_data_json=client_data,
+            authenticator_data=auth_data,
+            signature=signature,
+            user_handle=user_handle,
+        )
+        cred["response"] = resp_obj
+        auth_cred = AuthenticationCredential(**cred)
+    except Exception as e:
+        conn.close()
+        session.pop("pending_action_passkey", None)
+        traceback.print_exc()
+        return jsonify({"ok": False, "message": f"Assertion invalida: {e}"}), 400
+    
+    try:
+        verification = verify_authentication_response(
+            credential=auth_cred,
+            expected_challenge=b64url_decode(pending.get("challenge")),
+            expected_origin=PASSKEY_ORIGIN,
+            expected_rp_id=PASSKEY_RP_ID,
+            credential_public_key=b64url_decode(passkey_row["public_key_b64"]),
+            credential_current_sign_count=int(passkey_row["sign_count"] or 0),
+            require_user_verification=True,
+        )
+    except Exception:
+        conn.close()
+        session.pop("pending_action_passkey", None)
+        return jsonify({"ok": False, "message": "No se pudo validar la assertion passkey."}), 401
+    
+    # Actualizar sign_count del passkey y registrar uso
+    update_passkey_usage(conn, passkey_row["id"], int(verification.new_sign_count))
+    conn.commit()
+    conn.close()
+    
+    # Limpiar sesión
+    session.pop("pending_action_passkey", None)
+    
+    # Registrar la acción en logs con fingerprint de passkey como prueba de no repudio
+    passkey_fp = hashlib.sha256(b64url_decode(passkey_row["credential_id"])).hexdigest()[:16]
+    log(username, f"{action_label} (passkey: {passkey_fp})")
+    
+    return jsonify({"ok": True, "message": "Accion firmada exitosamente"})
+
+
 @app.route("/dashboard")
 def dashboard():
     if not require_login():
@@ -3330,11 +3472,6 @@ def avanzar_encuesta(encuesta_id):
         flash("El expediente no esta en el estado esperado.")
         return redirect("/bandeja")
 
-    ok, _ = verify_action_certificate("avance de expediente")
-    if not ok:
-        conn.close()
-        return redirect("/bandeja")
-
     c.execute(
         "UPDATE encuestas SET estado=?, updated_at=? WHERE id=?",
         (new_status, str(datetime.datetime.now()), encuesta_id),
@@ -3351,10 +3488,6 @@ def avanzar_encuesta(encuesta_id):
 def solicitar_eliminacion(encuesta_id):
     if not require_role("coordinador"):
         return redirect("/")
-
-    ok, _ = verify_action_certificate("solicitud de eliminacion")
-    if not ok:
-        return redirect("/bandeja")
 
     motivo = request.form.get("motivo", "").strip()
     if not motivo:
@@ -3382,10 +3515,6 @@ def solicitar_eliminacion(encuesta_id):
 def resolver_solicitud(solicitud_id):
     if not require_role("admin"):
         return redirect("/")
-
-    ok, _ = verify_action_certificate("resolucion de solicitud")
-    if not ok:
-        return redirect("/admin")
 
     decision = request.form.get("decision")
     if decision not in ("aprobar", "rechazar"):
@@ -3439,11 +3568,6 @@ def usuarios():
     c = conn.cursor()
 
     if request.method == "POST":
-        ok, issuer_fingerprint = verify_action_certificate("creacion de usuario")
-        if not ok:
-            conn.close()
-            return redirect("/usuarios")
-
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         rol = request.form.get("rol", "usuario")
@@ -3487,7 +3611,7 @@ def usuarios():
                     username,
                     rol,
                     session.get("user"),
-                    issuer_fingerprint,
+                    None,
                 )
                 conn.commit()
 
@@ -3645,10 +3769,6 @@ def eliminar_usuario(user_id):
     if not require_role("admin"):
         return redirect("/")
 
-    ok, _ = verify_action_certificate("eliminacion de usuario")
-    if not ok:
-        return redirect("/usuarios")
-
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT * FROM usuarios WHERE id=?", (user_id,))
@@ -3739,10 +3859,6 @@ def clear_logs():
     if not require_role("admin"):
         return redirect("/")
 
-    ok, _ = verify_action_certificate("limpieza de bitacora")
-    if not ok:
-        return redirect("/logs")
-
     conn = get_conn()
     c = conn.cursor()
     c.execute("DELETE FROM logs")
@@ -3757,10 +3873,6 @@ def clear_logs():
 def descargar_certificado(cert_id):
     if not require_role("admin"):
         return redirect("/")
-
-    ok, _ = verify_action_certificate("descarga de certificado")
-    if not ok:
-        return redirect("/usuarios")
 
     conn = get_conn()
     c = conn.cursor()
@@ -3794,10 +3906,6 @@ def descargar_certificado(cert_id):
 def revocar_certificado(cert_id):
     if not require_role("admin"):
         return redirect("/")
-
-    ok, _ = verify_action_certificate("revocacion de certificado")
-    if not ok:
-        return redirect("/usuarios")
 
     motivo = request.form.get("revocation_reason", "").strip()
     if not motivo:

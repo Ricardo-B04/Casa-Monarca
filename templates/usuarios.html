@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestión de Usuarios | Casa Monarca</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='action-passkey.js') }}"></script>
     <style>
         /* Summary cards */
         .summary-cards {
@@ -356,40 +357,24 @@
 
                                 <!-- Certificado y Firma (solo para admin/coordinador) -->
                                 <div id="cert-section" style="display: none;">
-                                    <h3>Certificado Digital (Requerido para Admin/Coordinador)</h3>
-                                    <div class="form-group">
-                                        <label>Tu Certificado</label>
-                                        <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" id="cert-file">
-                                        <div class="helper">Archivo .pem o .crt de tu certificado digital.</div>
+                                    <h3>Verificación de Identidad (Requerida para Admin/Coordinador)</h3>
+                                    <div style="background: #e3f2fd; border: 1px solid #2196f3; border-radius: var(--radius-md); padding: var(--spacing-lg); margin-bottom: var(--spacing-lg);">
+                                        <strong>🔐 Acción Sensible:</strong> Se requiere firma mediante passkey para crear usuarios administrativos. Quedará registrada para no repudio.
                                     </div>
 
                                     <div class="form-group">
-                                        <label>Desafío a Firmar</label>
-                                        <input type="text" value="{{ action_signature_challenge }}" readonly style="background: #f9f9fc; color: #999;">
-                                        <div class="helper">Firma este valor con tu clave privada local.</div>
-                                    </div>
-
-                                    <div class="form-group">
-                                        <label>Firma del Desafío (Base64)</label>
-                                        <input type="text" name="action_signature" placeholder="Pegar firma en Base64 aquí">
-                                    </div>
-
-                                    <div class="form-group">
-                                        <label>O Archivo de Firma (Binario)</label>
-                                        <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                                        <div class="helper">Alternativamente, sube el archivo binario de la firma.</div>
-                                    </div>
-
-                                    <div class="alert alert-info">
-                                        <strong>Nota:</strong> Para admin/coordinador es obligatorio firmar esta creación con tu certificado para confirmar tu identidad.
+                                        <button type="button" id="signCreateUserBtn" class="btn btn-primary" style="background: var(--color-primary);">
+                                            🔐 Firmar y Crear Usuario
+                                        </button>
+                                        <div id="createUserStatus" style="margin-top: var(--spacing-md); font-size: 13px; color: #4b5563;"></div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- BOTÓN SUBMIT -->
+                        <!-- BOTÓN SUBMIT (fallback, normalmente no se usa) -->
                         <div style="margin-top: var(--spacing-lg); display: flex; gap: var(--spacing-md);">
-                            <button type="submit" class="btn btn-primary btn-block">Crear Usuario</button>
+                            <button type="submit" class="btn btn-primary btn-block" id="submitUserFormBtn">Crear Usuario</button>
                         </div>
                     </form>
                 </div>
@@ -505,6 +490,59 @@
             body.classList.toggle('active');
             header.classList.toggle('active');
         }
+
+        // Manejador para firma de creación de usuario con passkey
+        document.addEventListener('DOMContentLoaded', function() {
+            const signBtn = document.getElementById('signCreateUserBtn');
+            const statusNode = document.getElementById('createUserStatus');
+            const submitBtn = document.getElementById('submitUserFormBtn');
+            const form = document.querySelector('form');
+            const rolSelect = document.getElementById('rol-select');
+            
+            if (signBtn && rolSelect) {
+                signBtn.addEventListener('click', async function(e) {
+                    e.preventDefault();
+                    
+                    const rol = rolSelect.value;
+                    if (rol !== 'admin' && rol !== 'coordinador') {
+                        // No se requiere firma para otros roles
+                        submitBtn.click();
+                        return;
+                    }
+                    
+                    signBtn.disabled = true;
+                    const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                    
+                    const success = await signActionWithPasskey(
+                        'creacion de usuario',
+                        statusNode,
+                        csrfToken,
+                        function() {
+                            // Después de firmar exitosamente, submit el formulario
+                            setTimeout(() => {
+                                form.submit();
+                            }, 500);
+                        }
+                    );
+                    
+                    if (!success) {
+                        signBtn.disabled = false;
+                    }
+                });
+            }
+            
+            // Si es usuario normal (no admin/coordinador), permitir submit directo
+            if (submitBtn && rolSelect) {
+                submitBtn.addEventListener('click', function(e) {
+                    const rol = rolSelect.value;
+                    if (rol === 'admin' || rol === 'coordinador') {
+                        e.preventDefault();
+                        // Forzar click en botón de firma
+                        document.getElementById('signCreateUserBtn').click();
+                    }
+                });
+            }
+        });
     </script>
 </body>
 </html>
