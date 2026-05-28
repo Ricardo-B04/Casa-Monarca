@@ -1,0 +1,42 @@
+Plan de trabajo pendiente
+- Base de datos y cifrado:
+  - Revisar la latencia real de cifrado y descifrado sobre expedientes SQLite.
+  - Si la operación tarda de forma perceptible, preparar un mensaje de espera para el frontend.
+  - Identificar y documentar los modos de operación usados para cifrado y descifrado.
+  - Diseñar la rotación y el ciclo de vida de claves de cifrado para la base de datos.
+  - Registrar en SQLite el inventario de llaves, su estado y su uso.
+- Politicas y derechos ARCO:
+  - Definir la política de derechos ARCO para expedientes y solicitudes de eliminación.
+  - Registrar estas acciones con trazabilidad en la bitácora del sistema.
+  - Mantener el flujo de canalización ya implementado al introducir validaciones adicionales.
+- Backend:
+  - Migrar el flujo de firmado de acciones legacy al flujo actual con passkeys.
+  - Alinear las acciones críticas con la verificación que ya usa el sistema.
+- Documentación:
+  - Mantener este changelog como referencia del avance y del alcance de cada iteración.
+
+[0.2.8] - 2026-05-26
+- Added: inventario de llaves de cifrado, huella por expediente y pestaña administrativa propia para cifrado.
+- Changed: configuracion centralizada de llave activa y soporte de llaves historicas para descifrado.
+- Fixed: conteo de uso por huella y CSRF en la nueva pantalla de cifrado.
+- Security: medicion de latencia y re-cifrado controlado de expedientes con ventana de rotacion.
+- Documentation: el cifrado y descifrado de expedientes usan Fernet, es decir, un esquema simetrico autenticado basado en AES-128-CBC con HMAC-SHA256.
+- Documentation: la rotacion y el ciclo de vida de llaves ya cuentan con una base operativa en la app (llave activa, llaves historicas, inventario y re-cifrado manual); queda pendiente automatizar la emision y retiro de llaves.
+
+Policy: Ciclo de vida de llaves (NIST SP 800-57, 2026-05-27)
+- Alcance: política aplicable al cifrado simétrico de expedientes (Fernet) y a la gestión de material clave en la aplicación.
+- Estándar de referencia: NIST SP 800-57 (Key Management), complementado por buenas prácticas ISO/IEC 11770 y controles de ISO/IEC 27001.
+- Roles y control: generación/activación/retiro ejecutados por admins autorizados; en producción exigir doble control (two-person rule) para activación/destrucción.
+- Estados de llave: `generated` -> `active` -> `retiring` -> `retired` -> `destroyed`.
+- Uso de llaves: solo la llave `active` se utiliza para nuevos cifrados; llaves en `retiring` permiten descifrado hasta completar re-cifrado.
+- Triggers de rotación: rotación programada (cryptoperiod configurable, sugerido 90 días), por volumen o por incidente de seguridad (compromiso).
+- Flujo de activación: generar -> validar -> `activate` (marcar `retiring` a la anterior) -> encolar job de re-cifrado por batches.
+- Re-cifrado: worker background por batches (checkpoint, retries, throttling); verificar integridad por muestreo; no eliminar llave legacy hasta verificación completa y retención de backups.
+- Retención y destrucción: conservar llaves retiradas hasta re-cifrado + periodo de retención (p.e. 30 días) antes de `destroyed`; destruir de forma segura y borrar backups de key material.
+- Almacenamiento: en entornos de producción usar KMS/HSM (AWS KMS, Azure KeyVault, Google KMS); en dev usar archivo protegido con acceso limitado.
+- Metadata y auditoría: `encryption_keys` debe incluir `fingerprint, key_source, state, created_by, created_at, activated_at, retired_at, destroyed_at, usage_count, last_used_at, notes` y log de eventos (generate/activate/retire/destroy/failed-decrypt).
+- Métricas: persistir latencias en `encryption_metrics` (`timestamp, op_type, duration_ms, key_fingerprint, record_id, status`) y generar alertas si exceden umbrales.
+- Pruebas y rollback: probar re-cifrado en staging; mantener legacy key hasta verificación; plan de rollback y pausado de job si hay fallos.
+- Endpoints operativos recomendados: `POST /admin/keys/generate`, `POST /admin/keys/{fp}/activate`, `POST /admin/keys/{fp}/retire`, `GET /admin/keys`.
+- Emergencia (compromise): marcar key `retiring`, activar nueva key, priorizar re-cifrado, revocar accesos, auditar y notificar.
+- Recomendación inicial: implementar esquema `encryption_keys` y `encryption_metrics`, exponer endpoint de activación y un worker simple de re-cifrado por batches; ajustar cryptoperiod tras mediciones.
