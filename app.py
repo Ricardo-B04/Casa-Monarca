@@ -3091,12 +3091,18 @@ def survey():
     if request.method == "POST":
         data = {
             "fecha_ingreso": str(datetime.datetime.now()),
-            "nombre": request.form.get("nombre", "").strip(),
-            "apellido_materno": request.form.get("apellido_materno", "").strip(),
-            "apellido_paterno": request.form.get("apellido_paterno", "").strip(),
-            "pais": request.form.get("pais", "").strip(),
+            "nombre_pila": request.form.get("nombre_pila", "").strip(),
+            "primer_apellido": request.form.get("primer_apellido", "").strip(),
+            "segundo_apellido": request.form.get("segundo_apellido", "").strip(),
+            "pais_origen": request.form.get("pais_origen", "").strip(),
+            "fecha_nacimiento": request.form.get("fecha_nacimiento", "").strip(),
             "edad": request.form.get("edad", "").strip(),
-            "tiempo_estancia": request.form.get("tiempo_estancia", "").strip(),
+            "genero": request.form.get("genero", "").strip(),
+            "estado_civil": request.form.get("estado_civil", "").strip(),
+            "grupo_poblacion": request.form.get("grupo_poblacion", "").strip(),
+            "departamento_estado": request.form.get("departamento_estado", "").strip(),
+            "telefono": request.form.get("telefono", "").strip(),
+            "fecha_atencion": request.form.get("fecha_atencion", "").strip(),
             "capturado_por": session.get("user"),
             "rol_capturador": session.get("role"),
         }
