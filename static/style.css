@@ -313,7 +313,7 @@ button[type="submit"]:hover:not(:disabled),
 }
 
 .btn-secondary:hover:not(:disabled) {
-    background: #ca8c06;
+    background: #986901;
     box-shadow: var(--shadow-md);
 }
 
@@ -324,7 +324,7 @@ button[type="submit"]:hover:not(:disabled),
 }
 
 .btn-danger:hover:not(:disabled) {
-    background: #ca8c06;
+    background: #986901;
     box-shadow: var(--shadow-md);
 }
 
