@@ -362,7 +362,11 @@
         </div>
         <div class="summary-card">
             <strong>{{ solicitudes|length }}</strong>
-            <label>Solicitudes</label>
+            <label>Eliminaciones</label>
+        </div>
+        <div class="summary-card">
+            <strong>{{ solicitudes_arco|length }}</strong>
+            <label>Solicitudes ARCO</label>
         </div>
     </div>
 
@@ -508,6 +512,58 @@
                 <div class="empty-state">
                     <span class="icon"></span>
                     No hay solicitudes pendientes.
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- ── SOLICITUDES ARCO ── -->
+        <div class="box">
+            <h2>Solicitudes ARCO</h2>
+            {% if solicitudes_arco %}
+                {% for s in solicitudes_arco %}
+                    <div class="solicitud-card">
+                        <div class="solicitud-header">
+                            <div class="solicitud-title">ARCO #{{ s['id'] }}</div>
+                            <span class="badge badge-warning">Pendiente</span>
+                        </div>
+                        <div class="solicitud-meta">
+                            <div><strong>Acción:</strong> {{ s['accion'] | capitalize }}</div>
+                            <div><strong>Solicitante:</strong> {{ s['nombre_solicitante'] }}</div>
+                            <div><strong>Contacto:</strong> {{ s['correo'] }}</div>
+                            <div><strong>Identidad:</strong> {{ s['curp_id'] }}</div>
+                            {% if s['nombre_pila'] %}
+                                <div><strong>Registrado como:</strong> {{ s['nombre_pila'] }} {{ s['primer_apellido'] }} {{ s['segundo_apellido'] }}</div>
+                            {% endif %}
+                            {% if s['fecha_nacimiento'] %}
+                                <div><strong>Fecha nac.:</strong> {{ s['fecha_nacimiento'] }}</div>
+                            {% endif %}
+                            {% if s['pais_origen'] %}
+                                <div><strong>País origen:</strong> {{ s['pais_origen'] }}</div>
+                            {% endif %}
+                            {% if s['folio_expediente'] %}
+                                <div><strong>Folio:</strong> {{ s['folio_expediente'] }}</div>
+                            {% endif %}
+                            <div><strong>Motivo:</strong> {{ s['motivo'] }}</div>
+                            <div><strong>Fecha solicitud:</strong> {{ s['created_at'] }}</div>
+                        </div>
+                        <div class="solicitud-actions">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                                <input type="hidden" name="decision" value="atendida">
+                                <button type="submit" class="btn btn-success btn-sm">✓ Marcar atendida</button>
+                            </form>
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                                <input type="hidden" name="decision" value="rechazada">
+                                <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
+                            </form>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <span class="icon"></span>
+                    No hay solicitudes ARCO pendientes.
                 </div>
             {% endif %}
         </div>

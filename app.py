@@ -360,6 +360,40 @@ def init_db():
         """
     )
 
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS solicitudes_arco (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            -- Datos de contacto del solicitante
+            nombre_solicitante  TEXT NOT NULL,
+            correo              TEXT NOT NULL,
+            telefono            TEXT,
+            curp_id             TEXT NOT NULL,
+            -- Acción solicitada
+            accion              TEXT NOT NULL,  -- acceso | rectificacion | cancelacion | oposicion
+            -- Datos para localizar expediente
+            nombre_pila         TEXT,
+            primer_apellido     TEXT,
+            segundo_apellido    TEXT,
+            fecha_nacimiento    TEXT,
+            pais_origen         TEXT,
+            departamento_estado TEXT,
+            fecha_atencion      TEXT,
+            folio_expediente    TEXT,
+            -- Fundamentación
+            motivo              TEXT NOT NULL,
+            datos_correctos     TEXT,
+            info_adicional      TEXT,
+            -- Control interno
+            estado              TEXT DEFAULT 'pendiente',  -- pendiente | en_revision | atendida | rechazada
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            atendida_por        TEXT,
+            atendida_at         DATETIME,
+            notas_admin         TEXT
+        )
+        """
+    )
+
     # Compatibilidad con bases existentes de la version anterior
     ensure_column(c, "encuestas", "estado", "TEXT DEFAULT 'borrador'")
     ensure_column(c, "encuestas", "creado_por", "TEXT")
@@ -3383,10 +3417,19 @@ def admin():
     )
     solicitudes = c.fetchall()
 
+    c.execute(
+        "SELECT * FROM solicitudes_arco WHERE estado='pendiente' ORDER BY id DESC"
+    )
+    solicitudes_arco = c.fetchall()
+
     conn.close()
 
-    return render_template("admin.html", expedientes=expedientes, solicitudes=solicitudes)
-
+    return render_template(
+        "admin.html",
+        expedientes=expedientes,
+        solicitudes=solicitudes,
+        solicitudes_arco=solicitudes_arco,
+    )
 
 @app.route("/bandeja")
 def bandeja():
@@ -4104,6 +4147,95 @@ def profile():
         passkey_enrollment_required=bool(session.get("passkey_enrollment_required") or (user and user["passkey_enrollment_required"])),
     )
 
+
+import secrets
+
+@app.route("/arco")
+def arco():
+    # Asegura que el csrf_token exista en sesión (igual que en /login)
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return render_template("arco.html")
+
+
+@app.route("/arco/solicitud", methods=["POST"])
+def arco_solicitud():
+    # Validar CSRF
+    token_form = request.form.get("csrf_token", "")
+    if not token_form or token_form != session.get("csrf_token"):
+        return {"ok": False, "message": "Token inválido."}, 403
+
+    # Campos requeridos
+    nombre_solicitante = request.form.get("nombre_solicitante", "").strip()
+    correo             = request.form.get("correo", "").strip()
+    curp_id            = request.form.get("curp_id", "").strip()
+    accion             = request.form.get("accion", "").strip()
+    motivo             = request.form.get("motivo", "").strip()
+
+    if not all([nombre_solicitante, correo, curp_id, accion, motivo]):
+        return {"ok": False, "message": "Faltan campos obligatorios."}, 400
+
+    if accion not in ("acceso", "rectificacion", "cancelacion", "oposicion"):
+        return {"ok": False, "message": "Acción no válida."}, 400
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO solicitudes_arco (
+            nombre_solicitante, correo, telefono, curp_id,
+            accion,
+            nombre_pila, primer_apellido, segundo_apellido,
+            fecha_nacimiento, pais_origen, departamento_estado,
+            fecha_atencion, folio_expediente,
+            motivo, datos_correctos, info_adicional
+        ) VALUES (?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?)
+    """, (
+        nombre_solicitante,
+        correo,
+        request.form.get("telefono", "").strip(),
+        curp_id,
+        accion,
+        request.form.get("nombre_pila", "").strip(),
+        request.form.get("primer_apellido", "").strip(),
+        request.form.get("segundo_apellido", "").strip(),
+        request.form.get("fecha_nacimiento", "").strip(),
+        request.form.get("pais_origen", "").strip(),
+        request.form.get("departamento_estado", "").strip(),
+        request.form.get("fecha_atencion", "").strip(),
+        request.form.get("folio_expediente", "").strip(),
+        motivo,
+        request.form.get("datos_correctos", "").strip(),
+        request.form.get("info_adicional", "").strip(),
+    ))
+    conn.commit()
+    conn.close()
+
+    return {"ok": True, "message": "Tu solicitud fue registrada. Recibirás respuesta en un plazo máximo de 20 días hábiles."}
+
+@app.route("/arco/<int:solicitud_id>/resolver", methods=["POST"])
+def arco_resolver(solicitud_id):
+    if not require_role("admin"):
+        return redirect("/")
+
+    token_form = request.form.get("csrf_token", "")
+    if not token_form or token_form != session.get("csrf_token"):
+        abort(403)
+
+    decision = request.form.get("decision")
+    if decision not in ("atendida", "rechazada"):
+        abort(400)
+
+    conn = get_conn()
+    conn.execute(
+        "UPDATE solicitudes_arco SET estado=?, atendida_por=?, atendida_at=CURRENT_TIMESTAMP WHERE id=?",
+        (decision, session.get("username"), solicitud_id)
+    )
+    conn.commit()
+    conn.close()
+
+    flash(f"Solicitud ARCO #{solicitud_id} marcada como {decision}.")
+    return redirect("/admin")
 
 if __name__ == "__main__":
     init_db()
