@@ -71,6 +71,7 @@
         background: var(--color-primary);
     }
 
+<<<<<<< Updated upstream
     .log-date-header {
         background: var(--color-secondary);
         color: var(--color-white);
@@ -84,6 +85,39 @@
         transition: background 0.2s;
         user-select: none;
     }
+=======
+.logs-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.log-group {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+
+.log-date-header {
+    background: var(--color-secondary);
+    color: var(--color-white);
+    padding: var(--spacing-md) var(--spacing-lg);
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s;
+    user-select: none;
+}
+
+.log-date-header:hover {
+    background: #986901;
+}
+>>>>>>> Stashed changes
 
     .log-date-header:hover {
         background: #986901;
