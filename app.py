@@ -814,7 +814,7 @@ def get_encryption_metrics(limit=500):
 
 @app.route('/admin/cifrado/metrics')
 def admin_cifrado_metrics():
-    if not require_role('admin'):
+    if not require_role('admin', 'coordinador'):
         return jsonify({"error": "unauthorized"}), 403
     res = get_encryption_metrics(limit=500)
     return jsonify(res)
@@ -838,7 +838,7 @@ def enqueue_reencrypt_job(new_key_fingerprint, requested_by, batch_size=500, not
 
 @app.route("/admin/keys/configure", methods=["POST"])
 def admin_configure_key():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return jsonify({"ok": False, "message": "Unauthorized"}), 403
 
     # CSRF protection
@@ -924,7 +924,7 @@ def admin_configure_key():
 
 @app.route("/admin/keys/<fp>/activate", methods=["POST"])
 def admin_activate_key(fp):
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return jsonify({"ok": False, "message": "Unauthorized"}), 403
 
     # CSRF protection
@@ -3146,6 +3146,8 @@ def enforce_certificate_setup():
             return None
         if request.path in ("/", "/password/update", "/logout"):
             return None
+        if request.path.startswith("/auth/passkey/") or request.path.startswith("/action/passkey/") or request.path == "/auth/check-passkey-required":
+            return None
         return redirect("/password/update")
 
     if session.get("passkey_enrollment_required"):
@@ -3154,7 +3156,9 @@ def enforce_certificate_setup():
             return None
         if request.path.startswith("/static"):
             return None
-        if request.path in ("/", "/profile", "/logout", "/auth/passkey/register/options", "/auth/passkey/register/verify"):
+        if request.path in ("/", "/profile", "/logout"):
+            return None
+        if request.path.startswith("/auth/passkey/") or request.path.startswith("/action/passkey/") or request.path == "/auth/check-passkey-required":
             return None
         return redirect("/profile")
 
@@ -3169,6 +3173,9 @@ def enforce_certificate_setup():
         return None
 
     if request.path in ("/", "/certificado/setup", "/logout"):
+        return None
+
+    if request.path.startswith("/auth/passkey/") or request.path.startswith("/action/passkey/"):
         return None
 
     return redirect("/certificado/setup")
@@ -3677,7 +3684,7 @@ def passkey_register_verify():
         verification = verify_registration_response(
             credential=credential_obj,
             expected_challenge=b64url_decode(pending.get("challenge")),
-            expected_origin=PASSKEY_ORIGIN,
+            expected_origin=request.scheme + "://" + request.host,
             expected_rp_id=PASSKEY_RP_ID,
             require_user_verification=True,
         )
@@ -3917,7 +3924,7 @@ def passkey_login_verify():
         verification = verify_authentication_response(
             credential=auth_cred,
             expected_challenge=b64url_decode(pending.get("challenge")),
-            expected_origin=PASSKEY_ORIGIN,
+            expected_origin=request.scheme + "://" + request.host,
             expected_rp_id=PASSKEY_RP_ID,
             credential_public_key=b64url_decode(passkey_row["public_key_b64"]),
             credential_current_sign_count=int(passkey_row["sign_count"] or 0),
@@ -4076,7 +4083,7 @@ def action_passkey_verify():
         verification = verify_authentication_response(
             credential=auth_cred,
             expected_challenge=b64url_decode(pending.get("challenge")),
-            expected_origin=PASSKEY_ORIGIN,
+            expected_origin=request.scheme + "://" + request.host,
             expected_rp_id=PASSKEY_RP_ID,
             credential_public_key=b64url_decode(passkey_row["public_key_b64"]),
             credential_current_sign_count=int(passkey_row["sign_count"] or 0),
@@ -4235,7 +4242,7 @@ def survey():
 
 @app.route("/admin")
 def admin():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -4442,7 +4449,7 @@ def solicitar_eliminacion(encuesta_id):
 
 @app.route("/solicitud/<int:solicitud_id>/resolver", methods=["POST"])
 def resolver_solicitud(solicitud_id):
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     decision = request.form.get("decision")
@@ -4490,7 +4497,7 @@ def resolver_solicitud(solicitud_id):
 
 @app.route("/usuarios", methods=["GET", "POST"])
 def usuarios():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -4591,7 +4598,7 @@ def usuarios():
 
 @app.route("/admin/identidades")
 def admin_identidades():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -4612,7 +4619,7 @@ def admin_identidades():
 
 @app.route("/admin/pki")
 def admin_pki():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -4656,7 +4663,7 @@ def admin_pki_passkey_status():
     Endpoint JSON: Retorna mapeo completo certificado ↔ passkeys
     Estructura: [{cert_id, username, rol, status, num_passkeys_active, passkeys: [...]}]
     """
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return jsonify({"ok": False, "message": "No autorizado"}), 403
     
     try:
@@ -4744,7 +4751,7 @@ def admin_revoke_passkey():
     Endpoint: Revoca un passkey individual
     Body: {passkey_id, reason}
     """
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return jsonify({"ok": False, "message": "No autorizado"}), 403
     
     try:
@@ -4807,7 +4814,7 @@ def admin_revoke_certificate():
     Endpoint: Revoca un certificado y todos sus passkeys
     Body: {cert_id, reason}
     """
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return jsonify({"ok": False, "message": "No autorizado"}), 403
     
     try:
@@ -4862,7 +4869,7 @@ def admin_revoke_certificate():
 
 @app.route("/admin/cifrado", methods=["GET", "POST"])
 def admin_cifrado():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     if request.method == "POST":
@@ -4894,7 +4901,7 @@ def admin_cifrado():
 
 @app.route('/admin/cifrado/jobs')
 def admin_cifrado_jobs():
-    if not require_role('admin'):
+    if not require_role('admin', 'coordinador'):
         return jsonify({'ok': False, 'message': 'unauthorized'}), 403
 
     conn = get_conn()
@@ -4946,7 +4953,7 @@ def eliminar_usuario(user_id):
 
 @app.route("/logs")
 def logs():
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -5017,7 +5024,7 @@ def clear_logs():
 
 @app.route("/certificado/<int:cert_id>/descargar", methods=["POST"])
 def descargar_certificado(cert_id):
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     conn = get_conn()
@@ -5050,7 +5057,7 @@ def descargar_certificado(cert_id):
 
 @app.route("/certificado/<int:cert_id>/revocar", methods=["POST"])
 def revocar_certificado(cert_id):
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     motivo = request.form.get("revocation_reason", "").strip()
@@ -5316,7 +5323,7 @@ def arco_solicitud():
 
 @app.route("/arco/<int:solicitud_id>/resolver", methods=["POST"])
 def arco_resolver(solicitud_id):
-    if not require_role("admin"):
+    if not require_role("admin", "coordinador"):
         return redirect("/")
 
     token_form = request.form.get("csrf_token", "")
