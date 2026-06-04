@@ -548,15 +548,17 @@
                             <div><strong>Reenviada por coordinador:</strong> {{ s['aprobado_coordinadores_por'] }} el {{ s['reenviado_por_coordinador_at'] }}</div>
                         </div>
                         <div class="solicitud-actions">
-                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver" class="decision-form">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="atendida">
-                                <button type="submit" class="btn btn-success btn-sm">✓ Marcar atendida</button>
+                                <button type="button" class="btn btn-success btn-sm sign-decision-btn" data-decision="atendida">✓ Marcar atendida</button>
+                                <div class="decision-status" style="margin-top: 8px; font-size: 13px; color: #4b5563;"></div>
                             </form>
-                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver" class="decision-form">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="rechazada">
-                                <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
+                                <button type="button" class="btn btn-danger btn-sm sign-decision-btn" data-decision="rechazada">✗ Rechazar</button>
+                                <div class="decision-status" style="margin-top: 8px; font-size: 13px; color: #4b5563;"></div>
                             </form>
                         </div>
                     </div>
@@ -612,15 +614,17 @@
                             </div>
                         </div>
                         <div class="solicitud-actions">
-                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver" class="decision-form">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="atendida">
-                                <button type="submit" class="btn btn-success btn-sm">✓ Marcar atendida</button>
+                                <button type="button" class="btn btn-success btn-sm sign-decision-btn" data-decision="atendida">✓ Marcar atendida</button>
+                                <div class="decision-status" style="margin-top: 8px; font-size: 13px; color: #4b5563;"></div>
                             </form>
-                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver" class="decision-form">
                                 <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                                 <input type="hidden" name="decision" value="rechazada">
-                                <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
+                                <button type="button" class="btn btn-danger btn-sm sign-decision-btn" data-decision="rechazada">✗ Rechazar</button>
+                                <div class="decision-status" style="margin-top: 8px; font-size: 13px; color: #4b5563;"></div>
                             </form>
                         </div>
                     </div>

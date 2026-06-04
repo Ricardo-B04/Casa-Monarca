@@ -73,6 +73,7 @@ LOGIN_MAX_ATTEMPTS = app.config.get("LOGIN_MAX_ATTEMPTS", 5)
 LOGIN_WINDOW_SECONDS = app.config.get("LOGIN_WINDOW_SECONDS", 300)
 LOGIN_LOCKOUT_SECONDS = app.config.get("LOGIN_LOCKOUT_SECONDS", 900)
 SIGNATURE_CHALLENGE_TTL_SECONDS = app.config.get("SIGNATURE_CHALLENGE_TTL_SECONDS", 300)
+ACTION_PASSKEY_TTL_SECONDS = app.config.get("ACTION_PASSKEY_TTL_SECONDS", SIGNATURE_CHALLENGE_TTL_SECONDS)
 PASSKEY_ENABLED = app.config.get("PASSKEY_ENABLED", True)
 PASSKEY_ENFORCE_CRITICAL = app.config.get("PASSKEY_ENFORCE_CRITICAL", False)
 PASSKEY_RP_ID = app.config.get("PASSKEY_RP_ID", "localhost")
@@ -1465,6 +1466,19 @@ def get_signature_challenge(scope, username=None):
 
 def consume_signature_challenge(scope):
     session.pop(_signature_challenge_key(scope), None)
+
+
+def consume_action_passkey_verification(expected_action_label=None):
+    verification = session.pop("action_passkey_verified", None)
+    if not verification:
+        return False
+    if verification.get("username") != session.get("user"):
+        return False
+    if expected_action_label and verification.get("action_label") != expected_action_label:
+        return False
+    if time.time() - verification.get("issued_at", 0) > ACTION_PASSKEY_TTL_SECONDS:
+        return False
+    return True
 
 
 def decode_signature_value(signature_text=None, signature_file=None):
@@ -3286,11 +3300,19 @@ def action_passkey_verify():
     conn.commit()
     conn.close()
     
-    # Limpiar sesión
+    # Limpiar sesión de desafío
     session.pop("pending_action_passkey", None)
-    
+
+    # Registrar que la acción fue autorizada con passkey para la siguiente operación sensible
+    session["action_passkey_verified"] = {
+        "username": username,
+        "issued_at": time.time(),
+        "action_label": action_label,
+    }
+
     # Registrar la acción en logs con fingerprint de passkey como prueba de no repudio
-    passkey_fp = hashlib.sha256(b64url_decode(passkey_row["credential_id"])).hexdigest()[:16]
+    passkey_fp = hashlib.sha256(b64url_decode(passkey_row["credential_id"]))
+    passkey_fp = passkey_fp.hexdigest()[:16]
     log(username, f"{action_label} (passkey: {passkey_fp})")
     
     return jsonify({"ok": True, "message": "Accion firmada exitosamente"})
@@ -4282,6 +4304,11 @@ def arco_resolver(solicitud_id):
     if decision not in ("atendida", "rechazada"):
         abort(400)
 
+    action_label = f"resolucion de solicitud ({decision})"
+    if not consume_action_passkey_verification(action_label):
+        flash("Se requiere firma con passkey para marcar esta solicitud como atendida o rechazada.")
+        return redirect("/admin")
+
     conn = get_conn()
     conn.execute(
         "UPDATE solicitudes_arco SET estado=?, atendida_por=?, atendida_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -4314,6 +4341,10 @@ def arco_aprobar(solicitud_id):
     # Validar que el rol tiene permisos
     if role not in ("usuario", "operativo", "coordinador"):
         flash("Tu rol no puede aprobar solicitudes ARCO.")
+        return redirect("/bandeja")
+
+    if role == "coordinador" and not consume_action_passkey_verification():
+        flash("Se requiere firma con passkey para aprobar esta solicitud ARCO.")
         return redirect("/bandeja")
     
     # Mapeo rol → nivel_actual esperado
@@ -4407,6 +4438,10 @@ def arco_resolver_coordinador(solicitud_id):
     
     decision = request.form.get("decision", "").strip()
     
+    if not consume_action_passkey_verification():
+        flash("Se requiere firma con passkey para procesar esta acción de coordinador.")
+        return redirect("/bandeja")
+
     if decision not in ("resuelta", "enviar_admin"):
         flash("Decisión no válida.")
         return redirect("/bandeja")
