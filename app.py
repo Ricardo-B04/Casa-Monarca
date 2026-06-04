@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, session, flash, send_file, jsonify
+from flask import Flask, render_template, request, redirect, session, flash, send_file, jsonify, has_request_context
 import sqlite3
 from cryptography import x509
 from cryptography.fernet import Fernet
@@ -169,8 +169,121 @@ def get_cipher_for_fingerprint(fingerprint=None):
     return cipher
 
 
+def load_keyring():
+    """Loads all encryption keys dynamically from config and the database, rebuilding the keyring."""
+    global ENCRYPTION_KEYRING, DATA_ENCRYPTION_KEY_FINGERPRINT, cipher
+
+    # 1. Start with the keys defined in the configuration files
+    keyring_paths = [ENCRYPTION_KEY_PATH] + list(ENCRYPTION_LEGACY_KEY_PATHS or [])
+
+    # 2. Query the database table encryption_keys to retrieve other registered keys
+    try:
+        conn = sqlite3.connect("database.db")
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='encryption_keys'")
+        if c.fetchone():
+            c.execute("SELECT source_path, state FROM encryption_keys")
+            db_keys = c.fetchall()
+            # Order such that 'activo' keys are first, so they take precedence for active encryption
+            db_keys = sorted(db_keys, key=lambda k: 0 if k["state"] == "activo" else 1)
+            for r in db_keys:
+                path = r["source_path"]
+                if path and os.path.exists(path):
+                    if r["state"] == "activo":
+                        if path in keyring_paths:
+                            # Move to front
+                            keyring_paths.remove(path)
+                        keyring_paths.insert(0, path)
+                    else:
+                        if path not in keyring_paths:
+                            keyring_paths.append(path)
+        conn.close()
+    except Exception as e:
+        print(f"Error loading keys from database: {e}")
+
+    # Remove duplicate paths while preserving ordering (active first)
+    seen = set()
+    unique_paths = []
+    for p in keyring_paths:
+        if p not in seen:
+            seen.add(p)
+            unique_paths.append(p)
+
+    # Rebuild the keyring list
+    new_keyring = []
+    seen_fingerprints = set()
+    for index, key_path in enumerate(unique_paths):
+        try:
+            with open(key_path, "rb") as f:
+                key_bytes = f.read()
+        except FileNotFoundError:
+            continue
+
+        fingerprint = hashlib.sha256(key_bytes).hexdigest()
+        if fingerprint in seen_fingerprints:
+            continue
+
+        seen_fingerprints.add(fingerprint)
+        new_keyring.append(
+            {
+                "path": key_path,
+                "fingerprint": fingerprint,
+                "key_bytes": key_bytes,
+                "cipher": Fernet(key_bytes),
+                "is_primary": len(new_keyring) == 0,  # First successful key in list is primary
+            }
+        )
+
+    if new_keyring:
+        ENCRYPTION_KEYRING = new_keyring
+        DATA_ENCRYPTION_KEY_FINGERPRINT = new_keyring[0]["fingerprint"]
+        cipher = new_keyring[0]["cipher"]
+        for idx, entry in enumerate(ENCRYPTION_KEYRING):
+            entry["is_primary"] = (idx == 0)
+
+
+def get_active_key_details():
+    """Returns a JSON string describing the currently active encryption key."""
+    try:
+        db_path = app.config.get("DATABASE", "database.db")
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT key_fingerprint, source_path, state, notes FROM encryption_keys WHERE state='activo' LIMIT 1")
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return json.dumps({
+                "fingerprint": row["key_fingerprint"],
+                "fingerprint_short": row["key_fingerprint"][:12],
+                "source_path": row["source_path"],
+                "state": row["state"],
+                "notes": row["notes"],
+            })
+    except Exception:
+        pass
+
+    # Fallback to in-memory keyring
+    if ENCRYPTION_KEYRING:
+        active = ENCRYPTION_KEYRING[0]
+        return json.dumps({
+            "fingerprint": active["fingerprint"],
+            "fingerprint_short": active["fingerprint"][:12],
+            "source_path": active.get("path", ""),
+            "state": "activo",
+            "notes": "clave en memoria",
+        })
+    return json.dumps({"status": "sin clave activa"})
+
+
+# Perform initial dynamic reload of keyring
+load_keyring()
+
+
 def get_conn():
-    conn = sqlite3.connect("database.db")
+    db_path = app.config.get("DATABASE", "database.db")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -260,7 +373,10 @@ def init_db():
             duration_ms REAL,
             key_fingerprint TEXT,
             record_id INTEGER,
-            status TEXT
+            status TEXT,
+            user TEXT,
+            action_detail TEXT,
+            active_key_info TEXT
         )
         """
     )
@@ -420,6 +536,9 @@ def init_db():
 
     ensure_column(c, "logs", "categoria", "TEXT DEFAULT 'operacion'")
     ensure_column(c, "logs", "detalle", "TEXT")
+    ensure_column(c, "encryption_metrics", "user", "TEXT")
+    ensure_column(c, "encryption_metrics", "action_detail", "TEXT")
+    ensure_column(c, "encryption_metrics", "active_key_info", "TEXT")
 
     now = str(datetime.datetime.now())
     for entry in ENCRYPTION_KEYRING:
@@ -553,8 +672,20 @@ def init_db():
         """
     )
 
+    # Migrate: Link passkeys with certificates (Fase 1: Infrastructure)
+    ensure_column(c, "passkey_credentials", "user_cert_id", "INTEGER")
+    ensure_column(c, "passkey_credentials", "generated_cert_at", "TEXT")
+    ensure_column(c, "passkey_credentials", "cert_revoked_reason", "TEXT")
+    
+    ensure_column(c, "certificados", "passkey_source", "INTEGER DEFAULT 0")
+    ensure_column(c, "certificados", "num_passkeys_using", "INTEGER DEFAULT 0")
+    
+    c.execute("CREATE INDEX IF NOT EXISTS idx_passkey_user_cert ON passkey_credentials(user_cert_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cert_user_passkey_source ON certificados(username, passkey_source)")
+
     conn.commit()
     conn.close()
+    load_keyring()
 
 
 PERMISSIONS = {
@@ -604,13 +735,27 @@ def _touch_encryption_key(operation, fingerprint=None):
     conn.close()
 
 
-def record_encryption_metric(op_type, duration_ms, key_fingerprint=None, record_id=None, status='ok'):
+def record_encryption_metric(op_type, duration_ms, key_fingerprint=None, record_id=None, status='ok', user=None, action_detail=None, active_key_info=None):
     try:
         conn = get_conn()
         c = conn.cursor()
         c.execute(
-            "INSERT INTO encryption_metrics (timestamp, op_type, duration_ms, key_fingerprint, record_id, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(datetime.datetime.now()), op_type, float(duration_ms) * 1000.0, key_fingerprint, record_id, status),
+            """
+            INSERT INTO encryption_metrics (
+                timestamp, op_type, duration_ms, key_fingerprint, record_id, status, user, action_detail, active_key_info
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(datetime.datetime.now()),
+                op_type,
+                float(duration_ms) * 1000.0,
+                key_fingerprint,
+                record_id,
+                status,
+                user,
+                action_detail,
+                active_key_info or get_active_key_details()
+            ),
         )
         conn.commit()
         conn.close()
@@ -625,9 +770,10 @@ def record_encryption_metric(op_type, duration_ms, key_fingerprint=None, record_
 def get_encryption_metrics(limit=500):
     """Return recent encryption metrics grouped by op_type (chronological)."""
     conn = get_conn()
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT op_type, duration_ms, timestamp FROM encryption_metrics ORDER BY id DESC LIMIT ?",
+        "SELECT op_type, duration_ms, timestamp, user, action_detail, active_key_info FROM encryption_metrics ORDER BY id DESC LIMIT ?",
         (limit,),
     )
     rows = c.fetchall()
@@ -636,12 +782,21 @@ def get_encryption_metrics(limit=500):
     data = {"encrypt": [], "decrypt": []}
     # rows are newest first; reverse to get chronological order
     for r in reversed(rows):
-        op = r[0]
-        duration = float(r[1]) if r[1] is not None else 0.0
-        ts = r[2]
+        op = r["op_type"]
+        duration = float(r["duration_ms"]) if r["duration_ms"] is not None else 0.0
+        ts = r["timestamp"]
+        user_val = r["user"]
+        action_val = r["action_detail"]
+        active_key_val = r["active_key_info"]
         if op not in data:
             data[op] = []
-        data[op].append({"duration_ms": duration, "timestamp": ts})
+        data[op].append({
+            "duration_ms": duration,
+            "timestamp": ts,
+            "user": user_val,
+            "action_detail": action_val,
+            "active_key_info": active_key_val
+        })
 
     stats = {}
     for op, items in data.items():
@@ -681,14 +836,104 @@ def enqueue_reencrypt_job(new_key_fingerprint, requested_by, batch_size=500, not
     return job_id
 
 
-@app.route("/admin/keys/<fp>/activate", methods=["POST"])
-def admin_activate_key(fp):
+@app.route("/admin/keys/configure", methods=["POST"])
+def admin_configure_key():
     if not require_role("admin"):
-        return redirect("/")
+        return jsonify({"ok": False, "message": "Unauthorized"}), 403
 
     # CSRF protection
     if not validate_csrf():
-        return "CSRF token missing or invalid", 400
+        return jsonify({"ok": False, "message": "CSRF token missing or invalid"}), 400
+
+    # Passkey signature check
+    if not check_and_consume_passkey_action("configurar nueva clave de cifrado"):
+        return jsonify({"ok": False, "message": "Falta la firma de passkey para esta accion sensible o ya ha expirado"}), 400
+
+    custom_path = request.form.get("source_path") or request.json.get("source_path") if request.is_json else request.form.get("source_path")
+    if custom_path:
+        custom_path = custom_path.strip()
+
+    now = str(datetime.datetime.now())
+    
+    try:
+        if custom_path:
+            # Load existing key file
+            if not os.path.exists(custom_path):
+                return jsonify({"ok": False, "message": f"El archivo de clave no existe en la ruta: {custom_path}"}), 400
+            with open(custom_path, "rb") as f:
+                key_bytes = f.read()
+            # Validate Fernet key format (must be 32 base64-encoded bytes, i.e., length is 44 characters)
+            try:
+                # Test with Fernet constructor
+                Fernet(key_bytes)
+            except Exception:
+                return jsonify({"ok": False, "message": "El archivo especificado no contiene una clave Fernet valida"}), 400
+                
+            fingerprint = hashlib.sha256(key_bytes).hexdigest()
+            notes = f"Clave registrada manualmente en la ruta: {custom_path}"
+            target_path = custom_path
+        else:
+            # Generate new key dynamically on server
+            new_key = Fernet.generate_key()
+            fingerprint = hashlib.sha256(new_key).hexdigest()
+            
+            # Save it to keys/ folder
+            keys_dir = "keys"
+            os.makedirs(keys_dir, exist_ok=True)
+            target_path = os.path.join(keys_dir, f"key_{fingerprint[:12]}.key")
+            with open(target_path, "wb") as f:
+                f.write(new_key)
+                
+            notes = f"Generada automaticamente via panel de cifrado"
+            
+        # Check if already registered
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT * FROM encryption_keys WHERE key_fingerprint=?", (fingerprint,))
+        exists = c.fetchone()
+        
+        if exists:
+            # Just reload and return success if it's already there
+            conn.close()
+            load_keyring()
+            return jsonify({"ok": True, "fingerprint": fingerprint, "message": "La clave ya estaba registrada y ha sido cargada."})
+            
+        # Insert into db as a legacy key (state = 'legada')
+        c.execute(
+            """
+            INSERT INTO encryption_keys (
+                key_fingerprint, source_path, state, created_at, activated_at, last_seen_at, last_operation, notes
+            ) VALUES (?, ?, 'legada', ?, NULL, ?, 'created', ?)
+            """,
+            (fingerprint, target_path, now, now, notes),
+        )
+        conn.commit()
+        conn.close()
+        
+        # Load keys to keyring in memory
+        load_keyring()
+        
+        log(session.get("user"), f"Configuro clave de cifrado {fingerprint[:12]}", categoria="seguridad")
+        
+        return jsonify({"ok": True, "fingerprint": fingerprint, "message": "Clave configurada y cargada exitosamente."})
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "message": f"Error al configurar la clave: {str(e)}"}), 500
+
+
+@app.route("/admin/keys/<fp>/activate", methods=["POST"])
+def admin_activate_key(fp):
+    if not require_role("admin"):
+        return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+    # CSRF protection
+    if not validate_csrf():
+        return jsonify({"ok": False, "message": "CSRF token missing or invalid"}), 400
+
+    # Passkey signature check
+    if not check_and_consume_passkey_action(f"activar clave de cifrado {fp}"):
+        return jsonify({"ok": False, "message": "Falta la firma de passkey para esta accion sensible o ya ha expirado"}), 400
 
     conn = get_conn()
     c = conn.cursor()
@@ -720,6 +965,9 @@ def admin_activate_key(fp):
 
     conn.commit()
     conn.close()
+
+    # Dynamically update the keyring in memory
+    load_keyring()
 
     # Enqueue re-encrypt job
     job_id = enqueue_reencrypt_job(fp, session.get("user") or "sistema")
@@ -1270,6 +1518,16 @@ def get_active_passkey_by_credential(conn, username, credential_id):
 def save_passkey_credential(conn, username, credential_id, public_key_b64, sign_count, aaguid=None, transports=None, label=None):
     now = str(datetime.datetime.now())
     c = conn.cursor()
+    
+    # Obtener rol del usuario para generar cert
+    c.execute("SELECT rol FROM usuarios WHERE username=?", (username,))
+    user_row = c.fetchone()
+    if not user_row:
+        print(f"Warning: Usuario {username} no encontrado al guardar passkey")
+        return None
+    
+    role = user_row['rol']
+    
     c.execute(
         """
         INSERT INTO passkey_credentials (
@@ -1289,7 +1547,45 @@ def save_passkey_credential(conn, username, credential_id, public_key_b64, sign_
             now,
         ),
     )
-
+    
+    passkey_id = c.lastrowid
+    
+    # NUEVO: Si es el primer passkey activo → generar certificado automáticamente
+    c.execute(
+        """
+        SELECT COUNT(*) as cnt FROM passkey_credentials 
+        WHERE username=? AND status='activo' AND id != ?
+        """,
+        (username, passkey_id)
+    )
+    other_active = c.fetchone()['cnt']
+    
+    if other_active == 0:
+        # Este es el PRIMER passkey activo: generar certificado
+        cert_id = derive_certificate_from_first_passkey(conn, username, role)
+        
+        if cert_id:
+            # Vincular este passkey con el certificado generado
+            link_passkey_to_certificate(conn, passkey_id, cert_id, username)
+            print(f"✓ Certificado PKI generado automáticamente para {username} (cert_id={cert_id})")
+            log(username, f"Certificado PKI generado automáticamente desde primer passkey", categoria="seguridad")
+        else:
+            print(f"Warning: No se pudo generar certificado para {username} al registrar passkey")
+    else:
+        # Este NO es el primer passkey: vincular al certificado existente del usuario
+        c.execute(
+            """
+            SELECT id FROM certificados 
+            WHERE username=? AND passkey_source=1 AND status='activo'
+            LIMIT 1
+            """,
+            (username,)
+        )
+        existing_cert = c.fetchone()
+        if existing_cert:
+            cert_id = existing_cert['id']
+            link_passkey_to_certificate(conn, passkey_id, cert_id, username)
+    
     c.execute(
         """
         UPDATE usuarios
@@ -1298,6 +1594,10 @@ def save_passkey_credential(conn, username, credential_id, public_key_b64, sign_
         """,
         (username,),
     )
+    
+    conn.commit()
+    return passkey_id
+
 
 
 def update_passkey_usage(conn, passkey_id, sign_count):
@@ -1311,6 +1611,436 @@ def update_passkey_usage(conn, passkey_id, sign_count):
         """,
         (sign_count, now, now, passkey_id),
     )
+
+
+def cose_key_to_public_key(cose_public_key_b64):
+    """
+    Convierte una clave pública COSE (formato WebAuthn base64url) a cryptography.PublicKey.
+    
+    Este es un helper para futura compatibilidad. Por ahora, retorna None ya que
+    los certificados se generan a nivel de usuario, no por passkey específico.
+    
+    Args:
+        cose_public_key_b64: Clave pública COSE en base64url
+        
+    Returns:
+        PublicKey object o None si no se puede convertir
+    """
+    try:
+        cose_bytes = b64url_decode(cose_public_key_b64)
+        if not cose_bytes:
+            return None
+        
+        # COSE keys son estructuras CBOR que requieren parsing especial
+        # Por ahora solo registramos que esto sería necesario en futuro
+        # cuando queramos certificados por passkey específico
+        return None
+    except Exception as e:
+        print(f"COSE key conversion error (expected for now): {e}")
+        return None
+
+
+def derive_certificate_from_first_passkey(conn, username, role):
+    """
+    Genera UN certificado PKI para el usuario cuando registra su primer passkey activo.
+    
+    Arquitectura N:1: Múltiples passkeys → 1 certificado por usuario
+    
+    El certificado se vincula al usuario, no a un passkey específico.
+    Se reutiliza para todos sus passkeys mientras esté activo.
+    
+    Args:
+        conn: Conexión a BD
+        username: Username del usuario
+        role: Rol del usuario (admin, coordinador, etc)
+        
+    Returns:
+        int: cert_id del certificado creado o existente
+        None: Si hay error
+    """
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    
+    try:
+        # 1. Verificar si ya existe un certificado PKI activo para este usuario
+        #    (No generamos duplicados)
+        c.execute(
+            """
+            SELECT id FROM certificados 
+            WHERE username=? AND passkey_source=1 AND status IN ('activo', 'pendiente')
+            LIMIT 1
+            """,
+            (username,)
+        )
+        existing = c.fetchone()
+        if existing:
+            return existing['id']
+        
+        # 2. Generar certificado con clave pública temporal
+        #    (Será una clave de usuario genérica, no vinculada a passkey específico)
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        
+        # Usar una clave RSA estándar para el certificado de usuario
+        # En futuro, podría usarse la clave pública del passkey
+        user_private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
+        )
+        user_public_key = user_private_key.public_key()
+        
+        # 3. Construir certificado firmado
+        cert_data = _build_signed_certificate_from_public_key(username, role, user_public_key)
+        
+        # 4. Insertar en tabla certificados
+        cert_pem = cert_data.get('bundle_pem', b'').decode('utf-8') if isinstance(cert_data.get('bundle_pem'), bytes) else cert_data.get('bundle_pem', '')
+        
+        c.execute(
+            """
+            INSERT INTO certificados (
+                username, rol, issued_by, issuer_fingerprint,
+                cert_fingerprint, issued_at, expires_at, status,
+                pem_hash, public_fp, cert_serial, algorithm,
+                passkey_source, num_passkeys_using, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                username,
+                role,
+                'passkey_system',  # Indica que fue generado automáticamente
+                '',  # issuer_fingerprint se omite en auto-gen
+                cert_data.get('cert_fingerprint'),
+                cert_data.get('issued_at'),
+                cert_data.get('expires_at'),
+                'activo',
+                cert_data.get('pem_hash'),
+                cert_data.get('public_fp'),
+                cert_data.get('serial'),
+                cert_data.get('algorithm'),
+                1,  # passkey_source = True
+                0,  # num_passkeys_using (se actualizará)
+                now,
+                now
+            )
+        )
+        
+        cert_id = c.lastrowid
+        conn.commit()
+        
+        print(f"Certificate generated for user {username} from passkey (cert_id={cert_id})")
+        return cert_id
+        
+    except Exception as e:
+        print(f"Error deriving certificate from passkey for {username}: {e}")
+        traceback.print_exc()
+        return None
+
+
+def link_passkey_to_certificate(conn, passkey_id, cert_id, username):
+    """
+    Vincula un passkey registrado con su certificado PKI.
+    
+    Args:
+        conn: Conexión a BD
+        passkey_id: ID del passkey en tabla passkey_credentials
+        cert_id: ID del certificado en tabla certificados
+        username: Username para validación
+        
+    Returns:
+        bool: True si se vinculó exitosamente
+    """
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    
+    try:
+        # Vincular passkey con certificado
+        c.execute(
+            """
+            UPDATE passkey_credentials 
+            SET user_cert_id=?, generated_cert_at=?, updated_at=?
+            WHERE id=? AND username=?
+            """,
+            (cert_id, now, now, passkey_id, username)
+        )
+        
+        # Incrementar contador de passkeys usando este certificado
+        c.execute(
+            """
+            UPDATE certificados
+            SET num_passkeys_using = num_passkeys_using + 1
+            WHERE id=?
+            """,
+            (cert_id,)
+        )
+        
+        conn.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error linking passkey {passkey_id} to cert {cert_id}: {e}")
+        return False
+
+
+def check_certificate_expiration(conn, username):
+    """
+    Verifica si el certificado PKI del usuario ha expirado.
+    Si expiró → deshabilita TODOS sus passkeys.
+    
+    Ciclo de vida vinculado:
+    - Cert expira → Passkeys se deshabilitan automáticamente
+    - Previene uso de passkeys con certificados vencidos
+    
+    Args:
+        conn: Conexión a BD
+        username: Username a verificar
+        
+    Returns:
+        (bool, str): (certificado_válido, mensaje)
+            True: Certificado activo y válido
+            False: Certificado expirado o no existe
+    """
+    c = conn.cursor()
+    
+    try:
+        # Buscar certificado PKI activo del usuario
+        c.execute(
+            """
+            SELECT id, expires_at, status FROM certificados 
+            WHERE username=? AND passkey_source=1 AND status='activo'
+            LIMIT 1
+            """,
+            (username,)
+        )
+        cert = c.fetchone()
+        
+        if not cert:
+            # No hay certificado PKI generado desde passkey
+            return True, "No hay certificado PKI vinculado (normal si no usa passkeys)"
+        
+        # Verificar si expiró
+        now = datetime.datetime.now()
+        expires = parse_datetime(cert['expires_at'])
+        
+        if expires and expires < now:
+            # CERTIFICADO EXPIRADO: Deshabilitar passkeys
+            c.execute(
+                """
+                UPDATE passkey_credentials 
+                SET status='deshabilitado_cert_exp'
+                WHERE username=? AND status='activo'
+                """,
+                (username,)
+            )
+            
+            # Marcar certificado como expirado
+            c.execute(
+                """
+                UPDATE certificados
+                SET status='expirado'
+                WHERE id=?
+                """,
+                (cert['id'],)
+            )
+            
+            conn.commit()
+            
+            # Loguear evento
+            log(username, "Certificado PKI expirado - passkeys deshabilitados automáticamente", 
+                categoria="seguridad")
+            
+            return False, "Tu certificado ha expirado. Contacta a un administrador para renovarlo."
+        
+        # Certificado válido
+        return True, "Certificado válido"
+        
+    except Exception as e:
+        print(f"Error checking certificate expiration for {username}: {e}")
+        return True, "No se pudo verificar certificado (error interno)"
+
+
+def revoke_passkey(conn, passkey_id, reason="user_request"):
+    """
+    Revoca un passkey individual.
+    
+    Args:
+        conn: Conexión a BD
+        passkey_id: ID del passkey en tabla passkey_credentials
+        reason: Razón de revocación
+        
+    Returns:
+        bool: True si fue exitoso
+    """
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    
+    try:
+        c.execute(
+            """
+            UPDATE passkey_credentials 
+            SET status='revocado', revocation_reason=?, revoked_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (reason, now, now, passkey_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error revoking passkey {passkey_id}: {e}")
+        return False
+
+
+def revoke_passkey_and_cert(conn, passkey_id, username, reason="user_request"):
+    """
+    Revoca un passkey. Si es el último passkey activo del usuario,
+    también revoca su certificado PKI (N:1 lifecycle).
+    
+    Args:
+        conn: Conexión a BD
+        passkey_id: ID del passkey
+        username: Username propietario del passkey
+        reason: Razón de revocación
+        
+    Returns:
+        (bool, list): (success, list_of_affected_cert_ids)
+    """
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    affected_certs = []
+    cert_was_revoked = False
+    
+    try:
+        # 1. Revocar el passkey
+        c.execute(
+            """
+            UPDATE passkey_credentials 
+            SET status='revocado', revocation_reason=?, revoked_at=?, updated_at=?
+            WHERE id=? AND username=?
+            """,
+            (reason, now, now, passkey_id, username)
+        )
+        
+        # 2. Obtener cert_id del passkey revocado
+        c.execute(
+            "SELECT user_cert_id FROM passkey_credentials WHERE id=?",
+            (passkey_id,)
+        )
+        passkey = c.fetchone()
+        if not passkey:
+            conn.commit()
+            return False, []
+        
+        cert_id = passkey['user_cert_id']
+        if not cert_id:
+            conn.commit()
+            return True, []
+        
+        # 3. Verificar si quedan passkeys activos para este usuario
+        c.execute(
+            """
+            SELECT COUNT(*) as cnt FROM passkey_credentials 
+            WHERE username=? AND user_cert_id=? AND status='activo'
+            """,
+            (username, cert_id)
+        )
+        count = c.fetchone()['cnt']
+        
+        # 4. Si no quedan passkeys activos, revocar el certificado
+        if count == 0:
+            c.execute(
+                """
+                UPDATE certificados 
+                SET status='revocado', revocation_reason=?, revoked_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (reason, now, now, cert_id)
+            )
+            affected_certs.append(cert_id)
+            cert_was_revoked = True
+        
+        conn.commit()
+        
+        # Log después del commit
+        if cert_was_revoked:
+            log(username, f"Certificado PKI revocado automáticamente (revocación de último passkey): {reason}",
+                categoria="seguridad")
+        log(username, f"Passkey revocado: {reason}", categoria="seguridad")
+        
+        return True, affected_certs
+        
+    except Exception as e:
+        print(f"Error revoking passkey {passkey_id}: {e}")
+        traceback.print_exc()
+        return False, []
+
+
+def revoke_certificate_and_passkeys(conn, cert_id, reason="expiration_or_admin"):
+    """
+    Revoca un certificado PKI y TODOS sus passkeys asociados.
+    
+    Args:
+        conn: Conexión a BD
+        cert_id: ID del certificado en tabla certificados
+        reason: Razón de revocación
+        
+    Returns:
+        (bool, int): (success, number_of_passkeys_revoked)
+    """
+    c = conn.cursor()
+    now = str(datetime.datetime.now())
+    
+    try:
+        # 1. Obtener info del certificado
+        c.execute(
+            "SELECT username FROM certificados WHERE id=?",
+            (cert_id,)
+        )
+        cert = c.fetchone()
+        if not cert:
+            return False, 0
+        
+        username = cert['username']
+        
+        # 2. Revocar el certificado
+        c.execute(
+            """
+            UPDATE certificados 
+            SET status='revocado', revocation_reason=?, revoked_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (reason, now, now, cert_id)
+        )
+        
+        # 3. Contar y revocar TODOS los passkeys del certificado
+        c.execute(
+            """
+            UPDATE passkey_credentials 
+            SET status='revocado', revocation_reason=?, revoked_at=?, updated_at=?
+            WHERE user_cert_id=? AND status='activo'
+            """,
+            (reason, now, now, cert_id)
+        )
+        
+        # Contar cuántos se revocaron
+        c.execute(
+            """
+            SELECT COUNT(*) as cnt FROM passkey_credentials 
+            WHERE user_cert_id=? AND status='revocado'
+            """,
+            (cert_id,)
+        )
+        revoked_count = c.fetchone()['cnt']
+        
+        conn.commit()
+        
+        # Log después del commit
+        log(username, f"Certificado PKI revocado: {reason}. {revoked_count} passkeys también revocados.",
+            categoria="seguridad")
+        
+        return True, revoked_count
+        
+    except Exception as e:
+        print(f"Error revoking certificate {cert_id}: {e}")
+        traceback.print_exc()
+        return False, 0
 
 
 def store_pem_file(username, pem_bytes):
@@ -1348,12 +2078,18 @@ def _load_or_create_certificate_authority():
 
     os.makedirs("certs", exist_ok=True)
     if os.path.exists(CERT_CA_CERT_PATH) and os.path.exists(CERT_CA_KEY_PATH):
-        with open(CERT_CA_KEY_PATH, "rb") as key_file:
-            ca_key = serialization.load_pem_private_key(key_file.read(), password=key)
-        with open(CERT_CA_CERT_PATH, "rb") as cert_file:
-            ca_cert = x509.load_pem_x509_certificate(cert_file.read())
-        _certificate_authority_cache = (ca_key, ca_cert)
-        return _certificate_authority_cache
+        try:
+            with open(CERT_CA_KEY_PATH, "rb") as key_file:
+                ca_key = serialization.load_pem_private_key(key_file.read(), password=None)
+            with open(CERT_CA_CERT_PATH, "rb") as cert_file:
+                ca_cert = x509.load_pem_x509_certificate(cert_file.read())
+            _certificate_authority_cache = (ca_key, ca_cert)
+            return _certificate_authority_cache
+        except Exception as e:
+            # Si no se puede cargar la CA existente, crear una nueva
+            # (Esto puede pasar si el archivo está corrompido o usa cifrado desconocido)
+            print(f"Warning: No se pudo cargar CA existente, generando nueva: {e}")
+            pass
 
     ca_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     ca_name = _certificate_authority_name()
@@ -1389,7 +2125,7 @@ def _load_or_create_certificate_authority():
             ca_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.BestAvailableEncryption(key),
+                encryption_algorithm=serialization.NoEncryption(),
             )
         )
 
@@ -2150,27 +2886,59 @@ def _decrypt_payload_with_keyring(blob_value):
     return payload, used_fingerprint
 
 
-def decrypt_data(blob_value, log_events=True):
+def _determine_default_action(op_type):
+    if has_request_context():
+        path = request.path
+        method = request.method
+        if path == "/admin":
+            return "Visualizar panel de administracion (lectura)"
+        elif path == "/bandeja":
+            return "Visualizar bandeja (lectura)"
+        elif path == "/survey":
+            if method == "POST":
+                return "Crear nuevo expediente (escritura)"
+            return "Visualizar formulario de expediente (lectura)"
+        elif path.startswith("/admin/cifrado"):
+            return "Operacion de mantenimiento de cifrado"
+        return f"Ruta {path} [{method}]"
+    return "Operación del sistema en segundo plano"
+
+
+def decrypt_data(blob_value, log_events=True, user=None, action_detail=None):
     started_at = time.perf_counter()
+    
+    # Resolve user
+    if user is None:
+        if has_request_context():
+            user = session.get("user") or "sistema"
+        else:
+            user = "sistema"
+            
+    # Resolve action_detail
+    if action_detail is None:
+        action_detail = _determine_default_action("decrypt")
+        
+    active_key = get_active_key_details()
+
     try:
         payload, used_fingerprint = _decrypt_payload_with_keyring(blob_value)
 
         elapsed = time.perf_counter() - started_at
         _touch_encryption_key("decrypt", used_fingerprint)
-        record_encryption_metric('decrypt', elapsed, used_fingerprint, None, 'ok')
+        record_encryption_metric('decrypt', elapsed, used_fingerprint, None, 'ok', user, action_detail, active_key)
         if log_events and elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
             log(
                 "sistema",
                 "Descifrado de expediente con latencia moderada",
                 categoria="seguridad",
-                detalle=f"latencia={elapsed:.3f}s; llave={used_fingerprint[:12] if used_fingerprint else DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+                detalle=f"latencia={elapsed:.3f}s; llave={used_fingerprint[:12] if used_fingerprint else DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}; usuario={user}; accion={action_detail}",
             )
         return payload
     except Exception:
         elapsed = time.perf_counter() - started_at
         # record failing decrypt metric
         try:
-            record_encryption_metric('decrypt', elapsed, None, None, 'error')
+            record_encryption_metric('decrypt', elapsed, None, None, 'error', user, action_detail, active_key)
         except Exception:
             pass
         if log_events:
@@ -2178,18 +2946,32 @@ def decrypt_data(blob_value, log_events=True):
                 "sistema",
                 "Fallo el descifrado de un expediente",
                 categoria="seguridad",
-                detalle=f"llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+                detalle=f"llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}; usuario={user}; accion={action_detail}",
             )
         return None
 
 
-def encrypt_data(payload):
+def encrypt_data(payload, user=None, action_detail=None):
     started_at = time.perf_counter()
+    
+    # Resolve user
+    if user is None:
+        if has_request_context():
+            user = session.get("user") or "sistema"
+        else:
+            user = "sistema"
+            
+    # Resolve action_detail
+    if action_detail is None:
+        action_detail = _determine_default_action("encrypt")
+        
+    active_key = get_active_key_details()
+
     token = cipher.encrypt(str(payload).encode())
     elapsed = time.perf_counter() - started_at
     _touch_encryption_key("encrypt", DATA_ENCRYPTION_KEY_FINGERPRINT)
     try:
-        record_encryption_metric('encrypt', elapsed, DATA_ENCRYPTION_KEY_FINGERPRINT, None, 'ok')
+        record_encryption_metric('encrypt', elapsed, DATA_ENCRYPTION_KEY_FINGERPRINT, None, 'ok', user, action_detail, active_key)
     except Exception:
         pass
     if elapsed >= DATA_ENCRYPTION_LATENCY_WARNING_SECONDS:
@@ -2197,7 +2979,7 @@ def encrypt_data(payload):
             "sistema",
             "Cifrado de expediente con latencia moderada",
             categoria="seguridad",
-            detalle=f"latencia={elapsed:.3f}s; llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}",
+            detalle=f"latencia={elapsed:.3f}s; llave={DATA_ENCRYPTION_KEY_FINGERPRINT[:12]}; usuario={user}; accion={action_detail}",
         )
     return b"fp:" + DATA_ENCRYPTION_KEY_FINGERPRINT.encode() + b"\n" + token
 
@@ -2235,11 +3017,20 @@ def reencrypt_all_surveys():
             continue
 
         try:
-            payload = decrypt_data(row["datos"], log_events=False)
+            payload = decrypt_data(
+                row["datos"],
+                log_events=False,
+                user=session.get("user") if has_request_context() else "sistema",
+                action_detail=f"Descifrado para re-cifrado de expediente #{row['id']} por rotación"
+            )
             if payload is None:
                 raise ValueError("No fue posible descifrar el expediente")
 
-            refreshed = encrypt_data(payload)
+            refreshed = encrypt_data(
+                payload,
+                user=session.get("user") if has_request_context() else "sistema",
+                action_detail=f"Re-cifrado de expediente #{row['id']} por rotación"
+            )
             c.execute(
                 """
                 UPDATE encuestas
@@ -3173,6 +3964,13 @@ def action_passkey_options():
         return jsonify({"ok": False, "message": "Este usuario no puede firmar acciones sensibles."}), 403
     
     conn = get_conn()
+    
+    # NUEVO: Verificar que el certificado PKI no haya expirado
+    cert_valid, cert_msg = check_certificate_expiration(conn, username)
+    if not cert_valid:
+        conn.close()
+        return jsonify({"ok": False, "message": cert_msg}), 401
+    
     active_passkeys = get_active_passkeys(conn, username)
     conn.close()
     
@@ -3236,6 +4034,14 @@ def action_passkey_verify():
     action_label = body.get("action_label", "accion sensible")
     
     conn = get_conn()
+    
+    # NUEVO: Verificar que el certificado PKI no haya expirado
+    cert_valid, cert_msg = check_certificate_expiration(conn, username)
+    if not cert_valid:
+        conn.close()
+        session.pop("pending_action_passkey", None)
+        return jsonify({"ok": False, "message": cert_msg}), 401
+    
     passkey_row = get_active_passkey_by_credential(conn, username, credential_id)
     if not passkey_row:
         conn.close()
@@ -3292,8 +4098,30 @@ def action_passkey_verify():
     # Registrar la acción en logs con fingerprint de passkey como prueba de no repudio
     passkey_fp = hashlib.sha256(b64url_decode(passkey_row["credential_id"])).hexdigest()[:16]
     log(username, f"{action_label} (passkey: {passkey_fp})")
+
+    # Registrar la verificación en sesión para su consumo en endpoints subsecuentes
+    session["verified_passkey_action"] = {
+        "action_label": action_label,
+        "timestamp": time.time(),
+        "passkey_fp": passkey_fp
+    }
     
     return jsonify({"ok": True, "message": "Accion firmada exitosamente"})
+
+
+def check_and_consume_passkey_action(expected_action_label, max_age_seconds=60):
+    """Checks if the user has recently signed the given action using a passkey."""
+    verified = session.get("verified_passkey_action")
+    if not verified:
+        return False
+        
+    label_match = (verified.get("action_label") == expected_action_label)
+    time_match = (time.time() - verified.get("timestamp", 0) <= max_age_seconds)
+    
+    # Consume marker
+    session.pop("verified_passkey_action", None)
+    
+    return label_match and time_match
 
 
 @app.route("/dashboard")
@@ -3364,7 +4192,7 @@ def survey():
             "rol_capturador": session.get("role"),
         }
 
-        encrypted = encrypt_data(data)
+        encrypted = encrypt_data(data, user=session.get("user"), action_detail="Registro de nuevo expediente")
         encrypted_at = str(datetime.datetime.now())
 
         conn = get_conn()
@@ -3419,7 +4247,7 @@ def admin():
 
     expedientes = []
     for row in rows:
-        d = decrypt_data(row["datos"])
+        d = decrypt_data(row["datos"], user=session.get("user"), action_detail=f"Lectura de expediente #{row['id']} en panel admin")
         if not d:
             continue
         d["id"] = row["id"]
@@ -3512,7 +4340,7 @@ def bandeja():
 
     expedientes = []
     for row in rows:
-        d = decrypt_data(row["datos"])
+        d = decrypt_data(row["datos"], user=session.get("user"), action_detail=f"Lectura de expediente #{row['id']} en bandeja")
         if not d:
             continue
         d["id"] = row["id"]
@@ -3822,12 +4650,229 @@ def admin_pki():
     )
 
 
+@app.route("/admin/pki/passkey-certificate-status")
+def admin_pki_passkey_status():
+    """
+    Endpoint JSON: Retorna mapeo completo certificado ↔ passkeys
+    Estructura: [{cert_id, username, rol, status, num_passkeys_active, passkeys: [...]}]
+    """
+    if not require_role("admin"):
+        return jsonify({"ok": False, "message": "No autorizado"}), 403
+    
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        
+        # Obtener todos los certificados PKI
+        c.execute(
+            """
+            SELECT id, username, rol, status, passkey_source, num_passkeys_using, issued_at, expires_at
+            FROM certificados 
+            WHERE passkey_source=1
+            ORDER BY issued_at DESC
+            """
+        )
+        cert_rows = c.fetchall()
+        
+        certificados = []
+        now = datetime.datetime.now()
+        
+        for cert_row in cert_rows:
+            cert_id = cert_row['id']
+            username = cert_row['username']
+            
+            # Obtener passkeys de este certificado
+            c.execute(
+                """
+                SELECT id, credential_id, label, status, created_at
+                FROM passkey_credentials
+                WHERE user_cert_id=?
+                ORDER BY created_at DESC
+                """,
+                (cert_id,)
+            )
+            passkey_rows = c.fetchall()
+            
+            passkeys = [
+                {
+                    'id': pk['id'],
+                    'credential_id': pk['credential_id'][:16] + '...' if len(pk['credential_id']) > 16 else pk['credential_id'],
+                    'label': pk['label'] or '(sin etiqueta)',
+                    'status': pk['status'],
+                    'created_at': pk['created_at'],
+                }
+                for pk in passkey_rows
+            ]
+            
+            # Contar passkeys activos
+            num_active = sum(1 for pk in passkeys if pk['status'] == 'activo')
+            
+            # Determinar status del certificado
+            cert_status = cert_row['status']
+            expires_at = parse_datetime(cert_row['expires_at'])
+            if expires_at and expires_at < now and cert_status != 'revocado':
+                cert_status = 'expirado'
+            
+            certificados.append({
+                'cert_id': cert_id,
+                'username': username,
+                'rol': cert_row['rol'],
+                'status': cert_status,
+                'num_passkeys_total': len(passkeys),
+                'num_passkeys_active': num_active,
+                'issued_at': cert_row['issued_at'],
+                'expires_at': cert_row['expires_at'],
+                'passkeys': passkeys,
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'certificados': certificados,
+        })
+        
+    except Exception as e:
+        print(f"Error fetching passkey-certificate status: {e}")
+        traceback.print_exc()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+
+@app.route("/admin/pki/revoke-passkey", methods=["POST"])
+def admin_revoke_passkey():
+    """
+    Endpoint: Revoca un passkey individual
+    Body: {passkey_id, reason}
+    """
+    if not require_role("admin"):
+        return jsonify({"ok": False, "message": "No autorizado"}), 403
+    
+    try:
+        body = request.get_json(silent=True) or {}
+        passkey_id = body.get('passkey_id')
+        reason = body.get('reason', 'admin_revocation')
+        
+        if not passkey_id:
+            return jsonify({"ok": False, "message": "passkey_id requerido"}), 400
+        
+        conn = get_conn()
+        c = conn.cursor()
+        
+        # Obtener datos del passkey
+        c.execute(
+            "SELECT username FROM passkey_credentials WHERE id=?",
+            (passkey_id,)
+        )
+        pk_row = c.fetchone()
+        if not pk_row:
+            conn.close()
+            return jsonify({"ok": False, "message": "Passkey no encontrado"}), 404
+        
+        username = pk_row['username']
+        
+        # Revocar passkey y cert si aplica
+        success, affected_certs = revoke_passkey_and_cert(
+            conn, passkey_id, username, reason=reason
+        )
+        
+        conn.close()
+        
+        if not success:
+            return jsonify({"ok": False, "message": "Error revocando passkey"}), 500
+        
+        # Log la acción
+        log(
+            session.get('user'),
+            f"Revocó passkey {passkey_id} de usuario {username}: {reason}",
+            categoria="seguridad",
+            detalle=f"Certificados afectados: {affected_certs}"
+        )
+        
+        return jsonify({
+            'ok': True,
+            'passkey_id': passkey_id,
+            'affected_certs': affected_certs,
+            'message': f'Passkey revocado. {len(affected_certs)} certificado(s) también revocado(s).'
+        })
+        
+    except Exception as e:
+        print(f"Error revoking passkey: {e}")
+        traceback.print_exc()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+
+@app.route("/admin/pki/revoke-certificate", methods=["POST"])
+def admin_revoke_certificate():
+    """
+    Endpoint: Revoca un certificado y todos sus passkeys
+    Body: {cert_id, reason}
+    """
+    if not require_role("admin"):
+        return jsonify({"ok": False, "message": "No autorizado"}), 403
+    
+    try:
+        body = request.get_json(silent=True) or {}
+        cert_id = body.get('cert_id')
+        reason = body.get('reason', 'admin_revocation')
+        
+        if not cert_id:
+            return jsonify({"ok": False, "message": "cert_id requerido"}), 400
+        
+        conn = get_conn()
+        
+        # Obtener info del certificado
+        c = conn.cursor()
+        c.execute("SELECT username FROM certificados WHERE id=?", (cert_id,))
+        cert_row = c.fetchone()
+        if not cert_row:
+            conn.close()
+            return jsonify({"ok": False, "message": "Certificado no encontrado"}), 404
+        
+        username = cert_row['username']
+        
+        # Revocar certificado y todos sus passkeys
+        success, revoked_count = revoke_certificate_and_passkeys(
+            conn, cert_id, reason=reason
+        )
+        
+        conn.close()
+        
+        if not success:
+            return jsonify({"ok": False, "message": "Error revocando certificado"}), 500
+        
+        # Log la acción
+        log(
+            session.get('user'),
+            f"Revocó certificado {cert_id} de usuario {username}: {reason}. {revoked_count} passkeys revocados.",
+            categoria="seguridad"
+        )
+        
+        return jsonify({
+            'ok': True,
+            'cert_id': cert_id,
+            'revoked_passkeys_count': revoked_count,
+            'message': f'Certificado revocado. {revoked_count} passkey(s) también revocado(s).'
+        })
+        
+    except Exception as e:
+        print(f"Error revoking certificate: {e}")
+        traceback.print_exc()
+        return jsonify({'ok': False, 'message': str(e)}), 500
+
+
 @app.route("/admin/cifrado", methods=["GET", "POST"])
 def admin_cifrado():
     if not require_role("admin"):
         return redirect("/")
 
     if request.method == "POST":
+        if not validate_csrf():
+            return jsonify({"ok": False, "message": "CSRF token missing or invalid"}), 400
+
+        # Passkey signature check
+        if not check_and_consume_passkey_action("re-cifrar expedientes de la base de datos"):
+            return jsonify({"ok": False, "message": "Falta la firma de passkey para esta accion sensible o ya ha expirado"}), 400
+
         action = request.form.get("action")
         if action != "reencrypt":
             return jsonify({"ok": False, "message": "Accion no reconocida."}), 400
