@@ -4518,6 +4518,13 @@ def usuarios():
         if rol != "coordinador":
             area = None
 
+        # Verificar firma de passkey para crear usuarios admin/coordinador
+        if rol in ("admin", "coordinador"):
+            if not check_and_consume_passkey_action("creacion de usuario"):
+                flash("Se requiere firma de passkey para crear usuarios administrativos")
+                conn.close()
+                return redirect("/usuarios")
+
         try:
             salt = generate_password_salt()
             c.execute(
