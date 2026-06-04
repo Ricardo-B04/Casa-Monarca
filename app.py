@@ -461,6 +461,22 @@ def init_db():
             ),
         )
 
+    # Nuevas columnas para flujo multinivel de solicitudes ARCO
+    ensure_column(c, "solicitudes_arco", "nivel_actual", "TEXT DEFAULT 'usuarios'")
+    ensure_column(c, "solicitudes_arco", "aprobado_usuarios", "INTEGER DEFAULT 0")
+    ensure_column(c, "solicitudes_arco", "aprobado_usuarios_at", "DATETIME")
+    ensure_column(c, "solicitudes_arco", "aprobado_usuarios_por", "TEXT")
+    ensure_column(c, "solicitudes_arco", "aprobado_operativos", "INTEGER DEFAULT 0")
+    ensure_column(c, "solicitudes_arco", "aprobado_operativos_at", "DATETIME")
+    ensure_column(c, "solicitudes_arco", "aprobado_operativos_por", "TEXT")
+    ensure_column(c, "solicitudes_arco", "aprobado_coordinadores", "INTEGER DEFAULT 0")
+    ensure_column(c, "solicitudes_arco", "aprobado_coordinadores_at", "DATETIME")
+    ensure_column(c, "solicitudes_arco", "aprobado_coordinadores_por", "TEXT")
+    ensure_column(c, "solicitudes_arco", "reenviado_por_coordinador", "INTEGER DEFAULT 0")
+    ensure_column(c, "solicitudes_arco", "reenviado_por_coordinador_at", "DATETIME")
+    ensure_column(c, "solicitudes_arco", "resuelto_coordinador", "INTEGER DEFAULT 0")
+    ensure_column(c, "solicitudes_arco", "resuelto_coordinador_at", "DATETIME")
+
     ensure_column(c, "certificados", "rol", "TEXT")
     ensure_column(c, "certificados", "issued_by", "TEXT")
     ensure_column(c, "certificados", "issuer_fingerprint", "TEXT")
@@ -3417,10 +3433,24 @@ def admin():
     )
     solicitudes = c.fetchall()
 
+    # Solicitudes ARCO prioritarias (reenviadas por coordinadores)
     c.execute(
-        "SELECT * FROM solicitudes_arco WHERE estado='pendiente' ORDER BY id DESC"
+        """SELECT * FROM solicitudes_arco 
+           WHERE nivel_actual='admin' AND reenviado_por_coordinador=1
+             AND estado != 'atendida' AND estado != 'rechazada'
+           ORDER BY reenviado_por_coordinador_at DESC"""
     )
-    solicitudes_arco = c.fetchall()
+    solicitudes_arco_prioritarias = c.fetchall()
+
+    # Solicitudes ARCO directas (flujo antiguo, sin pasar por aprobadores)
+    c.execute(
+        """SELECT * FROM solicitudes_arco 
+           WHERE (nivel_actual IN ('usuarios', 'operativos', 'coordinadores', 'resuelto')
+                  OR (nivel_actual='admin' AND reenviado_por_coordinador=0))
+           AND estado != 'atendida' AND estado != 'rechazada'
+           ORDER BY created_at DESC"""
+    )
+    solicitudes_arco_directas = c.fetchall()
 
     conn.close()
 
@@ -3428,7 +3458,8 @@ def admin():
         "admin.html",
         expedientes=expedientes,
         solicitudes=solicitudes,
-        solicitudes_arco=solicitudes_arco,
+        solicitudes_arco_prioritarias=solicitudes_arco_prioritarias,
+        solicitudes_arco_directas=solicitudes_arco_directas,
     )
 
 @app.route("/bandeja")
@@ -3461,6 +3492,22 @@ def bandeja():
         )
 
     rows = c.fetchall()
+    
+    # Cargar solicitudes ARCO según el nivel del usuario
+    solicitudes_arco = []
+    if role in ("usuario", "operativo", "coordinador"):
+        nivel_map = {
+            "usuario": "usuarios",
+            "operativo": "operativos", 
+            "coordinador": "coordinadores"
+        }
+        nivel = nivel_map.get(role)
+        c.execute(
+            "SELECT * FROM solicitudes_arco WHERE nivel_actual=? ORDER BY created_at DESC",
+            (nivel,)
+        )
+        solicitudes_arco = c.fetchall()
+    
     conn.close()
 
     expedientes = []
@@ -3474,7 +3521,18 @@ def bandeja():
         d["updated_at"] = row["updated_at"]
         expedientes.append(d)
 
-    return render_template("colaborador.html", datos=expedientes, role=session.get("role"))
+    # Asegurar que el CSRF token existe en la sesión
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    
+    return render_template(
+        "colaborador.html",
+        datos=expedientes,
+        role=session.get("role"),
+        solicitudes_arco=solicitudes_arco,
+        action_signature_challenge=session.get("action_signature_challenge", ""),
+        csrf_token=session.get("csrf_token")
+    )
 
 
 @app.route("/encuesta/<int:encuesta_id>/avanzar", methods=["POST"])
@@ -4148,8 +4206,6 @@ def profile():
     )
 
 
-import secrets
-
 @app.route("/arco")
 def arco():
     # Asegura que el csrf_token exista en sesión (igual que en /login)
@@ -4236,6 +4292,202 @@ def arco_resolver(solicitud_id):
 
     flash(f"Solicitud ARCO #{solicitud_id} marcada como {decision}.")
     return redirect("/admin")
+
+
+@app.route("/arco/<int:solicitud_id>/aprobar", methods=["POST"])
+def arco_aprobar(solicitud_id):
+    """
+    Endpoint para usuarios, operativos y coordinadores
+    para aprobar solicitudes ARCO y avanzarlas al siguiente nivel.
+    """
+    role = session.get("role")
+    
+    if not require_login():
+        return redirect("/")
+    
+    # Validar CSRF token
+    token_form = request.form.get("csrf_token", "")
+    if not token_form or token_form != session.get("csrf_token"):
+        flash("Token de seguridad inválido. Intenta nuevamente.")
+        return redirect("/bandeja")
+    
+    # Validar que el rol tiene permisos
+    if role not in ("usuario", "operativo", "coordinador"):
+        flash("Tu rol no puede aprobar solicitudes ARCO.")
+        return redirect("/bandeja")
+    
+    # Mapeo rol → nivel_actual esperado
+    rol_a_nivel = {
+        "usuario": "usuarios",
+        "operativo": "operativos",
+        "coordinador": "coordinadores"
+    }
+    
+    # Mapeo nivel → siguiente nivel
+    siguiente_nivel = {
+        "usuarios": "operativos",
+        "operativos": "coordinadores",
+        "coordinadores": "admin"
+    }
+    
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM solicitudes_arco WHERE id=?",
+        (solicitud_id,)
+    )
+    solicitud = c.fetchone()
+    
+    if not solicitud:
+        conn.close()
+        flash("Solicitud ARCO no encontrada.")
+        return redirect("/bandeja")
+    
+    # Validar que la solicitud está en el nivel correcto para este rol
+    expected_level = rol_a_nivel.get(role)
+    if solicitud["nivel_actual"] != expected_level:
+        conn.close()
+        flash("Esta solicitud ARCO no está pendiente de tu aprobación.")
+        return redirect("/bandeja")
+    
+    # Aprobar: actualizar columna correspondiente y avanzar al siguiente nivel
+    try:
+        if role == "usuario":
+            c.execute(
+                """UPDATE solicitudes_arco 
+                   SET aprobado_usuarios=1, aprobado_usuarios_at=CURRENT_TIMESTAMP,
+                       aprobado_usuarios_por=?, nivel_actual=?
+                   WHERE id=?""",
+                (session.get("user"), siguiente_nivel["usuarios"], solicitud_id)
+            )
+        elif role == "operativo":
+            c.execute(
+                """UPDATE solicitudes_arco 
+                   SET aprobado_operativos=1, aprobado_operativos_at=CURRENT_TIMESTAMP,
+                       aprobado_operativos_por=?, nivel_actual=?
+                   WHERE id=?""",
+                (session.get("user"), siguiente_nivel["operativos"], solicitud_id)
+            )
+        elif role == "coordinador":
+            # Coordinador aprueba pero aún no envía a admin (lo hace en resolver-coordinador)
+            c.execute(
+                """UPDATE solicitudes_arco 
+                   SET aprobado_coordinadores=1, aprobado_coordinadores_at=CURRENT_TIMESTAMP,
+                       aprobado_coordinadores_por=?
+                   WHERE id=?""",
+                (session.get("user"), solicitud_id)
+            )
+        
+        conn.commit()
+        log(session.get("user"), f"Aprobó solicitud ARCO #{solicitud_id}")
+        flash(f"Solicitud ARCO #{solicitud_id} aprobada correctamente.")
+    except Exception as e:
+        conn.rollback()
+        flash(f"Error al aprobar solicitud: {str(e)}")
+    finally:
+        conn.close()
+    
+    return redirect("/bandeja")
+
+
+@app.route("/arco/<int:solicitud_id>/resolver-coordinador", methods=["POST"])
+def arco_resolver_coordinador(solicitud_id):
+    """
+    Opción especial para coordinadores: marcar como resuelta (sin enviar a admin)
+    o enviar a admin como prioritaria.
+    """
+    if not require_role("coordinador"):
+        return redirect("/")
+    
+    # Validar CSRF token
+    token_form = request.form.get("csrf_token", "")
+    if not token_form or token_form != session.get("csrf_token"):
+        flash("Token de seguridad inválido. Intenta nuevamente.")
+        return redirect("/bandeja")
+    
+    decision = request.form.get("decision", "").strip()
+    
+    if decision not in ("resuelta", "enviar_admin"):
+        flash("Decisión no válida.")
+        return redirect("/bandeja")
+    
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM solicitudes_arco WHERE id=?",
+        (solicitud_id,)
+    )
+    solicitud = c.fetchone()
+    
+    if not solicitud:
+        conn.close()
+        flash("Solicitud ARCO no encontrada.")
+        return redirect("/bandeja")
+    
+    # Validar que está en el nivel coordinadores
+    if solicitud["nivel_actual"] != "coordinadores":
+        conn.close()
+        flash("Esta solicitud ARCO no está pendiente en tu nivel.")
+        return redirect("/bandeja")
+    
+    # Normalize decision names to support old UI labels or slight variants
+    decision_aliases = {
+        "resuelta": "resuelta",
+        "resuelto": "resuelta",
+        "enviar_admin": "enviar_admin",
+        "reenviar_admin": "enviar_admin",
+        "enviar a admin": "enviar_admin",
+        "enviar a administrador": "enviar_admin",
+    }
+    decision = decision_aliases.get(decision, decision)
+
+    try:
+        if decision == "resuelta":
+            c.execute(
+                """UPDATE solicitudes_arco 
+                   SET aprobado_coordinadores=1,
+                       aprobado_coordinadores_at=CURRENT_TIMESTAMP,
+                       aprobado_coordinadores_por=?,
+                       resuelto_coordinador=1,
+                       resuelto_coordinador_at=CURRENT_TIMESTAMP,
+                       nivel_actual='resuelto', estado='atendida'
+                   WHERE id=?""",
+                (session.get("user"), solicitud_id)
+            )
+            flash_message = f"Solicitud ARCO #{solicitud_id} marcada como resuelta."
+            log_message = f"Marcó ARCO #{solicitud_id} como resuelta (coordinador)"
+        elif decision == "enviar_admin":
+            c.execute(
+                """UPDATE solicitudes_arco 
+                   SET aprobado_coordinadores=1,
+                       aprobado_coordinadores_at=CURRENT_TIMESTAMP,
+                       aprobado_coordinadores_por=?,
+                       reenviado_por_coordinador=1,
+                       reenviado_por_coordinador_at=CURRENT_TIMESTAMP,
+                       nivel_actual='admin'
+                   WHERE id=?""",
+                (session.get("user"), solicitud_id)
+            )
+            flash_message = f"Solicitud ARCO #{solicitud_id} reenviada al administrador como prioritaria."
+            log_message = f"Reenviró ARCO #{solicitud_id} a admin (coordinador)"
+        else:
+            conn.close()
+            flash("Decisión no válida.")
+            return redirect("/bandeja")
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        flash(f"Error al procesar solicitud: {str(e)}")
+        conn.close()
+        return redirect("/bandeja")
+    finally:
+        conn.close()
+
+    log(session.get("user"), log_message)
+    flash(flash_message)
+    
+    return redirect("/bandeja")
 
 if __name__ == "__main__":
     init_db()

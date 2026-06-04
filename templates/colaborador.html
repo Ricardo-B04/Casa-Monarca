@@ -86,6 +86,55 @@
     {% else %}
         <div class="empty">No hay expedientes en tu bandeja actual.</div>
     {% endif %}
+
+    <!-- ── SOLICITUDES ARCO PENDIENTES ── -->
+    {% if solicitudes_arco %}
+        <div style="margin-top: 32px;">
+            <h2 style="margin: 20px 0 16px; font-size: 18px; color: #1f2a37;">
+                📋 Solicitudes ARCO Pendientes
+            </h2>
+            {% for arco in solicitudes_arco %}
+                <div class="card" style="border-left: 4px solid #f59e0b; margin-bottom: 16px;">
+                    <h3 style="margin: 0 0 8px; color: #d97706;">
+                        ARCO #{{ arco['id'] }} - {{ arco['accion'] | upper }}
+                    </h3>
+                    <div class="meta">
+                        <div><strong>Solicitante:</strong> {{ arco['nombre_solicitante'] }}</div>
+                        <div><strong>Correo:</strong> {{ arco['correo'] }}</div>
+                        <div><strong>Motivo:</strong> {{ arco['motivo'][:80] }}{% if arco['motivo'] | length > 80 %}...{% endif %}</div>
+                        <div><strong>Recibida:</strong> {{ arco['created_at'] }}</div>
+                    </div>
+                    <div class="actions">
+                        {% if role == "coordinador" %}
+                            <!-- Coordinador tiene 2 opciones -->
+                            <form method="POST" action="/arco/{{ arco['id'] }}/resolver-coordinador" style="display: inline-block; margin-right: 8px;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="decision" value="resuelta">
+                                <button type="submit" style="background-color: #10b981; color: white; padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">
+                                    ✓ Marcar Resuelta
+                                </button>
+                            </form>
+                            <form method="POST" action="/arco/{{ arco['id'] }}/resolver-coordinador" style="display: inline-block;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="decision" value="enviar_admin">
+                                <button type="submit" style="background-color: #3b82f6; color: white; padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">
+                                    → Enviar a Admin
+                                </button>
+                            </form>
+                        {% else %}
+                            <!-- Usuario y operativo solo aprueban -->
+                            <form method="POST" action="/arco/{{ arco['id'] }}/aprobar" style="display: inline-block;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit" style="background-color: #10b981; color: white; padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">
+                                    ✓ Aprobar
+                                </button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
 </div>
 
 </body>

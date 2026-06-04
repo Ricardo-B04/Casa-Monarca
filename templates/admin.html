@@ -365,7 +365,7 @@
             <label>Eliminaciones</label>
         </div>
         <div class="summary-card">
-            <strong>{{ solicitudes_arco|length }}</strong>
+            <strong>{{ (solicitudes_arco_prioritarias + solicitudes_arco_directas)|length }}</strong>
             <label>Solicitudes ARCO</label>
         </div>
     </div>
@@ -516,11 +516,64 @@
             {% endif %}
         </div>
 
-        <!-- ── SOLICITUDES ARCO ── -->
+        <!-- ── SOLICITUDES ARCO PRIORITARIAS ── -->
         <div class="box">
-            <h2>Solicitudes ARCO</h2>
-            {% if solicitudes_arco %}
-                {% for s in solicitudes_arco %}
+            <h2>🔴 ARCO Prioritarias (de Coordinadores)</h2>
+            {% if solicitudes_arco_prioritarias %}
+                {% for s in solicitudes_arco_prioritarias %}
+                    <div class="solicitud-card" style="border-left: 4px solid #dc2626;">
+                        <div class="solicitud-header">
+                            <div class="solicitud-title">ARCO #{{ s['id'] }}</div>
+                            <span class="badge" style="background: #dc2626; color: white;">PRIORITARIA</span>
+                        </div>
+                        <div class="solicitud-meta">
+                            <div><strong>Acción:</strong> {{ s['accion'] | capitalize }}</div>
+                            <div><strong>Solicitante:</strong> {{ s['nombre_solicitante'] }}</div>
+                            <div><strong>Contacto:</strong> {{ s['correo'] }}</div>
+                            <div><strong>Identidad:</strong> {{ s['curp_id'] }}</div>
+                            {% if s['nombre_pila'] %}
+                                <div><strong>Registrado como:</strong> {{ s['nombre_pila'] }} {{ s['primer_apellido'] }} {{ s['segundo_apellido'] }}</div>
+                            {% endif %}
+                            {% if s['fecha_nacimiento'] %}
+                                <div><strong>Fecha nac.:</strong> {{ s['fecha_nacimiento'] }}</div>
+                            {% endif %}
+                            {% if s['pais_origen'] %}
+                                <div><strong>País origen:</strong> {{ s['pais_origen'] }}</div>
+                            {% endif %}
+                            {% if s['folio_expediente'] %}
+                                <div><strong>Folio:</strong> {{ s['folio_expediente'] }}</div>
+                            {% endif %}
+                            <div><strong>Motivo:</strong> {{ s['motivo'] }}</div>
+                            <div><strong>Fecha solicitud:</strong> {{ s['created_at'] }}</div>
+                            <div><strong>Reenviada por coordinador:</strong> {{ s['aprobado_coordinadores_por'] }} el {{ s['reenviado_por_coordinador_at'] }}</div>
+                        </div>
+                        <div class="solicitud-actions">
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                                <input type="hidden" name="decision" value="atendida">
+                                <button type="submit" class="btn btn-success btn-sm">✓ Marcar atendida</button>
+                            </form>
+                            <form method="POST" action="/arco/{{ s['id'] }}/resolver">
+                                <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+                                <input type="hidden" name="decision" value="rechazada">
+                                <button type="submit" class="btn btn-danger btn-sm">✗ Rechazar</button>
+                            </form>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <span class="icon"></span>
+                    No hay solicitudes ARCO prioritarias.
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- ── SOLICITUDES ARCO DIRECTAS ── -->
+        <div class="box">
+            <h2>Solicitudes ARCO (flujo directo)</h2>
+            {% if solicitudes_arco_directas %}
+                {% for s in solicitudes_arco_directas %}
                     <div class="solicitud-card">
                         <div class="solicitud-header">
                             <div class="solicitud-title">ARCO #{{ s['id'] }}</div>
@@ -545,6 +598,18 @@
                             {% endif %}
                             <div><strong>Motivo:</strong> {{ s['motivo'] }}</div>
                             <div><strong>Fecha solicitud:</strong> {{ s['created_at'] }}</div>
+                            <div style="background: #f0f4f8; padding: 8px; border-radius: 4px; margin-top: 8px; font-size: 12px;">
+                                <div><strong>Estado:</strong> {{ s['nivel_actual'] }}</div>
+                                {% if s['aprobado_usuarios'] %}
+                                    <div>✓ Aprobado por usuarios ({{ s['aprobado_usuarios_por'] }})</div>
+                                {% endif %}
+                                {% if s['aprobado_operativos'] %}
+                                    <div>✓ Aprobado por operativos ({{ s['aprobado_operativos_por'] }})</div>
+                                {% endif %}
+                                {% if s['aprobado_coordinadores'] %}
+                                    <div>✓ Aprobado por coordinadores ({{ s['aprobado_coordinadores_por'] }})</div>
+                                {% endif %}
+                            </div>
                         </div>
                         <div class="solicitud-actions">
                             <form method="POST" action="/arco/{{ s['id'] }}/resolver">
@@ -563,7 +628,7 @@
             {% else %}
                 <div class="empty-state">
                     <span class="icon"></span>
-                    No hay solicitudes ARCO pendientes.
+                    No hay solicitudes ARCO en el flujo directo.
                 </div>
             {% endif %}
         </div>
