@@ -5,6 +5,102 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Centro de Control PKI | Casa Monarca</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .passkey-count { font-weight: bold; color: #2563eb; }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal.active { display: block; }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 700px;
+            border-radius: 8px;
+        }
+        .modal-header { font-size: 18px; font-weight: bold; margin-bottom: 15px; }
+        .modal-close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .modal-close:hover { color: black; }
+        .passkey-list {
+            margin-top: 15px;
+            border-top: 1px solid #eef2f7;
+            padding-top: 10px;
+        }
+        .passkey-item {
+            padding: 10px;
+            margin: 8px 0;
+            background: #f9fafb;
+            border-left: 3px solid #2563eb;
+            border-radius: 4px;
+        }
+        .passkey-status {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .passkey-status.activo { background: #d1fae5; color: #065f46; }
+        .passkey-status.revocado { background: #fee2e2; color: #991b1b; }
+        .passkey-status.deshabilitado_cert_exp { background: #fef3c7; color: #92400e; }
+        .action-buttons {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eef2f7;
+        }
+        .btn {
+            padding: 8px 12px;
+            margin-right: 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-danger {
+            background: #dc2626;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #b91c1c;
+        }
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+        .action-col {
+            text-align: center;
+        }
+        .btn-view-passkeys {
+            background: #2563eb;
+            color: white;
+            padding: 6px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-view-passkeys:hover {
+            background: #1d4ed8;
+        }
+    </style>
 </head>
 <body>
     <div class="top">
@@ -43,8 +139,8 @@
                         <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Estado</th>
                         <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Emitido</th>
                         <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Expira</th>
-                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Huella</th>
-                        <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Public FP</th>
+                        <th style="text-align:center; border-bottom:1px solid #dbe2ef; padding:8px;">Passkeys</th>
+                        <th style="text-align:center; border-bottom:1px solid #dbe2ef; padding:8px;">Acciones</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -55,8 +151,13 @@
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['status'] }}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['issued_at'] or '-' }}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['expires_at'] or '-' }}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['hash_short'] }}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ cert['public_short'] }}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px; text-align:center;">
+                            <span class="passkey-count">{{ cert.get('num_passkeys_using', 0) }}</span>
+                            <button class="btn-view-passkeys" onclick="viewPasskeysForCert({{ cert['id'] }})">Detalles</button>
+                        </td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px; text-align:center; action-col;">
+                            <button class="btn btn-danger" onclick="revokeCert({{ cert['id'] }})">Revocar Cert</button>
+                        </td>
                     </tr>
                     {% else %}
                     <tr><td colspan="7" style="padding:8px;">No hay certificados registrados.</td></tr>
@@ -65,6 +166,138 @@
             </table>
         </div>
     </div>
+
+    <!-- Modal para ver passkeys -->
+    <div id="passkeyModal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closePasskeyModal()">&times;</span>
+            <div class="modal-header">Passkeys asociados</div>
+            <div id="passkeyDetails"></div>
+            <div class="action-buttons">
+                <button class="btn btn-secondary" onclick="closePasskeyModal()">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function viewPasskeysForCert(certId) {
+            fetch('/admin/pki/passkey-certificate-status')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) {
+                        alert('Error cargando passkeys');
+                        return;
+                    }
+                    const cert = data.certificados.find(c => c.cert_id === certId);
+                    if (!cert) {
+                        alert('Certificado no encontrado');
+                        return;
+                    }
+                    showPasskeyModal(cert);
+                })
+                .catch(err => {
+                    console.error(err);
+                    alert('Error: ' + err.message);
+                });
+        }
+
+        function showPasskeyModal(cert) {
+            const modal = document.getElementById('passkeyModal');
+            const details = document.getElementById('passkeyDetails');
+            
+            let html = `<p><strong>Usuario:</strong> ${cert.username} (${cert.rol})</p>`;
+            html += `<p><strong>Estado:</strong> ${cert.status} | <strong>Total passkeys:</strong> ${cert.num_passkeys_total}</p>`;
+            
+            if (cert.passkeys.length === 0) {
+                html += '<p>No hay passkeys asociados.</p>';
+            } else {
+                html += '<div class="passkey-list">';
+                cert.passkeys.forEach(pk => {
+                    let statusClass = pk.status;
+                    html += `<div class="passkey-item">`;
+                    html += `<div><strong>${pk.label}</strong></div>`;
+                    html += `<div><small>ID: ${pk.credential_id}</small></div>`;
+                    html += `<div style="margin-top:5px;">
+                        <span class="passkey-status ${statusClass}">${pk.status}</span>
+                        <span style="font-size:12px; color:#6b7280;">Creado: ${pk.created_at}</span>
+                    </div>`;
+                    if (pk.status === 'activo') {
+                        html += `<div style="margin-top:8px;">
+                            <button class="btn btn-danger" onclick="revokePasskey(${pk.id}, '${pk.label}')">Revocar</button>
+                        </div>`;
+                    }
+                    html += `</div>`;
+                });
+                html += '</div>';
+            }
+            
+            details.innerHTML = html;
+            modal.classList.add('active');
+        }
+
+        function closePasskeyModal() {
+            const modal = document.getElementById('passkeyModal');
+            modal.classList.remove('active');
+        }
+
+        function revokePasskey(passkeyId, label) {
+            if (!confirm(`¿Estás seguro de que deseas revocar este passkey?\n\n${label}`)) {
+                return;
+            }
+            
+            fetch('/admin/pki/revoke-passkey', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    passkey_id: passkeyId,
+                    reason: 'admin_revocation'
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    alert('✓ Passkey revocado correctamente.\n' + data.message);
+                    location.reload();
+                } else {
+                    alert('✗ Error: ' + data.message);
+                }
+            })
+            .catch(err => alert('Error: ' + err.message));
+        }
+
+        function revokeCert(certId) {
+            if (!confirm('¿Estás seguro? Esto revocará el certificado y TODOS sus passkeys asociados.')) {
+                return;
+            }
+            
+            fetch('/admin/pki/revoke-certificate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    cert_id: certId,
+                    reason: 'admin_revocation'
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    alert('✓ Certificado revocado correctamente.\n' + data.message);
+                    location.reload();
+                } else {
+                    alert('✗ Error: ' + data.message);
+                }
+            })
+            .catch(err => alert('Error: ' + err.message));
+        }
+
+        // Cerrar modal al hacer click fuera
+        window.onclick = function(event) {
+            const modal = document.getElementById('passkeyModal');
+            if (event.target === modal) {
+                modal.classList.remove('active');
+            }
+        }
+    </script>
 
 </body>
 </html>

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inventario de Cifrado | Casa Monarca</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='action-passkey.js') }}"></script>
 </head>
 <body>
     <div class="top">
@@ -30,17 +31,29 @@
             <p style="color:#6a7382; font-size:13px; margin-bottom:12px;">
                 La llave activa cifra expedientes nuevos. Las llaves históricas permanecen disponibles durante la ventana de rotación para descifrar registros previos.
             </p>
-            <div class="grid-2col">
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px;">
                 <div class="box">
                     <h3>Llaves registradas</h3>
                     <div style="font-size:28px; font-weight:700; color:var(--color-accent);">{{ encryption_inventory|length }}</div>
+                </div>
+                <div class="box">
+                    <h3>Configurar nueva clave</h3>
+                    <p style="font-size:13px; color:#6a7382; margin-bottom:12px;">Genera una clave en el servidor o registra una ruta existente.</p>
+                    <form id="configure-key-form">
+                        <input type="hidden" id="configure-csrf-token" value="{{ session.get('csrf_token', '') }}">
+                        <div style="margin-bottom:8px;">
+                            <input type="text" id="configure-path-input" placeholder="Ruta (opcional, ej. keys/nueva.key)" style="width:100%; padding:8px; font-size:13px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="configure-key-btn" style="width:100%; padding:8px; font-size:13px;">🔐 Configurar Clave</button>
+                    </form>
+                    <div id="configure-key-status" style="margin-top:10px; font-size:13px; color:#6a7382;"></div>
                 </div>
                 <div class="box">
                     <h3>Operación de mantenimiento</h3>
                     <p style="font-size:13px; color:#6a7382; margin-bottom:12px;">Re-cifra todos los expedientes que no estén usando la llave activa.</p>
                     <form id="reencrypt-form">
                         <input type="hidden" id="csrf-token" value="{{ session.get('csrf_token', '') }}">
-                        <button type="submit" class="btn btn-secondary" id="reencrypt-surveys-btn">Re-cifrar expedientes</button>
+                        <button type="submit" class="btn btn-secondary" id="reencrypt-surveys-btn" style="width:100%; padding:8px; font-size:13px;">🔐 Re-cifrar expedientes</button>
                     </form>
                     <div id="reencrypt-status" style="margin-top:10px; font-size:13px; color:#6a7382;"></div>
                 </div>
@@ -58,7 +71,8 @@
                             <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Estado</th>
                             <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Uso</th>
                             <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Ultimo uso</th>
-                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operacion</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operación</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Acción</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -66,13 +80,27 @@
                         <tr>
                             <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace;">{{ key['key_fingerprint'][:12] }}</td>
                             <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['source_path'] }}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['state'] }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">
+                                <span class="badge {% if key['state'] == 'activo' %}badge-active{% elif key['state'] == 'retiring' %}badge-warning{% else %}badge-pending{% endif %}">
+                                    {{ key['state']|upper }}
+                                </span>
+                            </td>
                             <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['usage_count'] }}</td>
                             <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['last_seen_at'] or '-' }}</td>
                             <td style="border-bottom:1px solid #eef2f7; padding:8px;">{{ key['last_operation'] or '-' }}</td>
+                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">
+                                {% if key['state'] != 'activo' %}
+                                    <button class="btn btn-secondary btn-sm activate-key-btn" data-fp="{{ key['key_fingerprint'] }}" style="padding: 4px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;">
+                                        🔐 Activar
+                                    </button>
+                                    <div class="activate-status" data-fp="{{ key['key_fingerprint'] }}" style="font-size: 11px; color: #6a7382; margin-top: 2px;"></div>
+                                {% else %}
+                                    <span style="color: var(--color-success); font-weight: 600;">✓ Activa</span>
+                                {% endif %}
+                            </td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="6" style="padding:8px;">No hay llaves registradas.</td></tr>
+                        <tr><td colspan="7" style="padding:8px;">No hay llaves registradas.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -125,12 +153,15 @@
                     <thead>
                         <tr>
                             <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Operación</th>
-                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Timestamp</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Usuario</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Acción Particular</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Clave Vigente</th>
                             <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Duración (ms)</th>
+                            <th style="text-align:left; border-bottom:1px solid #dbe2ef; padding:8px;">Timestamp</th>
                         </tr>
                     </thead>
                     <tbody id="metrics-recent-body">
-                        <tr><td colspan="3" style="padding:8px;">Cargando métricas recientes...</td></tr>
+                        <tr><td colspan="6" style="padding:8px;">Cargando métricas recientes...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -145,6 +176,7 @@
     const metricsSummaryBody = document.getElementById('metrics-summary-body');
     const metricsRecentBody = document.getElementById('metrics-recent-body');
 
+    // 1. Re-encryption flow with passkey signature
     if (form) {
         form.addEventListener('submit', async (event) => {
             event.preventDefault();
@@ -154,129 +186,257 @@
             }
 
             button.disabled = true;
-            status.textContent = 'Re-cifrando expedientes, espera un momento...';
+            status.textContent = 'Solicitando firma de passkey...';
+            status.style.color = '#4b5563';
 
-            try {
-                const formData = new FormData();
-                formData.append('action', 'reencrypt');
-                if (csrfToken && csrfToken.value) {
-                    formData.append('csrf_token', csrfToken.value);
+            const csrfVal = csrfToken ? csrfToken.value : '';
+
+            const success = await signActionWithPasskey(
+                "re-cifrar expedientes de la base de datos",
+                status,
+                csrfVal,
+                async function() {
+                    status.textContent = 'Firma obtenida. Re-cifrando expedientes, espera un momento...';
+                    try {
+                        const formData = new FormData();
+                        formData.append('action', 'reencrypt');
+                        formData.append('csrf_token', csrfVal);
+
+                        const response = await fetch('/admin/cifrado', {
+                            method: 'POST',
+                            body: formData,
+                        });
+                        const payload = await response.json();
+
+                        if (!response.ok || !payload.ok) {
+                            throw new Error(payload.message || 'No se pudo completar el re-cifrado.');
+                        }
+
+                        status.textContent = `Listo: ${payload.updated} actualizados, ${payload.skipped} omitidos.`;
+                        status.style.color = '#27ae60';
+                        setTimeout(() => window.location.reload(), 1500);
+                    } catch (error) {
+                        status.textContent = error.message || 'Error al re-cifrar expedientes.';
+                        status.style.color = '#c53030';
+                        button.disabled = false;
+                    }
                 }
+            );
 
-                const response = await fetch('/admin/cifrado', {
-                    method: 'POST',
-                    body: formData,
-                });
-                const payload = await response.json();
-
-                if (!response.ok || !payload.ok) {
-                    throw new Error(payload.message || 'No se pudo completar el re-cifrado.');
-                }
-
-                status.textContent = `Listo: ${payload.updated} actualizados, ${payload.skipped} omitidos.`;
-                window.location.reload();
-            } catch (error) {
-                status.textContent = error.message || 'Error al re-cifrar expedientes.';
-            } finally {
+            if (!success) {
                 button.disabled = false;
             }
         });
     }
 
-        // Jobs polling
-        const jobsBody = document.getElementById('jobs-body');
-        async function fetchJobs() {
-            try {
-                const resp = await fetch('/admin/cifrado/jobs');
-                const data = await resp.json();
-                if (!data.ok) return;
-                const jobs = data.jobs || [];
-                if (!jobs.length) {
-                    jobsBody.innerHTML = '<tr><td colspan="6" style="padding:8px;">Sin trabajos en cola.</td></tr>';
-                    return;
+    // 2. Configure Key flow with passkey signature
+    const configForm = document.getElementById('configure-key-form');
+    const configBtn = document.getElementById('configure-key-btn');
+    const configStatus = document.getElementById('configure-key-status');
+    const configCsrf = document.getElementById('configure-csrf-token');
+    const pathInput = document.getElementById('configure-path-input');
+
+    if (configForm) {
+        configForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            configBtn.disabled = true;
+            configStatus.textContent = 'Solicitando firma de passkey...';
+            configStatus.style.color = '#4b5563';
+
+            const csrfVal = configCsrf ? configCsrf.value : '';
+
+            const success = await signActionWithPasskey(
+                "configurar nueva clave de cifrado",
+                configStatus,
+                csrfVal,
+                async function() {
+                    configStatus.textContent = 'Firma obtenida. Configurando nueva clave...';
+                    try {
+                        const formData = new FormData();
+                        formData.append('csrf_token', csrfVal);
+                        if (pathInput && pathInput.value) {
+                            formData.append('source_path', pathInput.value);
+                        }
+
+                        const response = await fetch('/admin/keys/configure', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const payload = await response.json();
+
+                        if (!response.ok || !payload.ok) {
+                            throw new Error(payload.message || 'No se pudo configurar la clave.');
+                        }
+
+                        configStatus.textContent = payload.message || 'Clave configurada exitosamente.';
+                        configStatus.style.color = '#27ae60';
+                        setTimeout(() => window.location.reload(), 1500);
+                    } catch (error) {
+                        configStatus.textContent = error.message || 'Error al configurar la clave.';
+                        configStatus.style.color = '#c53030';
+                        configBtn.disabled = false;
+                    }
                 }
-                jobsBody.innerHTML = '';
-                for (const j of jobs) {
-                    const prog = (j.total_count && j.total_count>0) ? `${j.processed_count}/${j.total_count}` : '-';
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.id}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace;">${j.new_key_fingerprint_short}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.requested_by || '-'}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.status}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${prog}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.notes || '-'}</td>
-                    `;
-                    jobsBody.appendChild(tr);
-                }
-            } catch (e) {
-                console.error('jobs fetch error', e);
+            );
+
+            if (!success) {
+                configBtn.disabled = false;
             }
+        });
+    }
+
+    // 3. Key Activation buttons with passkey signature
+    document.addEventListener('DOMContentLoaded', () => {
+        const activateBtns = document.querySelectorAll('.activate-key-btn');
+        activateBtns.forEach(btn => {
+            btn.addEventListener('click', async function(e) {
+                e.preventDefault();
+                
+                const fp = this.dataset.fp;
+                const statusNode = document.querySelector(`.activate-status[data-fp="${fp}"]`);
+                
+                this.disabled = true;
+                statusNode.textContent = 'Solicitando firma...';
+                statusNode.style.color = '#4b5563';
+                
+                const csrfVal = configCsrf ? configCsrf.value : (csrfToken ? csrfToken.value : '');
+                
+                const success = await signActionWithPasskey(
+                    `activar clave de cifrado ${fp}`,
+                    statusNode,
+                    csrfVal,
+                    async function() {
+                        statusNode.textContent = 'Firma obtenida. Activando clave...';
+                        try {
+                            const formData = new FormData();
+                            formData.append('csrf_token', csrfVal);
+                            
+                            const response = await fetch(`/admin/keys/${fp}/activate`, {
+                                method: 'POST',
+                                body: formData
+                            });
+                            const payload = await response.json();
+                            
+                            if (!response.ok || !payload.ok) {
+                                throw new Error(payload.message || 'No se pudo activar la clave.');
+                            }
+                            
+                            statusNode.textContent = '✓ Clave activada y re-cifrado encolado.';
+                            statusNode.style.color = '#27ae60';
+                            setTimeout(() => window.location.reload(), 1500);
+                        } catch (error) {
+                            statusNode.textContent = error.message || 'Error al activar.';
+                            statusNode.style.color = '#c53030';
+                            btn.disabled = false;
+                        }
+                    }
+                );
+                
+                if (!success) {
+                    btn.disabled = false;
+                }
+            });
+        });
+    });
+
+    // 4. Jobs polling
+    const jobsBody = document.getElementById('jobs-body');
+    async function fetchJobs() {
+        try {
+            const resp = await fetch('/admin/cifrado/jobs');
+            const data = await resp.json();
+            if (!data.ok) return;
+            const jobs = data.jobs || [];
+            if (!jobs.length) {
+                jobsBody.innerHTML = '<tr><td colspan="6" style="padding:8px;">Sin trabajos en cola.</td></tr>';
+                return;
+            }
+            jobsBody.innerHTML = '';
+            for (const j of jobs) {
+                const prog = (j.total_count && j.total_count>0) ? `${j.processed_count}/${j.total_count}` : '-';
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.id}</td>
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace;">${j.new_key_fingerprint_short}</td>
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.requested_by || '-'}</td>
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.status}</td>
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px;">${prog}</td>
+                    <td style="border-bottom:1px solid #eef2f7; padding:8px;">${j.notes || '-'}</td>
+                `;
+                jobsBody.appendChild(tr);
+            }
+        } catch (e) {
+            console.error('jobs fetch error', e);
+        }
+    }
+
+    fetchJobs();
+    setInterval(fetchJobs, 5000);
+
+    // 5. Metrics table rendering
+    async function fetchMetrics() {
+        try {
+            const resp = await fetch('/admin/cifrado/metrics');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            return data;
+        } catch (e) {
+            console.error('metrics fetch error', e);
+            return null;
+        }
+    }
+
+    async function renderMetricsTable() {
+        const payload = await fetchMetrics();
+        if (!payload) return;
+        const series = payload.series || {};
+        const stats = payload.stats || {};
+
+        if (metricsSummaryBody) {
+            const rows = [];
+            ['encrypt', 'decrypt'].forEach((op) => {
+                const info = stats[op] || {count: 0, avg: 0, min: 0, max: 0};
+                rows.push(`
+                    <tr>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${op}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${info.count}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.avg || 0).toFixed(3)}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.min || 0).toFixed(3)}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.max || 0).toFixed(3)}</td>
+                    </tr>
+                `);
+            });
+            metricsSummaryBody.innerHTML = rows.join('');
         }
 
-        fetchJobs();
-        setInterval(fetchJobs, 5000);
-
-        // Metrics table
-        async function fetchMetrics() {
-            try {
-                const resp = await fetch('/admin/cifrado/metrics');
-                if (!resp.ok) return;
-                const data = await resp.json();
-                return data;
-            } catch (e) {
-                console.error('metrics fetch error', e);
-                return null;
-            }
-        }
-
-        async function renderMetricsTable() {
-            const payload = await fetchMetrics();
-            if (!payload) return;
-            const series = payload.series || {};
-            const stats = payload.stats || {};
-
-            if (metricsSummaryBody) {
-                const rows = [];
-                ['encrypt', 'decrypt'].forEach((op) => {
-                    const info = stats[op] || {count: 0, avg: 0, min: 0, max: 0};
-                    rows.push(`
-                        <tr>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${op}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${info.count}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.avg || 0).toFixed(3)}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.min || 0).toFixed(3)}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${(info.max || 0).toFixed(3)}</td>
-                        </tr>
-                    `);
+        if (metricsRecentBody) {
+            const recent = [];
+            Object.keys(series).forEach((op) => {
+                (series[op] || []).slice(-10).forEach((item) => {
+                    recent.push({op, ...item});
                 });
-                metricsSummaryBody.innerHTML = rows.join('');
-            }
-
-            if (metricsRecentBody) {
-                const recent = [];
-                Object.keys(series).forEach((op) => {
-                    (series[op] || []).slice(-5).forEach((item) => {
-                        recent.push({op, ...item});
-                    });
-                });
-                recent.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
-                if (!recent.length) {
-                    metricsRecentBody.innerHTML = '<tr><td colspan="3" style="padding:8px;">Sin métricas registradas.</td></tr>';
-                } else {
-                    metricsRecentBody.innerHTML = recent.slice(-10).map((item) => `
-                        <tr>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.op}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.timestamp}</td>
-                            <td style="border-bottom:1px solid #eef2f7; padding:8px;">${Number(item.duration_ms || 0).toFixed(3)}</td>
-                        </tr>
-                    `).join('');
-                }
+            });
+            recent.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+            if (!recent.length) {
+                metricsRecentBody.innerHTML = '<tr><td colspan="6" style="padding:8px;">Sin métricas registradas.</td></tr>';
+            } else {
+                metricsRecentBody.innerHTML = recent.slice(-15).map((item) => `
+                    <tr>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.op}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.user || '-'}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.action_detail || '-'}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace; font-size:11px;">${item.active_key_info || '-'}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;">${Number(item.duration_ms || 0).toFixed(3)}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px;"><small>${item.timestamp}</small></td>
+                    </tr>
+                `).join('');
             }
         }
+    }
 
-        renderMetricsTable();
-        setInterval(renderMetricsTable, 5000);
+    renderMetricsTable();
+    setInterval(renderMetricsTable, 5000);
     </script>
 </body>
 </html>
