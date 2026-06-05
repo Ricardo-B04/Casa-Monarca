@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>Bandeja de trabajo</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="{{ url_for('static', filename='action-passkey.js') }}"></script>
 </head>
 <body>
 
@@ -43,41 +44,46 @@
                 <div class="actions">
                     {% if role == "usuario" and d.estado == "borrador" %}
                         <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">Canalizar a Operativo</button>
                         </form>
                     {% endif %}
 
                     {% if role == "operativo" and d.estado == "en_revision_operativa" %}
                         <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">Canalizar a Coordinador</button>
                         </form>
                     {% endif %}
 
                     {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
-                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
-                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                            <button type="submit">Validar y enviar a Admin</button>
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <div class="sign-status" style="font-size: 13px; margin-bottom: 8px; color: #4b5563;"></div>
+                            <button type="button" class="btn-sign-passkey" data-action-label="expediente #{{ d.id }}">
+                                🔐 Validar y enviar a Admin
+                            </button>
                         </form>
-                        <form method="POST" action="/solicitar-eliminacion/{{ d.id }}" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
-                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                            <input type="text" name="motivo" placeholder="Motivo de eliminacion" required>
-                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                            <button type="submit">Solicitar eliminacion</button>
+                    {% endif %}
+
+                    {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
+                        <form method="POST" action="/solicitar-eliminacion/{{ d.id }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="text" name="motivo" placeholder="Motivo de eliminacion" required style="margin-bottom: 8px;">
+                            <div class="sign-status" style="font-size: 13px; margin-bottom: 8px; color: #4b5563;"></div>
+                            <button type="button" class="btn-sign-passkey" data-action-label="expediente #{{ d.id }}" style="width: 100%;">
+                                🔐 Solicitar eliminacion
+                            </button>
                         </form>
                     {% endif %}
 
                     {% if role == "admin" and d.estado == "validado_coordinacion" %}
-                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar" enctype="multipart/form-data">
-                            <input type="hidden" name="action_challenge" value="{{ action_signature_challenge }}">
-                            <input type="file" name="action_cert_file" accept=".pem,.crt,.cer" required>
-                            <input type="text" name="action_signature" placeholder="Firma Base64" required>
-                            <input type="file" name="action_signature_file" accept=".sig,.bin,.dat">
-                            <button type="submit">Cerrar expediente</button>
+                        <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <div class="sign-status" style="font-size: 13px; margin-bottom: 8px; color: #4b5563;"></div>
+                            <button type="button" class="btn-sign-passkey" data-action-label="expediente #{{ d.id }}">
+                                🔐 Cerrar expediente
+                            </button>
                         </form>
                     {% endif %}
                 </div>
@@ -136,6 +142,47 @@
         </div>
     {% endif %}
 </div>
+
+<script>
+// Manejador para firma de canalizaciones con passkey (coordinador y admin)
+document.addEventListener('DOMContentLoaded', function() {
+    const signButtons = document.querySelectorAll('.btn-sign-passkey');
+    
+    signButtons.forEach(btn => {
+        btn.addEventListener('click', async function(e) {
+            e.preventDefault();
+            
+            const actionLabel = this.dataset.actionLabel;
+            const form = this.closest('form');
+            const statusNode = form.querySelector('.sign-status');
+            
+            if (!form || !statusNode) {
+                console.error('Form or status node not found');
+                return;
+            }
+            
+            const csrfToken = form.querySelector('input[name="csrf_token"]').value;
+            this.disabled = true;
+            
+            const success = await signActionWithPasskey(
+                actionLabel,
+                statusNode,
+                csrfToken,
+                function() {
+                    // Después de firmar exitosamente, submit el formulario
+                    setTimeout(() => {
+                        form.submit();
+                    }, 500);
+                }
+            );
+            
+            if (!success) {
+                btn.disabled = false;
+            }
+        });
+    });
+});
+</script>
 
 </body>
 </html>

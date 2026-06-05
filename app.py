@@ -4112,6 +4112,7 @@ def action_passkey_verify():
         "timestamp": time.time(),
         "passkey_fp": passkey_fp
     }
+    session.modified = True
     
     return jsonify({"ok": True, "message": "Accion firmada exitosamente"})
 
@@ -4120,13 +4121,22 @@ def check_and_consume_passkey_action(expected_action_label, max_age_seconds=60):
     """Checks if the user has recently signed the given action using a passkey."""
     verified = session.get("verified_passkey_action")
     if not verified:
+        # Log para debugging
+        print(f"DEBUG: No verified_passkey_action en sesión para usuario {session.get('user')}")
         return False
         
     label_match = (verified.get("action_label") == expected_action_label)
     time_match = (time.time() - verified.get("timestamp", 0) <= max_age_seconds)
     
+    # Log para debugging
+    if not label_match:
+        print(f"DEBUG: Label mismatch - esperado: '{expected_action_label}', actual: '{verified.get('action_label')}'")
+    if not time_match:
+        print(f"DEBUG: Time expired - age: {time.time() - verified.get('timestamp', 0)}s, max: {max_age_seconds}s")
+    
     # Consume marker
     session.pop("verified_passkey_action", None)
+    session.modified = True
     
     return label_match and time_match
 
@@ -4386,6 +4396,13 @@ def avanzar_encuesta(encuesta_id):
 
     expected_status, new_status = transition
 
+    # Validación de passkey para roles administrativos (coordinador, admin)
+    if role in ("coordinador", "admin"):
+        action_label = f"expediente #{encuesta_id}"
+        if not check_and_consume_passkey_action(action_label):
+            flash("Se requiere firma mediante passkey para esta acción.")
+            return redirect("/bandeja")
+
     conn = get_conn()
     c = conn.cursor()
 
@@ -4424,6 +4441,12 @@ def avanzar_encuesta(encuesta_id):
 def solicitar_eliminacion(encuesta_id):
     if not require_role("coordinador"):
         return redirect("/")
+
+    # Validación de passkey para coordinador
+    action_label = f"expediente #{encuesta_id}"
+    if not check_and_consume_passkey_action(action_label):
+        flash("Se requiere firma mediante passkey para esta acción.")
+        return redirect("/bandeja")
 
     motivo = request.form.get("motivo", "").strip()
     if not motivo:
