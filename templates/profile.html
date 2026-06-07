@@ -9,16 +9,21 @@
     <div class="top">
         <div>Casa Monarca | Mi Perfil</div>
         <div>
+            {% if session.role in ("admin", "coordinador") %}
             <a href="/admin">Panel Admin</a>
             <a href="/admin/identidades">Identidades</a>
             <a href="/admin/pki">Centro PKI</a>
+            <a href="/admin/cifrado">Cifrado</a>
+            {% endif %}
             <a href="/dashboard">Dashboard</a>
+            {% if session.role in ("admin", "coordinador") %}
             <a href="/usuarios">Usuarios</a>
-            <a href="/logs">Bitacora</a>
+            <a href="/logs">Bitácora</a>
+            {% endif %}
             <a href="/bandeja">Bandeja</a>
             <a href="/survey">Nuevo Registro</a>
             <a href="/profile">Mi Perfil</a>
-            <a href="/logout">Cerrar sesion</a>
+            <a href="/logout">Cerrar sesión</a>
     </div>
     </div>
 
@@ -42,7 +47,7 @@
             <div><strong>Rol:</strong> {{ user['rol'] }} {% if role_label %}({{ role_label }}){% endif %}</div>
             <div><strong>Area:</strong> {{ user['area'] or '-' }}</div>
             <div><strong>Activo:</strong> {{ 'Si' if user['activo'] else 'No' }}</div>
-            <div><strong>Ultimo cambio de contrasena:</strong> {{ user['password_updated_at'] or '-' }}</div>
+            <div><strong>Último cambio de contraseña:</strong> {{ user['password_updated_at'] or '-' }}</div>
         </div>
 
         <form method="POST" class="card">
@@ -51,24 +56,24 @@
             <input type="hidden" name="action" value="update_contact" />
             <label>Nombre completo</label>
             <input type="text" name="full_name" value="{{ user['full_name'] or '' }}" />
-            <label>Correo electronico</label>
+            <label>Correo electrónico</label>
             <input type="email" name="email" value="{{ user['email'] or '' }}" />
-            <label>Telefono</label>
+            <label>Teléfono</label>
             <input type="text" name="phone" value="{{ user['phone'] or '' }}" />
             <button class="btn" type="submit">Guardar datos</button>
         </form>
 
         <form method="POST" class="card">
             <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
-            <h3 style="margin-top:0;">Cambiar contrasena</h3>
+            <h3 style="margin-top:0;">Cambiar contraseña</h3>
             <input type="hidden" name="action" value="change_password" />
-            <label>Contrasena actual</label>
+            <label>Contraseña actual</label>
             <input type="password" name="current_password" />
-            <label>Nueva contrasena</label>
+            <label>Nueva contraseña</label>
             <input type="password" name="new_password" />
-            <label>Confirmar nueva contrasena</label>
+            <label>Confirmar nueva contraseña</label>
             <input type="password" name="confirm_password" />
-            <button class="btn" type="submit">Actualizar contrasena</button>
+            <button class="btn" type="submit">Actualizar contraseña</button>
         </form>
 
         {% if user['rol'] in ('admin', 'coordinador') %}
@@ -76,7 +81,7 @@
             <h3 style="margin-top:0;">Passkeys (WebAuthn)</h3>
             {% if passkey_enabled %}
                 <button class="btn-secondary" id="register-passkey" type="button">Registrar nueva passkey</button>
-                <div class="hint">Puedes usar TouchID, FaceID, Windows Hello o una passkey sincronizada en gestor de contrasenas.</div>
+                <div class="hint">Puedes usar TouchID, FaceID, Windows Hello o una passkey sincronizada en gestor de contraseñas.</div>
                 <div id="passkey-status" class="status-msg"></div>
             {% else %}
                 <div class="hint">Passkeys no disponibles en este entorno de servidor.</div>
