@@ -914,7 +914,7 @@ def admin_configure_key():
         # Load keys to keyring in memory
         load_keyring()
         
-        log(session.get("user"), f"Configuro clave de cifrado {fingerprint[:12]}", categoria="seguridad")
+        log(session.get("user"), f"Configuró clave de cifrado {fingerprint[:12]}", categoria="seguridad")
         
         return jsonify({"ok": True, "fingerprint": fingerprint, "message": "Clave configurada y cargada exitosamente."})
         
@@ -2823,11 +2823,11 @@ def verify_action_certificate(action_label):
     challenge = request.form.get("action_challenge", "").strip()
     challenge_row = session.get(_signature_challenge_key("action"))
     if not challenge or not challenge_row or challenge_row.get("value") != challenge:
-        flash("El desafio de firma no es valido o ya expiró.")
+        flash("El desafío de firma no es válido o ya expiró.")
         return False, None
 
     if challenge_row.get("username") and challenge_row.get("username") != session.get("user"):
-        flash("El desafio de firma no corresponde al usuario autenticado.")
+        flash("El desafío de firma no corresponde al usuario autenticado.")
         return False, None
 
     consume_signature_challenge("action")
@@ -3275,7 +3275,7 @@ def certificado_setup():
             conn.commit()
 
             session.pop("cert_setup_required", None)
-            log(session.get("user"), "Configuro su certificado desde CSR")
+            log(session.get("user"), "Configuró su certificado desde CSR")
             flash("Certificado emitido correctamente.")
 
             c = conn.cursor()
@@ -3350,7 +3350,7 @@ def certificado_setup():
         conn.close()
 
         session.pop("cert_setup_required", None)
-        log(session.get("user"), "Configuro su certificado")
+        log(session.get("user"), "Configuró su certificado")
         flash("Certificado configurado correctamente.")
         return redirect(role_home(role))
 
@@ -3381,17 +3381,17 @@ def password_update():
 
         if not user or not verify_user_password(user, current_password):
             conn.close()
-            flash("Contrasena actual incorrecta.")
+            flash("Contraseña actual incorrecta.")
             return render_template("password_update.html")
 
         if new_password != confirm_password:
             conn.close()
-            flash("La nueva contrasena y su confirmacion no coinciden.")
+            flash("La nueva contraseña y su confirmación no coinciden.")
             return render_template("password_update.html")
 
         if new_password == current_password:
             conn.close()
-            flash("La nueva contrasena debe ser diferente a la actual.")
+            flash("La nueva contraseña debe ser diferente a la actual.")
             return render_template("password_update.html")
 
         valid, error, warning = validate_new_password_policy(new_password)
@@ -3422,8 +3422,8 @@ def password_update():
         conn.close()
 
         session.pop("password_change_required", None)
-        log(session.get("user"), "Actualizo su contrasena")
-        flash("Contrasena actualizada correctamente.")
+        log(session.get("user"), "Actualizó su contraseña")
+        flash("Contraseña actualizada correctamente.")
         return redirect(role_home(session.get("role")))
 
     return render_template("password_update.html")
@@ -3492,7 +3492,7 @@ def login():
                 session["role"] = user["rol"]
                 session["area"] = user["area"]
                 session["password_change_required"] = True
-                log(user["username"], "Inicio de sesion (cambio de contrasena obligatorio)")
+                log(user["username"], "Inicio de sesión (cambio de contraseña obligatorio)")
                 return redirect("/password/update")
 
             if user["rol"] in ("admin", "coordinador"):
@@ -3511,7 +3511,7 @@ def login():
                     session["area"] = user["area"]
                     session["passkey_enrollment_required"] = True
                     flash("Debes registrar una passkey antes de continuar.")
-                    log(user["username"], "Inicio de sesion (passkey pendiente)")
+                    log(user["username"], "Inicio de sesión (passkey pendiente)")
                     return redirect("/profile")
 
                 active_cert = get_active_certificate(conn, user["username"])
@@ -3526,7 +3526,7 @@ def login():
                         flash("Debes configurar tu certificado para continuar.")
                     else:
                         flash("No hay certificado activo. Debes configurarlo.")
-                    log(user["username"], "Inicio de sesion (certificado pendiente)")
+                    log(user["username"], "Inicio de sesión (certificado pendiente)")
                     return redirect("/certificado/setup")
 
                 if is_cert_expired(active_cert):
@@ -3581,7 +3581,7 @@ def login():
             session["area"] = user["area"]
             session.pop("cert_setup_required", None)
             session.pop("password_change_required", None)
-            log(user["username"], "Inicio de sesion")
+            log(user["username"], "Inicio de sesión")
             return redirect(role_home(user["rol"]))
 
         # record failed attempt
@@ -3729,7 +3729,7 @@ def passkey_register_verify():
     conn.close()
 
     session.pop("pending_passkey_registration", None)
-    log(session.get("user"), "Registro una nueva passkey")
+    log(session.get("user"), "Registró una nueva passkey")
     return jsonify({"ok": True, "message": "Passkey registrada correctamente."})
 
 
@@ -3838,7 +3838,7 @@ def passkey_login_options():
         session["role"] = user["rol"]
         session["area"] = user["area"]
         session["password_change_required"] = True
-        log(user["username"], "Inicio de sesion (cambio de contrasena obligatorio)")
+        log(user["username"], "Inicio de sesión (cambio de contraseña obligatorio)")
         return jsonify({"ok": False, "message": "Debes cambiar la contrasena antes de usar passkey.", "redirect": "/password/update"}), 403
 
     if user["rol"] not in ("admin", "coordinador"):
@@ -3961,7 +3961,7 @@ def passkey_login_verify():
     session.pop("cert_setup_required", None)
     session.pop("password_change_required", None)
     session.pop("pending_passkey_login", None)
-    log(session.get("user"), "Inicio de sesion con passkey")
+    log(session.get("user"), "Inicio de sesión con passkey")
 
     return jsonify({"ok": True, "redirect": role_home(session.get("role"))})
 
@@ -4488,7 +4488,7 @@ def solicitar_eliminacion(encuesta_id):
     conn.close()
 
     log(session.get("user"), f"Solicito eliminacion de expediente {encuesta_id}")
-    flash("Solicitud de eliminacion enviada al administrador.")
+    flash("Solicitud de eliminación enviada al administrador.")
     return redirect("/bandeja")
 
 
@@ -4556,7 +4556,7 @@ def usuarios():
         is_contingency = 1 if request.form.get("is_contingency") == "1" else 0
 
         if rol not in ROLE_LABELS:
-            flash("Rol invalido")
+            flash("Rol inválido")
             conn.close()
             return redirect("/usuarios")
 
@@ -4986,7 +4986,7 @@ def eliminar_usuario(user_id):
 
     if target["username"] == session.get("user"):
         conn.close()
-        flash("No puedes eliminar tu propia cuenta en sesion")
+        flash("No puedes eliminar tu propia cuenta en sesión")
         return redirect("/usuarios")
 
     if not can_delete_user(target):
@@ -4998,7 +4998,7 @@ def eliminar_usuario(user_id):
     conn.commit()
     conn.close()
 
-    log(session.get("user"), f"Elimino usuario {target['username']}")
+    log(session.get("user"), f"Eliminó usuario {target['username']}")
     flash("Usuario eliminado")
     return redirect("/usuarios")
 
@@ -5070,7 +5070,7 @@ def clear_logs():
     conn.commit()
     conn.close()
 
-    flash("Bitacora limpiada")
+    flash("Bitácora limpiada")
     return redirect("/logs")
 
 
@@ -5090,7 +5090,7 @@ def descargar_certificado(cert_id):
         return redirect("/usuarios")
 
     if cert["status"] != "activo":
-        flash("El certificado no esta activo para exportacion.")
+        flash("El certificado no está activo para exportación.")
         return redirect("/usuarios")
 
     if not cert["pem_path"] or not os.path.exists(cert["pem_path"]):
@@ -5142,7 +5142,7 @@ def revocar_certificado(cert_id):
 
 @app.route("/logout")
 def logout():
-    log(session.get("user", "desconocido"), "Cerro sesion")
+    log(session.get("user", "desconocido"), "Cerró sesión")
     session.clear()
     return redirect("/")
 
@@ -5169,12 +5169,12 @@ def profile():
             # Validate email and phone (optional fields)
             if email and not validate_email_address(email):
                 conn.close()
-                flash("Direccion de correo invalida.")
+                flash("Dirección de correo inválida.")
                 return redirect("/profile")
 
             if phone and not validate_phone_number(phone):
                 conn.close()
-                flash("Numero de telefono invalido. Incluye codigo de pais si aplica.")
+                flash("Número de teléfono inválido. Incluye código de país si aplica.")
                 return redirect("/profile")
 
             # Normalize email and phone before storing
@@ -5196,7 +5196,7 @@ def profile():
             )
             conn.commit()
             conn.close()
-            log(session.get("user"), "Actualizo datos de perfil")
+            log(session.get("user"), "Actualizó datos de perfil")
             flash("Datos de perfil actualizados.")
             return redirect("/profile")
 
@@ -5213,17 +5213,17 @@ def profile():
 
             if not user or not verify_user_password(user, current_password):
                 conn.close()
-                flash("Contrasena actual incorrecta.")
+                flash("Contraseña actual incorrecta.")
                 return redirect("/profile")
 
             if new_password != confirm_password:
                 conn.close()
-                flash("La nueva contrasena y su confirmacion no coinciden.")
+                flash("La nueva contraseña y su confirmación no coinciden.")
                 return redirect("/profile")
 
             if new_password == current_password:
                 conn.close()
-                flash("La nueva contrasena debe ser diferente a la actual.")
+                flash("La nueva contraseña debe ser diferente a la actual.")
                 return redirect("/profile")
 
             valid, error, warning = validate_new_password_policy(new_password)
@@ -5255,8 +5255,8 @@ def profile():
 
             session.pop("passkey_enrollment_required", None)
             session.pop("password_change_required", None)
-            log(session.get("user"), "Actualizo su contrasena (perfil)")
-            flash("Contrasena actualizada correctamente.")
+            log(session.get("user"), "Actualizó su contraseña (perfil)")
+            flash("Contraseña actualizada correctamente.")
             return redirect(role_home(session.get("role")))
 
         if action == "revoke_passkey":

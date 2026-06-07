@@ -5,24 +5,120 @@
 <title>Bandeja de trabajo</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <script src="{{ url_for('static', filename='action-passkey.js') }}"></script>
+<style>
+    .banner {
+        background: #ecfff3;
+        border: 1px solid #9dd4b2;
+        border-radius: 10px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        color: #1f6f43;
+    }
+
+    .card {
+        background: white;
+        border: 1px solid #dfe3eb;
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 14px;
+    }
+
+    .meta {
+        color: #616b7c;
+        font-size: 13px;
+        margin-bottom: 4px;
+    }
+
+    .empty {
+        color: #616b7c;
+        font-size: 14px;
+        padding: 16px 0;
+    }
+
+    .actions {
+        margin-top: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: flex-start;
+    }
+
+    .actions form {
+        margin: 0;
+    }
+
+    .actions .sign-status {
+        margin-top: 6px;
+    }
+
+    /* ── Modal de solicitud de eliminacion ── */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(31, 41, 55, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+    }
+
+    .modal-overlay[hidden] {
+        display: none;
+    }
+
+    .modal {
+        background: white;
+        border-radius: 14px;
+        padding: 22px;
+        width: min(480px, 92vw);
+        box-shadow: var(--shadow-lg);
+    }
+
+    .modal h4 {
+        margin: 0 0 12px;
+        color: #1f2a37;
+    }
+
+    .modal textarea {
+        width: 100%;
+        min-height: 110px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: 10px;
+        font-family: inherit;
+        font-size: 14px;
+        resize: vertical;
+        margin-bottom: 10px;
+    }
+
+    .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+    }
+</style>
 </head>
 <body>
 
 <div class="top">
-    <div>Bandeja | Rol: {{ role }}</div>
+    <div>Casa Monarca | Bandeja</div>
     <div>
-        
+
+        {% if role in ("admin", "coordinador") %}
         <a href="/admin">Panel Admin</a>
         <a href="/admin/identidades">Identidades</a>
         <a href="/admin/pki">Centro PKI</a>
+        <a href="/admin/cifrado">Cifrado</a>
+        {% endif %}
         <a href="/dashboard">Dashboard</a>
+        {% if role in ("admin", "coordinador") %}
         <a href="/usuarios">Usuarios</a>
-        
-        <a href="/logs">Bitacora</a>
+        <a href="/logs">Bitácora</a>
+        {% endif %}
         <a href="/bandeja">Bandeja</a>
         <a href="/survey">Nuevo Registro</a>
         <a href="/profile">Mi Perfil</a>
-        <a href="/logout">Cerrar sesion</a>
+        <a href="/logout">Cerrar sesión</a>
     </div>
 </div>
 
@@ -59,22 +155,33 @@
                     {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
                         <form method="POST" action="/encuesta/{{ d.id }}/avanzar">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <div class="sign-status" style="font-size: 13px; margin-bottom: 8px; color: #4b5563;"></div>
-                            <button type="button" class="btn-sign-passkey" data-action-label="expediente #{{ d.id }}">
-                                🔐 Validar y enviar a Admin
+                            <button type="button" class="btn btn-primary btn-sign-passkey" data-action-label="expediente #{{ d.id }}">
+                                🔐 Canalizar a administrador
                             </button>
+                            <div class="sign-status"></div>
                         </form>
-                    {% endif %}
 
-                    {% if role == "coordinador" and d.estado == "en_revision_coordinacion" %}
-                        <form method="POST" action="/solicitar-eliminacion/{{ d.id }}">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <input type="text" name="motivo" placeholder="Motivo de eliminacion" required style="margin-bottom: 8px;">
-                            <div class="sign-status" style="font-size: 13px; margin-bottom: 8px; color: #4b5563;"></div>
-                            <button type="button" class="btn-sign-passkey" data-action-label="expediente #{{ d.id }}" style="width: 100%;">
-                                🔐 Solicitar eliminacion
-                            </button>
-                        </form>
+                        <button type="button" class="btn btn-danger btn-open-modal" data-modal="delete-modal-{{ d.id }}">
+                            🗑️ Solicitar eliminación
+                        </button>
+
+                        <div class="modal-overlay" id="delete-modal-{{ d.id }}" hidden>
+                            <div class="modal">
+                                <h4>Solicitar eliminación del expediente #{{ d.id }}</h4>
+                                <form method="POST" action="/solicitar-eliminacion/{{ d.id }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <label for="motivo-{{ d.id }}">Motivo de la solicitud</label>
+                                    <textarea id="motivo-{{ d.id }}" name="motivo" required>Ej. Expediente duplicado: la información de este beneficiario ya fue registrada bajo el expediente #___ y debe eliminarse para evitar inconsistencias en el seguimiento.</textarea>
+                                    <div class="sign-status"></div>
+                                    <div class="modal-actions">
+                                        <button type="button" class="btn btn-secondary btn-close-modal" data-modal="delete-modal-{{ d.id }}">Cancelar</button>
+                                        <button type="button" class="btn btn-danger btn-sign-passkey" data-action-label="expediente #{{ d.id }}">
+                                            🔐 Confirmar solicitud
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
                     {% endif %}
 
                     {% if role == "admin" and d.estado == "validado_coordinacion" %}
@@ -166,6 +273,42 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!success) {
                 this.disabled = false;
             }
+        });
+    });
+});
+
+// Apertura/cierre del modal de solicitud de eliminacion
+document.addEventListener('DOMContentLoaded', function() {
+    function openModal(modal) {
+        modal.hidden = false;
+        const textarea = modal.querySelector('textarea');
+        if (textarea) {
+            textarea.focus();
+            textarea.select();
+        }
+    }
+
+    function closeModal(modal) {
+        modal.hidden = true;
+    }
+
+    document.querySelectorAll('.btn-open-modal').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const modal = document.getElementById(this.dataset.modal);
+            if (modal) openModal(modal);
+        });
+    });
+
+    document.querySelectorAll('.btn-close-modal').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const modal = document.getElementById(this.dataset.modal);
+            if (modal) closeModal(modal);
+        });
+    });
+
+    document.querySelectorAll('.modal-overlay').forEach(overlay => {
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closeModal(overlay);
         });
     });
 });

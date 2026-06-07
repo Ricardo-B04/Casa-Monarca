@@ -3,28 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <title>Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
         body {
             margin: 0;
             font-family: "Segoe UI", sans-serif;
             background: #f4f5f8;
             color: #222;
-        }
-
-        .top {
-            background: #F16622;
-            color: white;
-            padding: 16px 26px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .top a {
-            color: white;
-            text-decoration: none;
-            margin-left: 14px;
-            font-size: 14px;
         }
 
         .wrap {
@@ -108,19 +93,24 @@
 </head>
 <body>
     <div class="top">
-        <div> <strong>Casa Monarca | Rol:{{ role }}</strong></div>
+        <div>Casa Monarca | Dashboard</div>
         <div>
-            
+
+            {% if role_key in ("admin", "coordinador") %}
             <a href="/admin">Panel Admin</a>
             <a href="/admin/identidades">Identidades</a>
             <a href="/admin/pki">Centro PKI</a>
+            <a href="/admin/cifrado">Cifrado</a>
+            {% endif %}
             <a href="/dashboard">Dashboard</a>
+            {% if role_key in ("admin", "coordinador") %}
             <a href="/usuarios">Usuarios</a>
-            <a href="/logs">Bitacora</a>
+            <a href="/logs">Bitácora</a>
+            {% endif %}
             <a href="/bandeja">Bandeja</a>
             <a href="/survey">Nuevo Registro</a>
             <a href="/profile">Mi Perfil</a>
-            <a href="/logout">Cerrar sesion</a>
+            <a href="/logout">Cerrar sesión</a>
         </div>
     </div>
 
@@ -151,17 +141,17 @@
                 <div class="value">{{ pendientes|length }}</div>
             </div>
             <div class="card">
-                <div class="label">Canalizacion</div>
+                <div class="label">Canalización</div>
                 <div>Usuario -> Operativo -> Coordinador -> Admin</div>
             </div>
             <div class="card">
                 <div class="label">Seguridad</div>
-                <div>Contrasenas hasheadas y opcion de certificado para roles criticos.</div>
+                <div>Contraseñas hasheadas y opción de certificado para roles críticos.</div>
             </div>
         </div>
 
         <div class="list">
-            <h3 style="margin-top:0;">Ultimos registros en tu bandeja</h3>
+            <h3 style="margin-top:0;">Últimos registros en tu bandeja</h3>
             {% if pendientes %}
                 {% for p in pendientes[:8] %}
                     <div class="row">Expediente #{{ p['id'] }} | Estado: {{ p['estado'] }} | {{ p['created_at'] }}</div>

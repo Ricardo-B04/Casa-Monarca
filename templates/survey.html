@@ -3,25 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <title>Nuevo registro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
         body {
             margin: 0;
             font-family: "Segoe UI", sans-serif;
             background: #f6f7fb;
-        }
-
-        .top {
-            background: #F16622;
-            color: white;
-            padding: 14px 22px;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .top a {
-            color: white;
-            text-decoration: none;
-            margin-left: 10px;
         }
 
         .container {
@@ -102,16 +89,21 @@
     <div class="top">
         <div>Casa Monarca | Nuevo expediente</div>
         <div>
+            {% if session.role in ("admin", "coordinador") %}
             <a href="/admin">Panel Admin</a>
             <a href="/admin/identidades">Identidades</a>
             <a href="/admin/pki">Centro PKI</a>
+            <a href="/admin/cifrado">Cifrado</a>
+            {% endif %}
             <a href="/dashboard">Dashboard</a>
+            {% if session.role in ("admin", "coordinador") %}
             <a href="/usuarios">Usuarios</a>
-            <a href="/logs">Bitacora</a>
+            <a href="/logs">Bitácora</a>
+            {% endif %}
             <a href="/bandeja">Bandeja</a>
             <a href="/survey">Nuevo Registro</a>
             <a href="/profile">Mi Perfil</a>
-            <a href="/logout">Cerrar sesion</a>
+            <a href="/logout">Cerrar sesión</a>
         </div>
     </div>
 
