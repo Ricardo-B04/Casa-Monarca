@@ -21,7 +21,7 @@
             <a href="/bandeja">Bandeja</a>
             <a href="/survey">Nuevo Registro</a>
             <a href="/profile">Mi Perfil</a>
-            <a href="/logout">Cerrar sesión</a>
+            <a href="/logout">Cerrar Sesión</a>
         </div>
     </div>
 
@@ -418,6 +418,15 @@
                 });
             });
             recent.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+            const formatActiveKeyInfo = (raw) => {
+                if (!raw) return '-';
+                try {
+                    const parsed = JSON.parse(raw);
+                    return parsed.fingerprint_short || parsed.fingerprint || '-';
+                } catch (err) {
+                    return raw;
+                }
+            };
             if (!recent.length) {
                 metricsRecentBody.innerHTML = '<tr><td colspan="6" style="padding:8px;">Sin métricas registradas.</td></tr>';
             } else {
@@ -426,7 +435,7 @@
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.op}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.user || '-'}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">${item.action_detail || '-'}</td>
-                        <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace; font-size:11px;">${item.active_key_info || '-'}</td>
+                        <td style="border-bottom:1px solid #eef2f7; padding:8px; font-family:monospace; font-size:11px;">${formatActiveKeyInfo(item.active_key_info)}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;">${Number(item.duration_ms || 0).toFixed(3)}</td>
                         <td style="border-bottom:1px solid #eef2f7; padding:8px;"><small>${item.timestamp}</small></td>
                     </tr>
