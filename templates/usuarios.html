@@ -301,7 +301,7 @@
                 <!-- CREAR USUARIO FORMULARIO -->
                 <div class="box" style="margin-top: var(--spacing-lg);">
                     <h2>Crear Nuevo Usuario</h2>
-                    <form method="POST" enctype="multipart/form-data">
+                    <form id="createUserForm" method="POST" enctype="multipart/form-data">
                         <input type="hidden" name="csrf_token" value="{{ session.get('csrf_token', '') }}">
 
                         <!-- RUTA RÁPIDA: Datos básicos -->
@@ -497,7 +497,7 @@
             const signBtn = document.getElementById('signCreateUserBtn');
             const statusNode = document.getElementById('createUserStatus');
             const submitBtn = document.getElementById('submitUserFormBtn');
-            const form = document.querySelector('form');
+            const form = document.getElementById('createUserForm');
             const rolSelect = document.getElementById('rol-select');
             
             if (signBtn && rolSelect) {
