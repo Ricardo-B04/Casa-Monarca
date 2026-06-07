@@ -36,9 +36,9 @@
     {% if datos %}
         {% for d in datos %}
             <div class="card">
-                <h3 style="margin:0 0 8px;">Expediente #{{ d.id }} - {{ d.nombre }} {{ d.apellido_paterno }}</h3>
+                <h3 style="margin:0 0 8px;">Expediente #{{ d.id }} - {{ d.nombre_pila }} {{ d.primer_apellido }}</h3>
                 <div class="meta">Creado por: {{ d.creado_por }} | Estado: {{ d.estado }}</div>
-                <div class="meta">Pais: {{ d.pais }} | Edad: {{ d.edad }} | Estancia: {{ d.tiempo_estancia }} meses</div>
+                <div class="meta">Pais: {{ d.pais_origen }} | Edad: {{ d.edad }} | Departamento/Estado: {{ d.departamento_estado }}</div>
                 <div class="meta">Actualizado: {{ d.updated_at }}</div>
 
                 <div class="actions">
