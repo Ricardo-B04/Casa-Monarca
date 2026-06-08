@@ -1412,8 +1412,8 @@ def bootstrap_dev_certificates():
             continue
 
         # Preserve existing passkeys: if the user already has active passkeys,
-        # do not delete them and do not force reenrollment on bootstrap.
-        c.execute("DELETE FROM certificados WHERE username=?", (username,))
+        # do not delete them (or their derived certificates) and do not force
+        # reenrollment on bootstrap.
         c.execute(
             "SELECT COUNT(1) as cnt FROM passkey_credentials WHERE username=? AND status='activo'",
             (username,),
@@ -1422,6 +1422,7 @@ def bootstrap_dev_certificates():
         has_passkeys = (cnt_row and cnt_row[0])
         if not has_passkeys:
             # No existing passkeys: ensure clean state and require enrollment
+            c.execute("DELETE FROM certificados WHERE username=?", (username,))
             c.execute("DELETE FROM passkey_credentials WHERE username=?", (username,))
             c.execute(
                 """
