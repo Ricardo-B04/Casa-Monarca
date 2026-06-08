@@ -1412,8 +1412,8 @@ def bootstrap_dev_certificates():
             continue
 
         # Preserve existing passkeys: if the user already has active passkeys,
-        # do not delete them and do not force reenrollment on bootstrap.
-        c.execute("DELETE FROM certificados WHERE username=?", (username,))
+        # do not delete them (or their derived certificates) and do not force
+        # reenrollment on bootstrap.
         c.execute(
             "SELECT COUNT(1) as cnt FROM passkey_credentials WHERE username=? AND status='activo'",
             (username,),
@@ -1422,6 +1422,7 @@ def bootstrap_dev_certificates():
         has_passkeys = (cnt_row and cnt_row[0])
         if not has_passkeys:
             # No existing passkeys: ensure clean state and require enrollment
+            c.execute("DELETE FROM certificados WHERE username=?", (username,))
             c.execute("DELETE FROM passkey_credentials WHERE username=?", (username,))
             c.execute(
                 """
@@ -4971,8 +4972,11 @@ def admin_cifrado_jobs():
 
 @app.route("/eliminar-usuario/<int:user_id>", methods=["POST"])
 def eliminar_usuario(user_id):
-    if not require_role("admin"):
+    if not require_login():
         return redirect("/")
+    if not require_role("admin"):
+        flash("No tienes permisos para eliminar usuarios. Esta acción solo está disponible para administradores.")
+        return redirect(role_home(session.get("role")))
 
     conn = get_conn()
     c = conn.cursor()
@@ -4993,6 +4997,13 @@ def eliminar_usuario(user_id):
         conn.close()
         flash("No puedes eliminar esta cuenta")
         return redirect("/usuarios")
+
+    # Limpiar artefactos PKI/passkey huérfanos: al eliminar la cuenta, sus
+    # certificados (incluyendo los "pendientes" generados al crearla) y
+    # passkeys ya no corresponden a ningún usuario y no deben seguir
+    # apareciendo en el inventario de certificados ni como revocables.
+    c.execute("DELETE FROM passkey_credentials WHERE username=?", (target["username"],))
+    c.execute("DELETE FROM certificados WHERE username=?", (target["username"],))
 
     c.execute("DELETE FROM usuarios WHERE id=?", (user_id,))
     conn.commit()
@@ -5061,8 +5072,11 @@ def logs():
 
 @app.route("/logs/clear", methods=["POST"])
 def clear_logs():
-    if not require_role("admin"):
+    if not require_login():
         return redirect("/")
+    if not require_role("admin"):
+        flash("No tienes permisos para limpiar la bitácora. Esta acción solo está disponible para administradores.")
+        return redirect(role_home(session.get("role")))
 
     conn = get_conn()
     c = conn.cursor()

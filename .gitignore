@@ -58,6 +58,11 @@ certs/ca_cert.pem
 certs/ca_key.pem
 certs/*.pem
 
+# Encryption key material (Fernet master key + rotated keys) - never commit
+key.key
+keys/
+*.key
+
 # Temporary files
 /tmp/
 *.tmp
