@@ -103,6 +103,7 @@
     </style>
 </head>
 <body>
+    <input type="hidden" id="csrf-token" value="{{ session['csrf_token'] }}">
     <div class="top">
         <div>Casa Monarca | Centro de Control PKI</div>
         <div>
@@ -247,7 +248,10 @@
             
             fetch('/admin/pki/revoke-passkey', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.getElementById('csrf-token').value
+                },
                 body: JSON.stringify({
                     passkey_id: passkeyId,
                     reason: 'admin_revocation'
@@ -272,7 +276,10 @@
             
             fetch('/admin/pki/revoke-certificate', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': document.getElementById('csrf-token').value
+                },
                 body: JSON.stringify({
                     cert_id: certId,
                     reason: 'admin_revocation'
