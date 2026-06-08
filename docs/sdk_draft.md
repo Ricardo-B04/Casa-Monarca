@@ -1,6349 +1,1143 @@
-# SDK / Interfaz para Desarrolladores (Borrador)
+# Casa Monarca — Documentación Técnica
+
+> Documento de referencia técnica del backend de Casa Monarca, una aplicación Flask de gestión de
+> expedientes ("encuestas") para una organización de atención humanitaria a personas migrantes.
+> Esta versión del documento describe **el estado real del repositorio** (single-file backend en
+> `app.py`, ~5 600 líneas) en su versión cercana a la final, y sustituye una versión previa del
+> borrador que describía una arquitectura genérica/idealizada que no correspondía al código.
+
+---
+
+## Índice
+
+1. [Descripción General](#descripción-general)
+2. [Arquitectura del Sistema](#arquitectura-del-sistema)
+3. [Stack Tecnológico](#stack-tecnológico)
+4. [Estructura del Proyecto](#estructura-del-proyecto)
+5. [Configuración del Entorno](#configuración-del-entorno)
+6. [Instalación y Ejecución](#instalación-y-ejecución)
+7. [Base de Datos](#base-de-datos)
+8. [Rutas HTTP (interfaz web)](#rutas-http-interfaz-web)
+9. [Flujos y Lógica de Negocio](#flujos-y-lógica-de-negocio)
+10. [Seguridad: Cifrado, PKI y Passkeys en detalle](#seguridad-cifrado-pki-y-passkeys-en-detalle)
+11. [Auditoría, CSRF y Manejo de Errores](#auditoría-csrf-y-manejo-de-errores)
+12. [Pruebas](#pruebas)
+13. [Despliegue y Mantenimiento](#despliegue-y-mantenimiento)
+14. [Preguntas Frecuentes (FAQ)](#preguntas-frecuentes-faq)
+15. [Q&A de Estudio — Criptografía y Ciberseguridad](#qa-de-estudio--criptografía-y-ciberseguridad)
+
+---
 
 ## Descripción General
 
-### Propósito del sistema
+Casa Monarca es una aplicación web **Flask server-side renderizada** (HTML + Jinja2, sin API
+JSON/REST) que digitaliza el levantamiento y seguimiento de **expedientes** (tabla `encuestas`,
+también llamados "encuestas" en el código y la UI) de personas atendidas. Los expedientes pasan
+por un flujo de revisión escalonado entre cuatro roles operativos.
 
-Casa Monarca es un **gestor centralizado de expedientes** que proporciona:
+### Roles (`ROLE_LABELS` / `PERMISSIONS`, `app.py:108-116` y `app.py:692`)
 
-1. **Gestión de identidad y acceso:**
-   - Autenticación con contraseña (hasheada y salada).
-   - Autenticación reforzada (challenge-response + certificados X.509) para roles críticos (admin, coordinador).
-   - Control de acceso basado en roles (RBAC): usuario, operativo, coordinador, admin.
+| Rol | Etiqueta | Permisos (`PERMISSIONS`) |
+|---|---|---|
+| `usuario` | Usuario | `create` |
+| `operativo` | Operativo | `create`, `read` |
+| `coordinador` | Coordinador | `create`, `read`, `update` |
+| `admin` | Administrador | `create`, `read`, `update`, `delete` |
 
-2. **Gestión de expedientes:**
-   - Ciclo de vida de expedientes: borrador → en revisión → validado → cerrado.
-   - Trazabilidad: cada cambio de estado es auditado y registrado.
-   - Permisos granulares: cada rol puede realizar acciones específicas en diferentes estados.
+`has_permission(action)` (`app.py:700`) consulta este diccionario contra el rol en sesión;
+`require_role(*roles)` (`app.py:3150`) es el decorador usado para restringir rutas completas.
 
-3. **Auditoría y cumplimiento:**
-   - Bitácora completa de eventos (login, creaciones, canalizaciones, revocaciones).
-   - Trazabilidad de acciones críticas con certificados digitales.
-   - Backup/restore cifrado para recuperación ante desastres.
+### Ciclo de vida del expediente
 
-### Alcance
-
-**¿Qué hace?**
-- ✅ Gestión de usuarios con roles diferenciados.
-- ✅ Flujo de expedientes con validaciones por nivel.
-- ✅ Login seguro con challenge-response.
-- ✅ Emisión, validación y revocación de certificados X.509.
-- ✅ Auditoría completa mediante bitácora de eventos.
-- ✅ Backup/restore cifrado (AES-256).
-- ✅ API REST para integración (endpoints de expedientes, usuarios, certificados).
-
-**¿Qué límites tiene?**
-- ❌ No integra LDAP/AD (SSO). Usuarios creados localmente en base de datos.
-- ❌ No tiene HSM (hardware security module). CA almacenada en filesystem.
-- ❌ No soporta despliegue horizontal con sincronización de estado (SQL simplemente local).
-- ❌ No tiene dashboard de reportes avanzados (bitácora básica solamente).
-- ❌ No soporta delegación de firmas (solo admin/coordinador pueden firmar).
-- ❌ No tiene 2FA por SMS/Email (solo certificados para roles críticos).
-
-### Casos de uso principales
-
-#### 1. **Flujo operativo básico: Usuario crea y canaliza expediente**
+`next_status_for_role()` (`app.py:3433`) define la máquina de estados que gobierna el botón
+"Avanzar" de cada expediente:
 
 ```
-Usuario inicia sesión → Crea expediente (borrador) → Canaliza a Operativo
-  ↓
-Operativo revisa → Canaliza a Coordinador
-  ↓
-Coordinador valida (con certificado + firma) → Canaliza a Admin
-  ↓
-Admin cierra (con certificado + firma) → Expediente cerrado
+borrador → en_revision_operativa → en_revision_coordinacion → validado_coordinacion → cerrado
 ```
 
-#### 2. **Crear usuario Admin (requiere certificado)**
+Cada transición sólo la puede ejecutar el rol al que le corresponde revisar ese estado (operativo,
+luego coordinador, luego admin), reforzando la separación de funciones.
 
-```
-Admin existente autenticado (con certificado + firma)
-  ↓
-Navega a "Crear usuario" → Completa formulario + firma su acción
-  ↓
-Sistema verifica firma y crea nuevo usuario
-  ↓
-Nuevo usuario debe cambiar contraseña e generar su certificado
-```
+### Lo que el sistema SÍ hace
 
-#### 3. **Setup de certificado (CSR recomendado)**
+- Autenticación con **Argon2id**, bloqueo por intentos fallidos (`login_lockouts`) y verificación
+  de contraseñas filtradas vía **HIBP** (k-anonimato, `check_password_pwned`, `app.py:1175`).
+- **Cifrado de campo** de los datos sensibles del expediente (columna `encuestas.datos`) con
+  **Fernet**, soportando **rotación de llaves** mediante un *keyring* con huellas SHA-256
+  (`encryption_keys`, `encryption_metrics`, `reencrypt_jobs`).
+- **PKI X.509** con una CA de desarrollo autofirmada (`certs/ca_cert.pem` / `ca_key.pem`),
+  emisión/activación/revocación de certificados de usuario y verificación por
+  **reto-respuesta** (challenge-response) firmada con RSA-PKCS#1 v1.5 + SHA-256.
+- **WebAuthn / Passkeys** (librería `webauthn==2.3.0`) para registro/login sin contraseña y para
+  firmar acciones críticas (`/action/passkey/*`), con derivación automática de un certificado
+  X.509 a partir de la primera passkey registrada (arquitectura **N:1**: varias passkeys → un
+  certificado por usuario).
+- Protección **CSRF** global por sesión, *cookies* con `HttpOnly`/`Secure`/`SameSite`.
+- **Bitácora de auditoría** (`logs`) con categorías (`operacion` / `seguridad`) para cada acción
+  relevante.
+- Flujo **ARCO multinivel** (Acceso, Rectificación, Cancelación, Oposición) para solicitudes de
+  derechos de datos, con aprobación en cascada usuarios → operativos → coordinadores → (resuelto
+  o reenviado a admin).
+- **Respaldo cifrado** de la base de datos con Fernet (`tools/backup_db.py` / `restore_db.py`).
 
-```
-Usuario genera clave privada local (2048 RSA)
-  ↓
-Genera CSR (Certificate Signing Request) con su clave
-  ↓
-Carga CSR en /certificado/setup
-  ↓
-Servidor valida y firma el CSR
-  ↓
-Usuario descarga certificado y puede usar para login
-```
+### Lo que el sistema NO incluye (a diferencia de borradores anteriores de este documento)
 
-#### 4. **Integración con sistemas externos (API)**
-
-```
-Sistema externo autentica con credenciales
-  ↓
-Obtiene token de sesión de Casa Monarca
-  ↓
-Consulta expedientes via GET /expediente/<id>
-  ↓
-Canaliza expediente si tiene permisos: POST /expediente/<id>/canalizar
-  ↓
-Acciones quedan auditadas en bitácora
-```
+- No hay API JSON/REST: todas las rutas devuelven HTML renderizado por Jinja2 (`render_template`)
+  o redirecciones; no existe `database.py`, ni endpoints como `GET /login` devolviendo JSON.
+- No usa PostgreSQL, Docker, Gunicorn, Redis, `flask-talisman` ni pipelines de CI/CD: es una app
+  **single-file** sobre **SQLite** pensada para ejecutarse con `python app.py` (servidor de
+  desarrollo de Flask / WSGI simple).
+- No hay segundo factor por SMS/correo; el refuerzo de identidad para roles críticos
+  (`admin`, `coordinador`) es exclusivamente certificados X.509 + passkeys WebAuthn.
+- No hay HSM ni custodia externa de llaves: el material criptográfico vive en archivos locales
+  (`key.key`, `certs/`, `keys/`), todos excluidos de git vía `.gitignore`.
 
 ---
 
 ## Arquitectura del Sistema
 
-### Tipo de arquitectura
-
-Casa Monarca utiliza una **arquitectura en capas (Layered Architecture)** con patrón **MVC (Model-View-Controller)** adaptado para Flask:
-
-- **Capa de presentación:** templates HTML (Jinja2) + CSS estático.
-- **Capa de lógica de negocio:** rutas Flask (app.py) con validación de roles y permisos.
-- **Capa de persistencia:** SQLite con esquema en `database.py`.
-- **Capa de seguridad:** módulo PKI interno para certificados, validación de firmas.
-
-### Componentes principales
+### Vista de componentes
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        CLIENTE (Navegador)                       │
-│                    templates/ (HTML + CSS)                       │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP/HTTPS
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       SERVIDOR FLASK (app.py)                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              Rutas y Controladores Flask                │   │
-│  │  ├─ /login           → Autenticación                     │   │
-│  │  ├─ /dashboard       → Panel de expedientes            │   │
-│  │  ├─ /expediente/*    → Gestión de expedientes          │   │
-│  │  ├─ /admin/*         → Gestión de usuarios (admin)     │   │
-│  │  ├─ /certificado/*   → Setup y gestión de certs        │   │
-│  │  └─ /bitacora        → Visualización de eventos        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                             │                                    │
-│              ┌──────────────┼──────────────┐                    │
-│              ▼              ▼              ▼                    │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
-│  │  Validación  │ │    RBAC      │ │  Verificación│            │
-│  │  de entrada  │ │  (roles/      │ │   de firma  │            │
-│  │              │ │   permisos)   │ │ (certificados)           │
-│  └──────────────┘ └──────────────┘ └──────────────┘            │
-│              │              │              │                    │
-└──────────────┼──────────────┼──────────────┼────────────────────┘
-               │              │              │
-               ▼              ▼              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                 MÓDULO DE DATOS (database.py)                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  Tablas SQLite:                                                  │
-│  ├─ usuarios        (id, username, password_hash, role, ...)   │
-│  ├─ expedientes     (id, user_id, titulo, estado, ...)         │
-│  ├─ certificados    (id, user_id, cert_pem, huella, ...)       │
-│  ├─ bitacora        (id, usuario, accion, timestamp, ...)      │
-│  └─ login_attempts  (id, username, intentos, locked_until)     │
-│                                                                   │
-└────────┬────────────────────────────────────────────────────────┘
-         │
-         ▼
-    database.db (SQLite local)
+┌─────────────┐      HTTP (HTML/Jinja2)      ┌────────────────────────────────────┐
+│  Navegador   │ ───────────────────────────▶ │              app.py                │
+│ (cliente web)│ ◀─────────────────────────── │  (Flask, ~5 600 líneas, 40 rutas)  │
+└─────────────┘                              │                                    │
+                                              │  ┌──────────────┐  ┌────────────┐ │
+                                              │  │ RBAC / CSRF  │  │  Auditoría │ │
+                                              │  │ has_permission│  │ log() →    │ │
+                                              │  │ require_role │  │  tabla logs│ │
+                                              │  └──────────────┘  └────────────┘ │
+                                              │  ┌──────────────┐  ┌────────────┐ │
+                                              │  │  Cifrado     │  │  PKI X.509 │ │
+                                              │  │  Fernet      │  │  CA local  │ │
+                                              │  │  keyring     │  │  certs/    │ │
+                                              │  └──────────────┘  └────────────┘ │
+                                              │  ┌──────────────┐                 │
+                                              │  │  WebAuthn /  │                 │
+                                              │  │  Passkeys    │                 │
+                                              │  └──────────────┘                 │
+                                              └─────────────────┬──────────────────┘
+                                                                │ sqlite3 (get_conn)
+                                                       ┌────────▼────────┐
+                                                       │  database.db     │
+                                                       │  (SQLite, 11     │
+                                                       │   tablas)        │
+                                                       └──────────────────┘
+                          ┌──────────────────────────────────────────────┐
+                          │ tools/  (procesos auxiliares fuera del request)│
+                          │  - backup_db.py / restore_db.py (Fernet)       │
+                          │  - reencrypt_worker.py (consume reencrypt_jobs)│
+                          └──────────────────────────────────────────────┘
 ```
 
-### Módulo PKI (Seguridad)
+### Archivo único, sin capa de modelos
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    MÓDULO PKI INTERNO (app.py)                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  CA Local                                                        │
-│  ├─ ca_cert.pem   (certificado de la CA)                        │
-│  └─ ca_key.pem    (clave privada de la CA)                      │
-│                                                                   │
-│  Flujo de emisión:                                              │
-│  1. Usuario solicita certificado en /certificado/setup          │
-│  2. Sistema recibe CSR o genera uno                             │
-│  3. CA firma y genera certificado X.509                         │
-│  4. Certificado se almacena en BD con huella                    │
-│                                                                   │
-│  Flujo de validación (login):                                   │
-│  1. Usuario envía certificado + firma del challenge             │
-│  2. Sistema verifica firma de CA                                │
-│  3. Verifica vigencia y huella                                  │
-│  4. Verifica que certificate.CN == username                     │
-│  5. Comprueba que no esté revocado                              │
-│  → Si todo OK: autenticación exitosa                            │
-│                                                                   │
-│  Flujo de revocación:                                           │
-│  1. Admin revoca certificado con motivo obligatorio             │
-│  2. Certificado marcado como revocado en BD                     │
-│  3. Evento registrado en bitácora                               │
-│  4. Usuario debe generar nuevo certificado                      │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+A diferencia de un proyecto típico con `models.py`/`routes/`/`services/`, **todo** vive en
+`app.py`: definición de rutas (`@app.route`), acceso a datos (consultas `sqlite3` crudas vía
+`get_conn()`), helpers criptográficos, lógica de PKI/passkeys, reglas de negocio del flujo de
+expedientes y de ARCO. La forma más rápida de orientarse es buscar `@app.route` y los `def`
+de nivel superior. `config.py` centraliza la configuración (`DevelopmentConfig` /
+`ProductionConfig` / `TestingConfig`, seleccionada vía `FLASK_ENV`).
 
-### Flujo general de solicitud autenticada
+### Inicialización (`init_db`, `app.py:~301-689`)
 
-```
-1. CLIENTE                          2. SERVIDOR
-   ├─ GET /login                    └─ Genera UUID challenge
-   │
-   ├─ Copia challenge               
-   ├─ Construye payload             
-   │  CasaMonarca|login|usuario|{challenge}
-   │
-   ├─ Firma payload con clave privada
-   │  openssl dgst -sha256 -sign private.key
-   │
-   ├─ POST /login                   3. SERVIDOR
-   │  ├─ username                   ├─ Obtiene usuario de BD
-   │  ├─ password                   ├─ Verifica hash de password
-   │  ├─ challenge                  ├─ Verifica firma
-   │  ├─ signature_b64              ├─ Verifica certificado
-   │  └─ certificate.pem            ├─ Revisa si no está revocado
-   │                                ├─ Crea sesión
-   │                                └─ Retorna 200 OK
-   │
-   └─ Sesión activa                 4. Solicitudes posteriores
-      └─ Cookies de sesión usadas  └─ RBAC verifica permisos
-         para futuras requests        por rol en cada endpoint
-```
+Al arrancar, `init_db()` crea las tablas si no existen y usa `ensure_column(conn, tabla, columna,
+definición)` para añadir columnas nuevas de forma idempotente sobre bases de datos ya existentes
+— el patrón establecido para evolucionar el esquema sin migraciones destructivas (usado
+intensivamente para la migración a ARCO multinivel, cifrado con rotación, PKI y passkeys).
+`create_default_accounts()` siembra cuentas por defecto (`admin_prod`, `admin_cont`,
+`coord_admin`, `operativo_1`, `usuario_1`) y `bootstrap_dev_certificates()` genera la CA y
+certificados de desarrollo si faltan.
 
 ---
 
 ## Stack Tecnológico
 
-### Lenguajes
+Tomado directamente de `requirements.txt`:
 
-| Lenguaje | Propósito | Versión |
-|----------|-----------|---------|
-| **Python** | Backend, lógica de negocio, scripts | 3.10+ (recomendado 3.11) |
-| **HTML5** | Templates de presentación (Jinja2) | HTML5 estándar |
-| **CSS3** | Estilos y diseño responsive | CSS3 estándar |
-| **JavaScript** | Interactividad en cliente (opcional) | ES6+ |
-| **SQL** | Consultas a base de datos SQLite | SQLite dialect |
-| **Bash/Shell** | Scripts de administración, backup | zsh/bash |
-| **OpenSSL** | Generación y manejo de certificados | 1.1.1+ |
+| Paquete | Versión | Uso |
+|---|---|---|
+| `Flask` | 2.3.3 | Framework web, enrutamiento, sesiones, `render_template` |
+| `Werkzeug` | 2.3.7 | WSGI subyacente de Flask |
+| `Jinja2` | 3.1.2 | Motor de plantillas HTML server-side |
+| `cryptography` | `>=43.0.3,<46` | Fernet, X.509, RSA, padding PKCS1v15, hashes SHA-256 |
+| `argon2-cffi` | 23.1.0 | Hashing de contraseñas Argon2id |
+| `webauthn` | 2.3.0 | Ceremonias WebAuthn (registro/autenticación de passkeys) |
+| `requests` | 2.31.0 | Llamadas HTTP salientes (auxiliar) |
+| `pytest` / `pytest-cov` | 7.4.3 / 4.1.0 | Suite de pruebas |
 
-### Frameworks y librerías Python
+Base de datos: **SQLite** (`database.db`, gitignored), accedida con el módulo estándar `sqlite3`
+mediante `get_conn()` y `row_factory` para obtener filas tipo diccionario.
 
-#### Core
-
-| Librería | Propósito | Versión |
-|----------|-----------|---------|
-| **Flask** | Framework web micro | 2.0+ |
-| **Werkzeug** | Utilidades HTTP y hashing de contraseñas | 2.0+ (incluido en Flask) |
-| **Jinja2** | Motor de templates HTML | 3.0+ (incluido en Flask) |
-
-#### Seguridad y criptografía
-
-| Librería | Propósito | Versión |
-|----------|-----------|---------|
-| **cryptography** | Cifrado AES-256, manejo de certificados X.509 | 3.0+ |
-| **cryptography.hazmat.primitives.hashes** | Funciones hash (SHA-256) | (incluido en cryptography) |
-| **cryptography.hazmat.primitives.asymmetric** | RSA, firma digital | (incluido en cryptography) |
-| **cryptography.x509** | Generación y validación de certificados X.509 | (incluido en cryptography) |
-
-#### Testing (opcional, para desarrollo)
-
-| Librería | Propósito | Versión |
-|----------|-----------|---------|
-| **pytest** | Framework de testing | 7.0+ |
-| **pytest-cov** | Cobertura de tests | 4.0+ |
-
-#### Base de datos
-
-| Librería | Propósito | Versión |
-|----------|-----------|---------|
-| **sqlite3** | Driver SQLite (librería estándar Python) | - |
-
-### Arquitectura de herramientas
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                    ENTORNO DE DESARROLLO                        │
-├────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Sistema operativo: macOS, Linux, Windows                       │
-│  Python 3.10+ (virtualenv recomendado)                          │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────┐      │
-│  │ Dependencias principales (requirements)              │      │
-│  ├──────────────────────────────────────────────────────┤      │
-│  │ - Flask==2.3.x                                       │      │
-│  │ - cryptography==41.x                                 │      │
-│  │ - Werkzeug==2.3.x (auto con Flask)                   │      │
-│  │ - pytest==7.x (desarrollo)                           │      │
-│  └──────────────────────────────────────────────────────┘      │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────┐      │
-│  │ Herramientas del sistema (no Python)                 │      │
-│  ├──────────────────────────────────────────────────────┤      │
-│  │ - OpenSSL 1.1.1+  (gestión de certs)                │      │
-│  │ - SQLite 3.x      (base de datos)                   │      │
-│  │ - Git             (control de versiones)            │      │
-│  └──────────────────────────────────────────────────────┘      │
-│                                                                  │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Flujo de dependencias
-
-```
-CLIENTE (Navegador)
-    ↓
-    ├─ HTML5 (templates Jinja2)
-    ├─ CSS3 (style.css)
-    └─ JavaScript (opcional, interactividad)
-    
-         HTTP/HTTPS
-            ↓
-            
-SERVIDOR FLASK (app.py)
-    ↓
-    ├─ Flask              ← Enrutamiento y sesiones
-    ├─ Werkzeug           ← Hashing de contraseñas
-    ├─ Jinja2             ← Rendering de templates
-    ├─ cryptography       ← Cifrado AES-256
-    │  ├─ cryptography.hazmat.primitives.hashes         ← SHA-256
-    │  ├─ cryptography.hazmat.primitives.asymmetric    ← Firma digital
-    │  └─ cryptography.x509                             ← Certificados X.509
-    └─ database.py        ← Lógica de datos
-         ↓
-         sqlite3           ← Driver SQLite
-         ↓
-         database.db       ← Base de datos
-
-HERRAMIENTAS EXTERNAS
-    ├─ openssl            ← Generación/validación de certificados
-    ├─ python generate_key.py    ← Script de generación de clave
-    ├─ python tools/backup_db.py   ← Backup cifrado
-    └─ python tools/restore_db.py  ← Restore
-```
-
-### Requisitos de instalación por entorno
-
-**Desarrollo local:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install flask cryptography werkzeug pytest
-```
-
-**Producción (mínimo):**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install flask cryptography
-```
-
-**Con todas las herramientas (desarrollo + testing):**
-```bash
-pip install flask cryptography werkzeug pytest pytest-cov
-```
-
-### Versiones recomendadas (requirements.txt)
-
-```
-Flask==2.3.3
-cryptography==41.0.7
-Werkzeug==2.3.7
-pytest==7.4.3
-pytest-cov==4.1.0
-```
+Requiere **Python 3.10+** (según `setup.sh`).
 
 ---
 
 ## Estructura del Proyecto
 
-### Organización de carpetas
-
 ```
-Intentoa2/                          # Raíz del proyecto
-│
-├── app.py                          # Aplicación principal Flask
-│                                   # - Rutas (endpoints)
-│                                   # - Lógica de negocio
-│                                   # - Gestión de sesiones
-│                                   # - Validación de roles (RBAC)
-│                                   # - Verificación de firmas
-│
-├── database.py                     # Módulo de datos
-│                                   # - Esquema SQLite
-│                                   # - Funciones de ORM local
-│                                   # - Inicialización de BD
-│
-├── generate_key.py                 # Script auxiliar
-│                                   # - Genera/regenera key.key (cifrado)
-│
-├── database.db                     # Base de datos SQLite (generado al iniciar)
-├── key.key                         # Clave de cifrado AES-256 (generado)
-│
-├── README.md                       # Documentación principal (resumida)
-├── LICENSE                         # Licencia MIT
-├── CONTRIBUTING.md                 # Guía de contribuciones
-├── DEVELOPERS.md                   # Datos de desarrolladores
-├── DOCUMENTATION_CHECKLIST.md      # Progreso de documentación
-│
-├── templates/                      # Vistas HTML (Jinja2)
-│   ├── login.html                  # Formulario de login + desafío
-│   ├── dashboard.html              # Panel principal de usuario
-│   ├── survey.html                 # Creación/edición de expediente
-│   ├── colaborador.html            # Panel para usuario operativo
-│   ├── admin.html                  # Panel para administrador
-│   ├── usuarios.html               # Gestión de usuarios (admin)
-│   ├── logs.html                   # Bitácora de eventos
-│   ├── password_update.html        # Cambio de contraseña
-│   └── cert_setup.html             # Setup de certificado
-│
-├── static/                         # Recursos estáticos
-│   └── style.css                   # Estilos CSS (diseño responsive)
-│
-├── certs/                          # Certificados X.509 (desarrollo)
-│   ├── ca_cert.pem                 # Certificado de la CA local
-│   ├── ca_key.pem                  # Clave privada de la CA
-│   ├── admin_prod.pem              # Certificado demo para admin_prod
-│   ├── admin_cont.pem              # Certificado demo para admin_cont
-│   └── coord_admin.pem             # Certificado demo para coord_admin
-│
-├── tools/                          # Scripts auxiliares
-│   ├── backup_db.py                # Genera backup cifrado de database.db
-│   └── restore_db.py               # Restaura backup cifrado
-│
-├── tests/                          # Tests automatizados
-│   └── test_password_security.py   # Tests de login lockout, hashing
-│
-├── docs/                           # Documentación de entrega (borradores)
-│   ├── user_manual_draft.md        # Manual de usuario (Markdown)
-│   ├── technical_report_draft.md   # Reporte técnico (Markdown)
-│   ├── executive_report_draft.md   # Reporte ejecutivo (Markdown)
-│   └── sdk_draft.md                # Este documento (SDK)
-│
-├── .venv/                          # Entorno virtual Python (no en git)
-├── .gitignore                      # Patrones ignorados por git
-├── __pycache__/                    # Cache de Python (no en git)
-└── TODO.txt                        # Lista de tareas pendientes
+casa-monarca-app/
+├── app.py                  # Backend completo: rutas, esquema DB, criptografía, reglas de negocio
+├── config.py               # DevelopmentConfig / ProductionConfig / TestingConfig
+├── generate_key.py         # Genera la llave Fernet maestra (key.key)
+├── requirements.txt
+├── setup.sh                # Script de instalación (crea .venv, .env, key.key, carpetas)
+├── .env.example            # Plantilla de variables de entorno
+├── .gitignore              # Excluye key.key, keys/, certs/*.pem, *.db, etc.
+├── templates/              # 14 plantillas Jinja2 (HTML)
+│   ├── login.html, dashboard.html, survey.html, admin.html
+│   ├── admin_cifrado.html, admin_identidades.html, admin_pki.html
+│   ├── arco.html, cert_setup.html, colaborador.html
+│   ├── logs.html, password_update.html, profile.html, usuarios.html
+├── static/                 # Activos estáticos (CSS/JS/imágenes)
+├── tools/
+│   ├── backup_db.py        # Respaldo cifrado de database.db con Fernet
+│   ├── restore_db.py       # Restauración desde respaldo cifrado
+│   └── reencrypt_worker.py # Procesa la cola reencrypt_jobs (rotación de llaves)
+├── tests/                  # Suite pytest (fixtures app_module con DB/certs/llaves aislados)
+├── certs/                  # CA local + certificados emitidos (gitignored salvo estructura)
+├── keys/                   # Material de llaves rotadas (gitignored)
+├── backups/                # Respaldos cifrados generados por tools/backup_db.py
+├── logs/                   # Logs de ejecución
+├── key.key                 # Llave Fernet activa (gitignored, generada por generate_key.py)
+└── database.db             # Base de datos SQLite (gitignored, creada al primer arranque)
 ```
 
-### Descripción de módulos principales
-
-#### `app.py` — Aplicación principal Flask
-
-**Responsabilidades:**
-- Inicializar aplicación Flask y configuración.
-- Definir rutas (endpoints) para login, dashboard, expedientes, usuarios, certificados, bitácora.
-- Implementar lógica de autenticación (password + challenge-response con certificados).
-- Validar roles y permisos (RBAC) en cada endpoint.
-- Gestionar sesiones de usuario.
-- Manejar generación y validación de certificados X.509.
-
-**Funciones clave:**
-- `init_app()` — Inicializa la aplicación con configuración.
-- `create_tables()` — Crea esquema de BD en primer arranque.
-- `verify_certificate()` — Valida certificado X.509 del usuario.
-- `verify_signature()` — Verifica firma digital (challenge-response).
-- `require_login()` — Decorador para rutas autenticadas.
-- `require_role(role)` — Decorador para validar rol requerido.
-- `log_event()` — Registra evento en bitácora.
-
-**Endpoints principales:**
-- `GET /login` — Obtener desafío y formulario de login.
-- `POST /login` — Autenticar con password + certificado + firma.
-- `GET /dashboard` — Panel del usuario (expedientes según rol).
-- `POST /expediente/crear` — Crear nuevo expediente.
-- `POST /expediente/<id>/canalizar` — Cambiar estado de expediente.
-- `GET /admin/usuarios` — Listar usuarios (admin only).
-- `POST /admin/crear_usuario` — Crear usuario con firma (admin only).
-- `GET /certificado/setup` — Pantalla de configuración de certificado.
-- `POST /certificado/generar` — Generar/firmar certificado.
-- `GET /bitacora` — Ver eventos auditados.
-- `POST /logout` — Cerrar sesión.
-
-#### `database.py` — Módulo de datos
-
-**Responsabilidades:**
-- Definir esquema SQLite (tablas, índices, constraints).
-- Proporcionar funciones para CRUD (Create, Read, Update, Delete).
-- Inicializar base de datos con datos de prueba.
-- Manejar transacciones e integridad de datos.
-
-**Tablas principales:**
-
-| Tabla | Propósito | Campos clave |
-|-------|-----------|______________|
-| `usuarios` | Almacenar cuentas | id, username, password_hash, role, must_change_password, created_at |
-| `expedientes` | Gestionar expedientes | id, user_id, titulo, descripcion, estado, created_at, updated_at |
-| `certificados` | Certificados X.509 emitidos | id, user_id, cert_pem, huella, estado, created_at, expires_at |
-| `bitacora` | Auditoría de eventos | id, username, accion, descripcion, timestamp, ip_address |
-| `login_attempts` | Rate-limiting | id, username, intentos, locked_until, ventana_inicio |
-
-**Funciones clave:**
-- `create_tables()` — Crea esquema al iniciar.
-- `add_user(username, password, role)` — Inserta usuario.
-- `get_user(username)` — Obtiene usuario por nombre.
-- `verify_password(user_id, password)` — Valida contraseña hasheada.
-- `create_expediente(user_id, titulo, descripcion)` — Crea expediente.
-- `update_expediente_estado(expediente_id, nuevo_estado)` — Cambia estado.
-- `add_certificate(user_id, cert_pem, huella)` — Almacena certificado.
-- `revoke_certificate(cert_id, razon)` — Revoca certificado.
-- `log_event(username, accion, descripcion)` — Registra evento.
-- `check_login_attempts(username)` — Verifica si usuario está bloqueado.
-
-#### `generate_key.py` — Generador de clave de cifrado
-
-**Responsabilidades:**
-- Generar clave AES-256 aleatoria para cifrado de backups.
-- Almacenar clave en `key.key` (solo lectura).
-- Permitir regeneración segura de clave.
-
-**Uso:**
-```bash
-python generate_key.py          # Genera key.key si no existe
-python generate_key.py --force  # Regenera (cuidado: invalida backups antiguos)
-```
-
-#### `tools/backup_db.py` — Backup cifrado
-
-**Responsabilidades:**
-- Crear respaldo cifrado de `database.db` usando `key.key`.
-- Usar AES-256 en modo CBC con IV aleatorio.
-- Generar archivo `.enc` con timestamp.
-- Almacenar en directorio `backups/`.
-
-**Uso:**
-```bash
-python tools/backup_db.py       # Genera backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-#### `tools/restore_db.py` — Restore de backup
-
-**Responsabilidades:**
-- Desencriptar backup `.enc` usando `key.key`.
-- Validar integridad de datos desencriptados.
-- Restaurar `database.db` (con opción de backup previo).
-- Permitir restauración selectiva si es necesario.
-
-**Uso:**
-```bash
-python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-#### `templates/` — Vistas HTML
-
-**Características comunes:**
-- Usa Jinja2 para renderizado dinámico.
-- Incluye token CSRF en formularios POST.
-- Responsive design (CSS Bootstrap o custom).
-- Validación cliente-lado + server-side.
-
-**Flujo de templates:**
-1. `login.html` → Usuario ingresa credenciales + firma desafío.
-2. `dashboard.html` → Panel con expedientes filtrados por rol.
-3. `survey.html` → Crear/editar expediente.
-4. `colaborador.html` → Vista específica para operativo.
-5. `admin.html` → Panel administrativo.
-6. `usuarios.html` → Gestión de usuarios (crear, eliminar, cambiar rol).
-7. `cert_setup.html` → Setup de certificado (CSR o legacy).
-8. `logs.html` → Bitácora de eventos (read-only).
-9. `password_update.html` → Cambio de contraseña obligatorio.
-
-#### `static/style.css` — Estilos
-
-**Características:**
-- Diseño responsive (mobile, tablet, desktop).
-- Colores y tipografía consistentes.
-- Validación visual de formularios.
-- Animaciones suaves (transiciones).
-- Accesibilidad (contraste, tamaños legibles).
-
-#### `tests/test_password_security.py` — Tests
-
-**Cobertura:**
-- Validación de hash de contraseña.
-- Login lockout (intentos fallidos).
-- Rate-limiting.
-- Expiración de bloqueo temporal.
-
-**Ejecución:**
-```bash
-PYTHONPATH=. pytest -v tests/
-```
+No existen `models.py`, `routes/`, `services/`, `Dockerfile`, `docker-compose.yml`,
+`.github/workflows/`, ni archivos `.env.development` / `.env.staging` / `.env.production`: la app
+usa un único `.env` (copiado de `.env.example` por `setup.sh`) y selecciona el comportamiento por
+ambiente con la variable `FLASK_ENV` y las clases en `config.py`.
 
 ---
 
 ## Configuración del Entorno
 
-### Requisitos (versiones)
-
-#### Sistema operativo
-
-| SO | Versión | Estado |
-|----|---------|--------|
-| macOS | 10.14+ | ✅ Soportado |
-| Linux (Ubuntu/Debian) | 18.04 LTS+ | ✅ Soportado |
-| Linux (RHEL/CentOS) | 8+ | ✅ Soportado |
-| Windows 10/11 | 21H2+ | ✅ Soportado (con WSL2 recomendado) |
-
-#### Runtime y compiladores
-
-| Componente | Versión mínima | Versión recomendada |
-|------------|-----------------|-------------------|
-| **Python** | 3.9 | 3.11 o 3.12 |
-| **pip** | 21.0 | 24.0+ |
-| **OpenSSL** | 1.1.1 | 3.x |
-| **SQLite** | 3.25 | 3.40+ |
-
-#### Dependencias Python (requirements.txt)
-
-```
-Flask==2.3.3
-cryptography==41.0.7
-Werkzeug==2.3.7
-Jinja2==3.1.2
-argon2-cffi==23.1.0
-requests==2.31.0
-pytest==7.4.3
-pytest-cov==4.1.0
-```
-
-**Instalación:**
-```bash
-# Crear entorno virtual
-python3 -m venv .venv
-
-# Activar (macOS/Linux)
-source .venv/bin/activate
-
-# Activar (Windows)
-.venv\Scripts\activate
-
-# Instalar dependencias
-pip install -r requirements.txt
-```
-
-**Verificación:**
-```bash
-# Verificar Python
-python --version           # Debe ser 3.9+
-
-# Verificar OpenSSL
-openssl version            # Debe ser 1.1.1+
-
-# Verificar SQLite
-sqlite3 --version          # Debe ser 3.25+
-
-# Verificar dependencias instaladas
-pip list | grep -E "(Flask|cryptography|pytest)"
-```
-
-### Variables de entorno
-
-#### Variables de desarrollo
-
-Se definen en un archivo `.env` local (NO incluir en git):
-
-```bash
-# Seguridad de aplicación
-SECRET_KEY=secreto_demo_muy_largo_y_aleatorio_para_desarrollo
-APP_SECRET_KEY=app_secret_key_alternativo
-ENABLE_SESSION_COOKIE_SECURE=0  # Desactivar HTTPS check en local
-
-# Configuración de sesión
-SESSION_COOKIE_SAMESITE=Lax      # Desarrollo: Lax; Producción: Strict
-SESSION_COOKIE_HTTPONLY=True
-SESSION_COOKIE_SECURE=False      # HTTPS solo en producción
-
-# Certificados (PKI local)
-CERT_CA_CERT_PATH=certs/ca_cert.pem
-CERT_CA_KEY_PATH=certs/ca_key.pem
-
-# Rate limiting (login)
-LOGIN_MAX_ATTEMPTS=5
-LOGIN_WINDOW_SECONDS=300         # 5 minutos
-LOGIN_LOCKOUT_SECONDS=900        # 15 minutos
-
-# Validación de contraseña
-PASSWORD_MIN_LENGTH=12
-
-# Challenge-response
-SIGNATURE_CHALLENGE_TTL_SECONDS=300  # 5 minutos
-
-# Logging
-FLASK_ENV=development
-FLASK_DEBUG=1
-LOG_LEVEL=DEBUG
-```
-
-#### Variables de producción
-
-```bash
-# Seguridad (CRÍTICO)
-SECRET_KEY=<generar-con-secrets.token_hex(32)>
-APP_SECRET_KEY=<generar-con-secrets.token_hex(32)>
-
-# Cookies (HTTPS obligatorio)
-SESSION_COOKIE_SECURE=1
-SESSION_COOKIE_HTTPONLY=1
-SESSION_COOKIE_SAMESITE=Strict
-
-# Certificados (PKI en servidor)
-CERT_CA_CERT_PATH=/etc/casa-monarca/certs/ca_cert.pem
-CERT_CA_KEY_PATH=/etc/casa-monarca/certs/ca_key.pem
-
-# Rate limiting más estricto
-LOGIN_MAX_ATTEMPTS=3
-LOGIN_WINDOW_SECONDS=300
-LOGIN_LOCKOUT_SECONDS=1800       # 30 minutos
-
-# Logging
-FLASK_ENV=production
-FLASK_DEBUG=0
-LOG_LEVEL=INFO
-```
-
-#### Configuración por entorno
-
-```bash
-# Cargar variables desde .env (desarrollo)
-export $(cat .env | xargs)
-python app.py
-
-# Con Flask CLI (desarrollo)
-FLASK_ENV=development flask run
-
-# Con Gunicorn (producción recomendado)
-gunicorn --workers 4 --bind 0.0.0.0:5000 app:app
-```
-
-### Archivos de configuración
-
-#### `.env.example` — Plantilla de variables
-
-Crear archivo `.env.example` (sí incluir en git) con todas las variables documentadas:
-
-```bash
-# Casa Monarca Configuration Template
-# Copy to .env and fill with appropriate values for your environment
-
-# === SECURITY ===
-# Generate with: python -c "import secrets; print(secrets.token_hex(32))"
-SECRET_KEY=your_secret_key_here_min_32_chars
-APP_SECRET_KEY=your_app_secret_key_here
-
-# === SESSION COOKIES ===
-# Desarrollo: 0; Producción: 1
-ENABLE_SESSION_COOKIE_SECURE=0
-SESSION_COOKIE_SAMESITE=Lax
-SESSION_COOKIE_HTTPONLY=True
-
-# === PKI / CERTIFICATES ===
-CERT_CA_CERT_PATH=certs/ca_cert.pem
-CERT_CA_KEY_PATH=certs/ca_key.pem
-
-# === RATE LIMITING ===
-LOGIN_MAX_ATTEMPTS=5
-LOGIN_WINDOW_SECONDS=300
-LOGIN_LOCKOUT_SECONDS=900
-
-# === PASSWORD POLICY ===
-PASSWORD_MIN_LENGTH=12
-
-# === AUTHENTICATION ===
-SIGNATURE_CHALLENGE_TTL_SECONDS=300
-
-# === ENVIRONMENT ===
-FLASK_ENV=development
-FLASK_DEBUG=1
-LOG_LEVEL=DEBUG
-```
-
-**Uso:**
-```bash
-# Copiar plantilla
-cp .env.example .env
-
-# Editar con tus valores
-nano .env
-
-# Cargar variables
-source .env
-```
-
-#### `config.py` — Configuración centralizada (alternativa)
-
-Crear archivo `config.py` para gestión de configuración por entorno:
-
-```python
-import os
-from datetime import timedelta
-
-class Config:
-    """Configuración base (desarrollo)"""
-    SECRET_KEY = os.environ.get("SECRET_KEY") or "secreto_demo"
-    SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
-    PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
-    
-    # PKI
-    CERT_CA_CERT_PATH = os.environ.get("CERT_CA_CERT_PATH", "certs/ca_cert.pem")
-    CERT_CA_KEY_PATH = os.environ.get("CERT_CA_KEY_PATH", "certs/ca_key.pem")
-    CERT_VALIDITY_HOURS = 720
-    
-    # Rate limiting
-    LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
-    LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
-    LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", "900"))
-    
-    # Password policy
-    PASSWORD_MIN_LENGTH = int(os.environ.get("PASSWORD_MIN_LENGTH", "12"))
-    
-    # Challenge-response
-    SIGNATURE_CHALLENGE_TTL = int(os.environ.get("SIGNATURE_CHALLENGE_TTL_SECONDS", "300"))
-
-
-class DevelopmentConfig(Config):
-    """Configuración para desarrollo"""
-    DEBUG = True
-    SESSION_COOKIE_SECURE = False
-    LOG_LEVEL = "DEBUG"
-
-
-class ProductionConfig(Config):
-    """Configuración para producción"""
-    DEBUG = False
-    SESSION_COOKIE_SECURE = os.environ.get("ENABLE_SESSION_COOKIE_SECURE", "1") == "1"
-    SESSION_COOKIE_SAMESITE = "Strict"
-    LOG_LEVEL = "INFO"
-
-
-class TestingConfig(Config):
-    """Configuración para testing"""
-    TESTING = True
-    SESSION_COOKIE_SECURE = False
-    LOGIN_MAX_ATTEMPTS = 1000  # Desactivar rate-limiting en tests
-    LOG_LEVEL = "DEBUG"
-
-
-# Seleccionar configuración según entorno
-config = {
-    "development": DevelopmentConfig,
-    "production": ProductionConfig,
-    "testing": TestingConfig,
-    "default": DevelopmentConfig
-}
-```
-
-**Uso en `app.py`:**
-```python
-import os
-from config import config
-
-env = os.environ.get("FLASK_ENV", "development")
-app.config.from_object(config[env])
-```
-
-#### `requirements.txt` — Dependencias Python
-
-```
-Flask==2.3.3
-cryptography==41.0.7
-Werkzeug==2.3.7
-Jinja2==3.1.2
-argon2-cffi==23.1.0
-requests==2.31.0
-pytest==7.4.3
-pytest-cov==4.1.0
-python-dotenv==1.0.0
-```
-
-**Instalación:**
-```bash
-pip install -r requirements.txt
-```
-
-#### `.gitignore` — Archivos a ignorar
-
-```
-# Entorno virtual
-.venv/
-venv/
-ENV/
-
-# Archivos de configuración sensibles
-.env
-.env.local
-.env.*.local
-
-# Archivos criptográficos
-key.key
-*.key
-*.pem
-admin_*_demo.*
-coord_*_demo.*
-
-# Base de datos
-*.db
-*.sqlite
-*.sqlite3
-database.db
-usuarios.db
-backups/
-
-# Logs
-*.log
-flask.log
-*.log.*
-
-# Cache de Python
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.coverage
-htmlcov/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.swn
-*~
-.DS_Store
-
-# Sistema
-.env.bak
-dist/
-build/
-*.egg-info/
-```
-
-#### `setup.sh` — Script de inicialización (macOS/Linux)
-
-```bash
-#!/bin/bash
-# Inicializar proyecto Casa Monarca
-
-set -e
-
-echo "=== Casa Monarca - Setup Inicial ==="
-
-# 1. Crear entorno virtual
-if [ ! -d ".venv" ]; then
-    echo "Creando entorno virtual..."
-    python3 -m venv .venv
-else
-    echo "Entorno virtual ya existe."
-fi
-
-# 2. Activar entorno virtual
-source .venv/bin/activate
-
-# 3. Actualizar pip
-echo "Actualizando pip..."
-pip install --upgrade pip setuptools wheel
-
-# 4. Instalar dependencias
-echo "Instalando dependencias..."
-pip install -r requirements.txt
-
-# 5. Crear .env si no existe
-if [ ! -f ".env" ]; then
-    echo "Creando .env desde .env.example..."
-    cp .env.example .env
-    echo "⚠️  Edita .env con tus valores antes de ejecutar la aplicación"
-fi
-
-# 6. Generar clave de cifrado
-if [ ! -f "key.key" ]; then
-    echo "Generando clave de cifrado..."
-    python generate_key.py
-fi
-
-# 7. Crear estructura de carpetas
-mkdir -p certs backups logs
-
-# 8. Inicializar base de datos
-echo "Inicializando base de datos..."
-python app.py  # Ejecuta create_tables() al iniciar
-
-echo ""
-echo "✅ Setup completado."
-echo ""
-echo "Próximos pasos:"
-echo "  1. Edita .env con tus valores"
-echo "  2. Ejecuta: source .venv/bin/activate"
-echo "  3. Ejecuta: python app.py"
-```
-
-**Uso:**
-```bash
-chmod +x setup.sh
-./setup.sh
-```
+`config.py` define una jerarquía `Config` → `DevelopmentConfig` / `ProductionConfig` /
+`TestingConfig`, seleccionada en el diccionario `config` mediante `FLASK_ENV`
+(`development` por defecto). Variables relevantes (con sus valores por defecto):
+
+### Sesión y cookies
+- `SECRET_KEY` (clave de firma de sesión Flask; *default* inseguro `"secreto_demo"` — debe
+  sobreescribirse en producción)
+- `SESSION_COOKIE_HTTPONLY = True`, `SESSION_COOKIE_SAMESITE` (`Lax` en dev, `Strict` forzado en
+  producción), `SESSION_COOKIE_SECURE` (controlado por `ENABLE_SESSION_COOKIE_SECURE` en prod)
+- `PERMANENT_SESSION_LIFETIME = timedelta(hours=8)`
+
+### Cifrado de datos (Fernet / keyring)
+- `ENCRYPTION_KEY_PATH` (default `"key.key"`)
+- `ENCRYPTION_LEGACY_KEY_PATHS` (lista separada por comas — llaves "legadas" para descifrar datos
+  antiguos durante una rotación)
+- `ENCRYPTION_LATENCY_WARNING_SECONDS` (default `0.25`, umbral para registrar advertencias de
+  latencia en `encryption_metrics`)
+
+### PKI
+- `CERT_CA_CERT_PATH` / `CERT_CA_KEY_PATH` (default `certs/ca_cert.pem` / `certs/ca_key.pem`)
+- `CERT_VALIDITY_HOURS = 720` (30 días de validez para certificados de usuario)
+
+### Rate limiting / bloqueo de cuentas
+- `LOGIN_MAX_ATTEMPTS = 5`, `LOGIN_WINDOW_SECONDS = 300`, `LOGIN_LOCKOUT_SECONDS = 900`
+  (5 intentos en 5 minutos → bloqueo de 15 minutos)
+- En `TestingConfig`, `LOGIN_MAX_ATTEMPTS = 1000` para no interferir con las pruebas.
+
+### Política de contraseñas y reto-respuesta
+- `PASSWORD_MIN_LENGTH = 12`
+- `SIGNATURE_CHALLENGE_TTL` (`SIGNATURE_CHALLENGE_TTL_SECONDS`, default `300`)
+
+### Passkeys / WebAuthn
+- `PASSKEY_ENABLED` (default activado), `PASSKEY_ENFORCE_CRITICAL` (si se exige passkey a
+  `admin`/`coordinador`)
+- `PASSKEY_RP_ID` (default `localhost`), `PASSKEY_RP_NAME` (`Casa Monarca`)
+- `PASSKEY_ORIGIN` derivado de `PASSKEY_PORT` (default `http://localhost:5000`)
+- `PASSKEY_TIMEOUT_MS = 60000`, `PASSKEY_MAX_CREDENTIALS_PER_USER = 5`
+
+### Diferencias por entorno
+- `DevelopmentConfig`: `DEBUG=True`, cookies no forzadas a `Secure`.
+- `ProductionConfig`: `DEBUG=False`, `SESSION_COOKIE_SECURE` controlado por
+  `ENABLE_SESSION_COOKIE_SECURE`, `SESSION_COOKIE_SAMESITE="Strict"`.
+- `TestingConfig`: `TESTING=True`, rate-limiting prácticamente desactivado, cookies no
+  forzadas a `Secure`.
+
+`.env.example` documenta todas estas variables como plantilla; `setup.sh` copia
+`.env.example` → `.env` si no existe.
 
 ---
 
 ## Instalación y Ejecución
 
-### Pasos para levantar el sistema
-
-#### Opción 1: Setup rápido (macOS/Linux)
-
 ```bash
-# 1. Clonar repositorio (si aplica)
-git clone https://github.com/tu-org/casa-monarca.git
-cd casa-monarca
-
-# 2. Ejecutar script de setup
-chmod +x setup.sh
+# Configuración inicial (crea .venv, instala deps, copia .env, genera key.key, crea carpetas)
 ./setup.sh
 
-# 3. Editar configuración
-nano .env
+# Ejecutar la app (sirve en http://127.0.0.1:5000; las tablas se crean en el primer arranque)
+.venv/bin/python app.py
 
-# 4. Ejecutar aplicación
-source .venv/bin/activate
-python app.py
+# Verificación de sintaxis
+.venv/bin/python -m py_compile app.py
+
+# Suite de pruebas completa
+PYTHONPATH=. .venv/bin/pytest -q
+
+# Una prueba puntual
+PYTHONPATH=. .venv/bin/pytest tests/test_password_security.py::test_qa_a_rejects_weak_password_on_forced_update -q
+
+# Generar/regenerar la llave Fernet de cifrado de datos
+.venv/bin/python generate_key.py
+
+# Respaldo / restauración cifrados de la base de datos
+.venv/bin/python tools/backup_db.py
+.venv/bin/python tools/restore_db.py
 ```
 
-**Resultado esperado:**
-```
-* Running on http://127.0.0.1:5000/
-* WARNING in app.runWarning: This is a development server. 
-  Do not use it in production. Use a production WSGI server instead.
-```
-
-Acceder a `http://localhost:5000` en el navegador.
-
-#### Opción 2: Setup manual paso a paso
-
-**Paso 1: Preparar entorno**
-```bash
-# Clonar o descargar proyecto
-cd /ruta/al/proyecto
-
-# Verificar Python 3.9+
-python3 --version
-
-# Crear entorno virtual
-python3 -m venv .venv
-
-# Activar (macOS/Linux)
-source .venv/bin/activate
-
-# O activar (Windows)
-.venv\Scripts\activate
-```
-
-**Paso 2: Instalar dependencias**
-```bash
-# Actualizar pip
-pip install --upgrade pip
-
-# Instalar desde requirements.txt
-pip install -r requirements.txt
-
-# Verificar instalación
-pip list
-```
-
-**Paso 3: Configurar seguridad**
-```bash
-# Generar clave de cifrado (si no existe)
-python generate_key.py
-
-# Copiar plantilla de configuración
-cp .env.example .env
-
-# Editar variables de entorno
-# En .env, cambiar al menos:
-#   - SECRET_KEY (32+ caracteres aleatorios)
-#   - CERT_CA_CERT_PATH y CERT_CA_KEY_PATH (rutas correctas)
-nano .env
-```
-
-**Paso 4: Preparar estructura de directorios**
-```bash
-# Crear carpetas necesarias
-mkdir -p certs backups logs
-
-# Crear certificados de CA (desarrollo)
-openssl req -x509 -newkey rsa:2048 -keyout certs/ca_key.pem \
-  -out certs/ca_cert.pem -days 3650 -nodes \
-  -subj "/C=MX/ST=CDMX/L=Mexico/O=Casa Monarca/CN=Casa Monarca Development CA"
-```
-
-**Paso 5: Inicializar base de datos**
-```bash
-# Ejecutar app (crea database.db automáticamente)
-python app.py
-
-# Esperar ~5 segundos hasta ver "Running on http://..."
-# Luego Ctrl+C para detener
-```
-
-**Paso 6: Verificar instalación**
-```bash
-# Abrir en navegador
-# http://localhost:5000
-
-# Probar login con cuenta demo (si está poblada)
-# Username: usuario_demo
-# Password: UserDemo123!
-```
-
-#### Opción 3: Setup en Docker (opcional)
-
-```dockerfile
-# Dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY . .
-
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r requirements.txt
-
-EXPOSE 5000
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
-```
-
-**Construir e ejecutar:**
-```bash
-# Construir imagen
-docker build -t casa-monarca:latest .
-
-# Ejecutar contenedor
-docker run -p 5000:5000 \
-  -e SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
-  -v $(pwd)/certs:/app/certs \
-  -v $(pwd)/database.db:/app/database.db \
-  casa-monarca:latest
-```
-
-### Comandos principales
-
-#### Ejecución
-
-**Desarrollo (con auto-reload):**
-```bash
-source .venv/bin/activate
-export FLASK_ENV=development
-export FLASK_DEBUG=1
-python app.py
-```
-
-**Producción (con Gunicorn recomendado):**
-```bash
-source .venv/bin/activate
-gunicorn --workers 4 \
-         --bind 0.0.0.0:5000 \
-         --timeout 30 \
-         --access-logfile - \
-         --error-logfile - \
-         app:app
-```
-
-**Con Flask CLI:**
-```bash
-source .venv/bin/activate
-FLASK_ENV=development FLASK_DEBUG=1 flask run --host 0.0.0.0
-```
-
-#### Base de datos
-
-**Inicializar (crear tablas):**
-```bash
-python -c "from app import app; from database import create_tables; create_tables()"
-```
-
-**Hacer backup cifrado:**
-```bash
-python tools/backup_db.py
-# Crea: backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-**Restaurar desde backup:**
-```bash
-python tools/restore_db.py backups/db_backup_YYYYMMDDTHHMMSSZ.enc
-```
-
-**Acceder a SQLite directamente:**
-```bash
-sqlite3 database.db
-
-# Comandos útiles:
-sqlite> .tables                    # Listar tablas
-sqlite> .schema usuarios           # Ver esquema de usuarios
-sqlite> SELECT * FROM usuarios;    # Listar todos los usuarios
-sqlite> .mode column               # Formato columnar
-sqlite> .quit                      # Salir
-```
-
-#### Certificados y seguridad
-
-**Generar/regenerar clave de cifrado:**
-```bash
-python generate_key.py
-# Genera key.key (AES-256)
-```
-
-**Generar certificado de CA (desarrollo):**
-```bash
-openssl req -x509 -newkey rsa:2048 -keyout certs/ca_key.pem \
-  -out certs/ca_cert.pem -days 3650 -nodes \
-  -subj "/C=MX/ST=CDMX/L=Mexico/O=Casa Monarca/CN=Casa Monarca CA"
-```
-
-**Generar CSR (Certificate Signing Request) para usuario:**
-```bash
-# Generar clave privada
-openssl genrsa -out usuario.key.pem 2048
-
-# Generar CSR
-openssl req -new -key usuario.key.pem -out usuario.csr.pem \
-  -subj "/C=MX/ST=CDMX/L=Mexico/O=Casa Monarca/CN=nombre_usuario"
-
-# Usuario carga usuario.csr.pem en /certificado/setup
-```
-
-**Verificar certificado:**
-```bash
-openssl x509 -in cert.pem -text -noout
-openssl x509 -in cert.pem -dates -noout
-```
-
-**Verificar firma digital:**
-```bash
-# Verificar firma con clave pública
-openssl dgst -sha256 -verify public_key.pem -signature sig.bin mensaje.txt
-
-# Verificar firma con certificado
-openssl x509 -in cert.pem -pubkey -noout | \
-  openssl dgst -sha256 -verify /dev/stdin -signature sig.bin mensaje.txt
-```
-
-#### Testing y validación
-
-**Ejecutar tests:**
-```bash
-# Todos los tests
-PYTHONPATH=. pytest -v tests/
-
-# Tests específicos
-PYTHONPATH=. pytest -v tests/test_password_security.py
-
-# Con cobertura
-PYTHONPATH=. pytest --cov=. --cov-report=html tests/
-
-# Ver reporte HTML
-open htmlcov/index.html
-```
-
-**Validar contraseña (CLI):**
-```bash
-python -c "
-from werkzeug.security import check_password_hash
-from argon2.low_level import hash_secret, Type
-
-# Hash de ejemplo
-h = hash_secret(b'password123', b'salt1234' * 2, type=Type.ID, time_cost=3, memory_cost=65536)
-print('Hash:', h)
-"
-```
-
-#### Logs y diagnóstico
-
-**Ver logs en tiempo real:**
-```bash
-tail -f flask.log
-tail -f logs/*.log
-```
-
-**Activar debug mode:**
-```bash
-export FLASK_DEBUG=1
-export FLASK_ENV=development
-python app.py
-```
-
-**Limpiar caché y datos temporales:**
-```bash
-# Limpiar caché Python
-find . -type d -name __pycache__ -exec rm -r {} +
-find . -type f -name "*.pyc" -delete
-
-# Limpiar .pytest_cache
-rm -rf .pytest_cache
-
-# Limpiar cobertura de tests
-rm -rf htmlcov .coverage
-```
-
-#### Desarrollo y mantenimiento
-
-**Crear nuevo usuario (CLI):**
-```bash
-python -c "
-import sqlite3
-from werkzeug.security import generate_password_hash
-
-conn = sqlite3.connect('database.db')
-c = conn.cursor()
-
-username = 'nuevo_usuario'
-password = 'Password123!'
-role = 'operativo'
-
-hash_pwd = generate_password_hash(password)
-c.execute('''INSERT INTO usuarios (username, password_hash, role, must_change_password)
-             VALUES (?, ?, ?, 1)''', (username, hash_pwd, role))
-conn.commit()
-conn.close()
-
-print(f'Usuario {username} creado. Debe cambiar contraseña al login.')
-"
-```
-
-**Resetear contraseña (CLI):**
-```bash
-python -c "
-import sqlite3
-from werkzeug.security import generate_password_hash
-
-conn = sqlite3.connect('database.db')
-c = conn.cursor()
-
-username = 'usuario_a_resetear'
-new_password = 'NewPassword123!'
-
-hash_pwd = generate_password_hash(new_password)
-c.execute('UPDATE usuarios SET password_hash = ?, must_change_password = 1 WHERE username = ?',
-          (hash_pwd, username))
-conn.commit()
-conn.close()
-
-print(f'Contraseña de {username} reseteada.')
-"
-```
-
-**Listar todos los usuarios:**
-```bash
-sqlite3 -header -column database.db "SELECT id, username, role, created_at FROM usuarios;"
-```
-
-**Ver bitácora de eventos:**
-```bash
-sqlite3 -header -column database.db "SELECT username, accion, timestamp, ip_address FROM bitacora ORDER BY id DESC LIMIT 20;"
-```
+`setup.sh` realiza, en orden: creación de `.venv`, actualización de `pip`, instalación de
+`requirements.txt`, copia de `.env.example` a `.env`, generación de `key.key` (si no existe) y
+creación de los directorios `certs/`, `backups/`, `logs/`. No existe un comando de *lint* o
+*format* dedicado: `py_compile` + `pytest` es la vía de verificación establecida.
+
+Al primer arranque, `app.py` ejecuta `init_db()` (crea/migra el esquema),
+`create_default_accounts()` (siembra usuarios por defecto con contraseñas distintas para
+pruebas/producción) y `bootstrap_dev_certificates()` (genera la CA y certificados de
+desarrollo si faltan), selecciona dinámicamente el puerto y arranca con
+`app.run(host="0.0.0.0", port=port, debug=debug_mode)`.
 
 ---
 
 ## Base de Datos
 
-### Modelo de datos
-
-Casa Monarca utiliza **SQLite 3.x** como base de datos local. El modelo sigue un diseño **normalizado** (3NF) con 5 tablas principales que cubren:
-- **Gestión de usuarios:** autenticación, roles, passwords
-- **Gestión de expedientes:** ciclo de vida y auditoría
-- **Seguridad:** certificados X.509 e intentos de login
-- **Auditoría:** bitácora de eventos
-
-#### Diagrama Entidad-Relación (E-R)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         MODELO CONCEPTUAL                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│                                                                   │
-│    ┌──────────────────┐                                          │
-│    │    USUARIOS      │                                          │
-│    ├──────────────────┤                                          │
-│    │ id (PK)          │                                          │
-│    │ username (UQ)    │                                          │
-│    │ password_hash    │                                          │
-│    │ role             │────────┐                                 │
-│    │ created_at       │        │ 1:N                            │
-│    │ must_change_pwd  │        │                                │
-│    └──────────────────┘        │                                │
-│           │ 1:N                │                                │
-│           │                    ▼                                │
-│           │            ┌──────────────────────────┐             │
-│           │            │    EXPEDIENTES           │             │
-│           │            ├──────────────────────────┤             │
-│           │            │ id (PK)                  │             │
-│           │            │ user_id (FK → USUARIOS)  │             │
-│           │            │ titulo                   │             │
-│           │            │ descripcion              │             │
-│           │            │ estado                   │             │
-│           │            │ created_at               │             │
-│           │            │ updated_at               │             │
-│           │            └──────────────────────────┘             │
-│           │                                                      │
-│           │ 1:N                                                  │
-│           │                                                      │
-│           ▼                                                      │
-│    ┌──────────────────┐                                          │
-│    │  CERTIFICADOS    │                                          │
-│    ├──────────────────┤                                          │
-│    │ id (PK)          │                                          │
-│    │ user_id (FK)     │                                          │
-│    │ cert_pem         │                                          │
-│    │ huella (UQ)      │                                          │
-│    │ estado           │                                          │
-│    │ created_at       │                                          │
-│    │ expires_at       │                                          │
-│    └──────────────────┘                                          │
-│                                                                   │
-│    ┌──────────────────────────┐                                  │
-│    │      BITACORA            │                                  │
-│    ├──────────────────────────┤                                  │
-│    │ id (PK)                  │                                  │
-│    │ username (FK → USUARIOS) │                                  │
-│    │ accion                   │                                  │
-│    │ descripcion              │                                  │
-│    │ timestamp                │                                  │
-│    │ ip_address               │                                  │
-│    └──────────────────────────┘                                  │
-│                                                                   │
-│    ┌──────────────────────────┐                                  │
-│    │    LOGIN_ATTEMPTS        │                                  │
-│    ├──────────────────────────┤                                  │
-│    │ id (PK)                  │                                  │
-│    │ username (FK)            │                                  │
-│    │ intentos                 │                                  │
-│    │ locked_until             │                                  │
-│    │ ventana_inicio           │                                  │
-│    └──────────────────────────┘                                  │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-
-Leyenda:
-  PK = Primary Key (clave primaria)
-  FK = Foreign Key (clave foránea)
-  UQ = Unique (único)
-  1:N = Relación uno-a-muchos
-```
-
-### Tablas principales
-
-#### 1. `usuarios` — Gestión de cuentas y autenticación
-
-**Propósito:** Almacenar información de usuarios, roles y credenciales.
-
-**Esquema:**
-
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|----------------|------------|
-| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
-| `username` | TEXT | NOT NULL, UNIQUE | Nombre de usuario (login único) |
-| `password_hash` | TEXT | NOT NULL | Hash Argon2 de contraseña |
-| `role` | TEXT | NOT NULL DEFAULT 'usuario' | Rol RBAC: usuario, operativo, coordinador, admin |
-| `must_change_password` | INTEGER | DEFAULT 1 | Flag: 1 = debe cambiar al login |
-| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de creación |
-
-**Índices:**
-```sql
-CREATE UNIQUE INDEX idx_usuarios_username ON usuarios(username);
-CREATE INDEX idx_usuarios_role ON usuarios(role);
-```
-
-**Ejemplo de datos:**
-```
-id | username    | password_hash              | role        | must_change_password | created_at
-1  | usuario_pru | $argon2id$v=19$m=65536... | usuario     | 0                    | 2026-05-01 10:00:00
-2  | operativo_1 | $argon2id$v=19$m=65536... | operativo   | 1                    | 2026-05-05 14:30:00
-3  | coord_admin | $argon2id$v=19$m=65536... | coordinador | 0                    | 2026-05-02 09:15:00
-4  | admin_prod  | $argon2id$v=19$m=65536... | admin       | 0                    | 2026-05-01 08:00:00
-```
-
-#### 2. `expedientes` — Gestión del ciclo de vida
-
-**Propósito:** Almacenar expedientes y su estado en el flujo de procesamiento.
-
-**Esquema:**
-
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|----------------|------------|
-| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
-| `user_id` | INTEGER | NOT NULL, FK → usuarios(id) | Usuario creador (propietario) |
-| `titulo` | TEXT | NOT NULL | Título del expediente |
-| `descripcion` | TEXT | | Descripción detallada |
-| `estado` | TEXT | DEFAULT 'borrador' | Estado: borrador, en_revision, validado, cerrado |
-| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de creación |
-| `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Última actualización |
-
-**Índices:**
-```sql
-CREATE INDEX idx_expedientes_user_id ON expedientes(user_id);
-CREATE INDEX idx_expedientes_estado ON expedientes(estado);
-CREATE INDEX idx_expedientes_created_at ON expedientes(created_at DESC);
-```
-
-**Estados y transiciones permitidas:**
-```
-borrador → en_revision → validado → cerrado
-   ↑         (solo si     ↓        (solo
-  (solo      validado)    └─→ borrador (admin)
-  propietario)                (revisar)
-```
-
-**Permisos por rol:**
-- `usuario`: Crea (borrador), ve propios, puede cancelar
-- `operativo`: Ve asignados, canaliza a coordinador
-- `coordinador`: Revisa, canaliza a admin (con firma)
-- `admin`: Valida finales, cierra
-
-**Ejemplo de datos:**
-```
-id | user_id | titulo              | estado      | created_at         | updated_at
-1  | 1       | Caso #001 - Refugio | borrador    | 2026-05-10 11:30   | 2026-05-10 11:30
-2  | 1       | Caso #002 - Legal   | en_revision | 2026-05-12 09:45   | 2026-05-15 14:20
-3  | 2       | Caso #003 - Medico  | validado    | 2026-05-14 16:00   | 2026-05-16 10:10
-```
-
-#### 3. `certificados` — Gestión de certificados X.509
-
-**Propósito:** Almacenar certificados digitales emitidos por la CA local.
-
-**Esquema:**
-
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|----------------|------------|
-| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
-| `user_id` | INTEGER | NOT NULL, FK → usuarios(id) | Usuario propietario del certificado |
-| `cert_pem` | TEXT | NOT NULL | Certificado en formato PEM (X.509) |
-| `huella` | TEXT | NOT NULL, UNIQUE | SHA-256 del certificado (fingerprint) |
-| `estado` | TEXT | DEFAULT 'activo' | Estado: activo, revocado, expirado |
-| `razon_revocacion` | TEXT | | Motivo de revocación (si aplica) |
-| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha de emisión |
-| `expires_at` | TIMESTAMP | NOT NULL | Fecha de expiración (validez 720 horas = 30 días) |
-
-**Índices:**
-```sql
-CREATE INDEX idx_certificados_user_id ON certificados(user_id);
-CREATE UNIQUE INDEX idx_certificados_huella ON certificados(huella);
-CREATE INDEX idx_certificados_estado ON certificados(estado);
-CREATE INDEX idx_certificados_expires_at ON certificados(expires_at);
-```
-
-**Estados de ciclo de vida:**
-- `activo`: Certificado válido y usable para autenticación
-- `revocado`: Revocado por el usuario o admin (no puede usarse)
-- `expirado`: Pasó la fecha de expiración
-
-**Validación en login:**
-```python
-if estado != 'activo':
-    raise AuthenticationError("Certificado no está activo")
-if expires_at < NOW():
-    raise AuthenticationError("Certificado expirado")
-if not verify_ca_signature(cert_pem):
-    raise AuthenticationError("Firma de CA inválida")
-if certificate.CN != username:
-    raise AuthenticationError("CN no coincide con usuario")
-```
-
-**Ejemplo de datos:**
-```
-id | user_id | huella (SHA-256)          | estado   | expires_at         | created_at
-1  | 4       | a1b2c3d4e5f6...           | activo   | 2026-06-15 08:00   | 2026-05-16 08:00
-2  | 3       | f6e5d4c3b2a1...           | activo   | 2026-06-14 10:30   | 2026-05-15 10:30
-3  | 3       | 9z8y7x6w5v4u...           | revocado | 2026-06-10 14:00   | 2026-05-10 14:00
-```
-
-#### 4. `bitacora` — Auditoría de eventos
-
-**Propósito:** Registro inmutable de eventos (audit log) para trazabilidad y compliance.
-
-**Esquema:**
-
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|----------------|------------|
-| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
-| `username` | TEXT | NOT NULL, FK → usuarios(username) | Usuario que ejecutó la acción |
-| `accion` | TEXT | NOT NULL | Tipo de acción: login, logout, crear_expediente, cambiar_estado, crear_usuario, revocar_certificado, etc. |
-| `descripcion` | TEXT | | Detalles adicionales de la acción |
-| `timestamp` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Fecha/hora exacta del evento |
-| `ip_address` | TEXT | | Dirección IP del cliente (para auditoría de seguridad) |
-
-**Índices:**
-```sql
-CREATE INDEX idx_bitacora_username ON bitacora(username);
-CREATE INDEX idx_bitacora_accion ON bitacora(accion);
-CREATE INDEX idx_bitacora_timestamp ON bitacora(timestamp DESC);
-```
-
-**Eventos auditados:**
-
-| Acción | Descripción |
-|--------|------------|
-| `login_exitoso` | Usuario inició sesión correctamente |
-| `login_fallido` | Intento de login fallido (contraseña incorrecta) |
-| `login_bloqueado` | Usuario bloqueado por intentos excesivos |
-| `logout` | Usuario cerró sesión |
-| `cambiar_contrasena` | Usuario cambió su contraseña |
-| `crear_expediente` | Nuevo expediente creado |
-| `cambiar_estado_expediente` | Cambio de estado en expediente |
-| `crear_usuario` | Nuevo usuario creado por admin |
-| `eliminar_usuario` | Usuario eliminado |
-| `cambiar_rol_usuario` | Rol de usuario modificado |
-| `generar_certificado` | Certificado X.509 emitido |
-| `revocar_certificado` | Certificado revocado |
-| `backup_realizado` | Backup cifrado realizado |
-| `backup_restaurado` | Base de datos restaurada desde backup |
-
-**Ejemplo de datos:**
-```
-id | username    | accion                  | descripcion                    | timestamp           | ip_address
-1  | admin_prod  | crear_usuario           | Nuevo usuario: operativo_1     | 2026-05-05 14:30:00 | 192.168.1.100
-2  | usuario_pru | login_exitoso           | Login con certificado exitoso  | 2026-05-10 11:20:00 | 192.168.1.150
-3  | operativo_1 | crear_expediente        | ID: 1, Título: Caso #001      | 2026-05-10 11:30:00 | 192.168.1.155
-4  | operativo_1 | cambiar_estado_exped    | ID: 1, borrador → en_revision | 2026-05-12 09:45:00 | 192.168.1.155
-5  | coord_admin | revocar_certificado     | User: operativo_1, huella: ...| 2026-05-16 15:00:00 | 192.168.1.120
-```
-
-#### 5. `login_attempts` — Rate-limiting y protección
-
-**Propósito:** Rastrear intentos de login fallidos para implementar lockout temporal (rate-limiting).
-
-**Esquema:**
-
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|----------------|------------|
-| `id` | INTEGER | PRIMARY KEY, AUTO INCREMENT | Identificador único |
-| `username` | TEXT | NOT NULL, UNIQUE | Usuario intentando login (UNIQUE para evitar duplicados) |
-| `intentos` | INTEGER | DEFAULT 0 | Número de intentos fallidos en la ventana actual |
-| `locked_until` | TIMESTAMP | | Fecha/hora hasta la que el usuario está bloqueado (NULL = no bloqueado) |
-| `ventana_inicio` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Inicio de la ventana de conteo |
-
-**Índices:**
-```sql
-CREATE UNIQUE INDEX idx_login_attempts_username ON login_attempts(username);
-CREATE INDEX idx_login_attempts_locked_until ON login_attempts(locked_until);
-```
-
-**Lógica de rate-limiting:**
-
-```
-Configuración:
-  - LOGIN_MAX_ATTEMPTS = 5
-  - LOGIN_WINDOW_SECONDS = 300 (5 minutos)
-  - LOGIN_LOCKOUT_SECONDS = 900 (15 minutos)
-
-Flujo:
-1. Usuario intenta login
-2. Si password es incorrecto:
-   - intentos += 1
-   - Si intentos >= 5:
-       locked_until = NOW + 900 segundos
-   - Registrar en bitácora "login_fallido"
-3. Si password es correcto:
-   - Resetear intentos = 0
-   - Registrar en bitácora "login_exitoso"
-4. Si locked_until > NOW:
-   - Rechazar login inmediatamente
-   - Registrar en bitácora "login_bloqueado"
-5. Si locked_until < NOW:
-   - Desbloquear: locked_until = NULL, intentos = 0
-```
-
-**Ejemplo de datos:**
-```
-id | username    | intentos | locked_until        | ventana_inicio
-1  | usuario_pru | 0        | NULL                | 2026-05-10 11:00:00
-2  | operativo_1 | 3        | NULL                | 2026-05-12 09:30:00
-3  | admin_temp  | 5        | 2026-05-16 15:15:00 | 2026-05-16 15:00:00
-```
-
-### Relaciones
-
-#### Relación: USUARIOS ← 1:N → EXPEDIENTES
-
-```
-Un usuario puede crear múltiples expedientes.
-Un expediente pertenece a exactamente un usuario.
-
-ON DELETE: CASCADE (si se elimina usuario, se eliminan sus expedientes)
-ON UPDATE: CASCADE (si cambia user_id, se propaga a expedientes)
-```
-
-**SQL:**
-```sql
-ALTER TABLE expedientes 
-ADD CONSTRAINT fk_expedientes_user_id 
-FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE;
-```
-
-#### Relación: USUARIOS ← 1:N → CERTIFICADOS
-
-```
-Un usuario puede tener múltiples certificados (activos, revocados, expirados).
-Un certificado pertenece a exactamente un usuario.
-
-ON DELETE: CASCADE (si se elimina usuario, se eliminan sus certs)
-ON UPDATE: CASCADE
-```
-
-**SQL:**
-```sql
-ALTER TABLE certificados 
-ADD CONSTRAINT fk_certificados_user_id 
-FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE;
-```
-
-#### Relación: USUARIOS ← 1:N → BITACORA
-
-```
-Un usuario puede generar múltiples eventos auditados.
-Un evento en bitácora se asocia a un usuario específico.
-
-ON DELETE: SET NULL (el evento permanece pero usuario se desconoce)
-ON UPDATE: CASCADE
-```
-
-**SQL:**
-```sql
-ALTER TABLE bitacora 
-ADD CONSTRAINT fk_bitacora_username 
-FOREIGN KEY (username) REFERENCES usuarios(username) ON UPDATE CASCADE;
-```
-
-#### Relación: USUARIOS ← 1:1 → LOGIN_ATTEMPTS
-
-```
-Un usuario tiene exactamente un registro de intentos de login (por ventana).
-Un registro de intentos pertenece a un usuario.
-
-ON DELETE: CASCADE
-ON UPDATE: CASCADE
-```
-
-**SQL:**
-```sql
-ALTER TABLE login_attempts 
-ADD CONSTRAINT fk_login_attempts_username 
-FOREIGN KEY (username) REFERENCES usuarios(username) ON DELETE CASCADE;
-```
-
-### Script de inicialización (DDL)
-
-```sql
--- Table: usuarios
-CREATE TABLE usuarios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'usuario',
-    must_change_password INTEGER DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Table: expedientes
-CREATE TABLE expedientes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    titulo TEXT NOT NULL,
-    descripcion TEXT,
-    estado TEXT DEFAULT 'borrador',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- Table: certificados
-CREATE TABLE certificados (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    cert_pem TEXT NOT NULL,
-    huella TEXT NOT NULL UNIQUE,
-    estado TEXT DEFAULT 'activo',
-    razon_revocacion TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
--- Table: bitacora
-CREATE TABLE bitacora (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL,
-    accion TEXT NOT NULL,
-    descripcion TEXT,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ip_address TEXT,
-    FOREIGN KEY (username) REFERENCES usuarios(username) ON UPDATE CASCADE
-);
-
--- Table: login_attempts
-CREATE TABLE login_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    intentos INTEGER DEFAULT 0,
-    locked_until TIMESTAMP,
-    ventana_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (username) REFERENCES usuarios(username) ON DELETE CASCADE
-);
-
--- Índices para optimización
-CREATE UNIQUE INDEX idx_usuarios_username ON usuarios(username);
-CREATE INDEX idx_usuarios_role ON usuarios(role);
-
-CREATE INDEX idx_expedientes_user_id ON expedientes(user_id);
-CREATE INDEX idx_expedientes_estado ON expedientes(estado);
-CREATE INDEX idx_expedientes_created_at ON expedientes(created_at DESC);
-
-CREATE INDEX idx_certificados_user_id ON certificados(user_id);
-CREATE UNIQUE INDEX idx_certificados_huella ON certificados(huella);
-CREATE INDEX idx_certificados_estado ON certificados(estado);
-CREATE INDEX idx_certificados_expires_at ON certificados(expires_at);
-
-CREATE INDEX idx_bitacora_username ON bitacora(username);
-CREATE INDEX idx_bitacora_accion ON bitacora(accion);
-CREATE INDEX idx_bitacora_timestamp ON bitacora(timestamp DESC);
-
-CREATE UNIQUE INDEX idx_login_attempts_username ON login_attempts(username);
-CREATE INDEX idx_login_attempts_locked_until ON login_attempts(locked_until);
-```
-
-### Consultas principales (ejemplos)
-
-**Obtener todos los expedientes de un usuario:**
-```sql
-SELECT e.id, e.titulo, e.estado, e.created_at 
-FROM expedientes e
-WHERE e.user_id = ? 
-ORDER BY e.created_at DESC;
-```
-
-**Listar certificados activos próximos a expirar:**
-```sql
-SELECT c.id, c.huella, c.expires_at, u.username
-FROM certificados c
-JOIN usuarios u ON c.user_id = u.id
-WHERE c.estado = 'activo' 
-  AND c.expires_at < datetime('now', '+7 days')
-ORDER BY c.expires_at ASC;
-```
-
-**Historial de eventos de un usuario:**
-```sql
-SELECT accion, descripcion, timestamp, ip_address
-FROM bitacora
-WHERE username = ?
-ORDER BY timestamp DESC
-LIMIT 50;
-```
-
-**Verificar si usuario está bloqueado:**
-```sql
-SELECT locked_until, intentos
-FROM login_attempts
-WHERE username = ?
-  AND locked_until > datetime('now');
-```
-
-**Contar expedientes por estado:**
-```sql
-SELECT estado, COUNT(*) as cantidad
-FROM expedientes
-GROUP BY estado
-ORDER BY cantidad DESC;
-```
+SQLite (`database.db`), acceso vía `get_conn()` (envoltorio sobre `sqlite3.connect` con
+`row_factory = sqlite3.Row`). Esquema de **11 tablas** creadas/migradas en `init_db()`:
+
+### `usuarios`
+Cuentas del sistema: `id`, `username`, `password_hash` (Argon2id, formato `$argon2id$...`),
+`role`, `must_change_password`, `created_at`, más columnas añadidas vía `ensure_column` para el
+flujo de certificados/passkeys (p. ej. estado de configuración de identidad reforzada).
+
+### `encuestas`
+Los expedientes/casos. Incluye `id`, `usuario_id` (autor), `estado` (uno de los cinco estados del
+ciclo de vida), `datos` (**blob cifrado con Fernet**, prefijo `fp:<huella>\n<token>`),
+`encryption_key_fingerprint`, timestamps de creación/actualización y metadatos de revisión por
+nivel (operativo/coordinador).
+
+### `logs`
+Bitácora de auditoría: `usuario`, `accion`, `categoria` (`operacion` | `seguridad`), `detalle`,
+`timestamp`, `ip_address`. Alimentada por la función `log()` (`app.py:707`) en cada operación
+sensible (logins, cambios de estado, emisión/revocación de certificados, rotación de llaves,
+resoluciones ARCO, etc.).
+
+### `encryption_keys`
+Ciclo de vida de las llaves Fernet de cifrado de datos: `key_fingerprint` (SHA-256 de la llave),
+`source_path`, `state` (`activo` | `legada` | `retiring`), `notes`, timestamps de activación.
+
+### `encryption_metrics`
+Métricas de uso/latencia de cifrado y descifrado, usadas para detectar degradación de
+rendimiento (umbral `ENCRYPTION_LATENCY_WARNING_SECONDS`).
+
+### `reencrypt_jobs`
+Cola de trabajos de re-cifrado masivo cuando se rota la llave activa: estado, progreso, huella
+origen/destino. Consumida por `tools/reencrypt_worker.py` mediante `reencrypt_all_surveys`.
+
+### `solicitudes_eliminacion`
+Solicitudes internas de eliminación de un expediente (`/solicitar-eliminacion/<id>`), con su
+flujo de aprobación/resolución (`/solicitud/<id>/resolver`).
+
+### `login_lockouts`
+Respaldo persistente del sistema de bloqueo de cuentas: identificador (usuario o IP),
+`intentos`, `primer_intento_at` / ventana, `locked_until`. Trabaja junto con la caché en memoria
+`failed_login_store` y las funciones `_is_locked` / `_record_failed` / `_clear_failed`
+(`app.py:1027, 1052, 1084`).
+
+### `certificados`
+Certificados X.509 emitidos: `user_id`, `serial_number`, `certificate_pem`, `estado`
+(`pendiente` | `activo` | `revocado` | `expirado`), `expires_at`, `algorithm`
+(`CERT_PRODUCT_ALGORITHM = "X509/RSA-2048/AES-256-CBC"`), modo de custodia de la llave privada
+(generada en servidor vs. importada vía CSR), motivo de revocación.
+
+### `passkey_credentials`
+Credenciales WebAuthn registradas: `user_id`, `credential_id`, `public_key` (COSE), `sign_count`
+(contador anti-repetición), `cert_id` (vínculo N:1 al certificado derivado), `estado`,
+`created_at`, `last_used_at`.
+
+### `solicitudes_arco`
+Solicitudes de derechos ARCO con columnas dedicadas de aprobación por nivel:
+`aprobado_usuarios` / `_at` / `_por`, `aprobado_operativos` / `_at` / `_por`,
+`aprobado_coordinadores` / `_at` / `_por`, `nivel_actual`
+(`usuarios` → `operativos` → `coordinadores` → `admin`), `reenviado_por_coordinador`,
+`resuelto`, y los datos de la solicitud (nombre, contacto, tipo de solicitud ARCO, descripción).
+
+> El patrón `ensure_column(conn, tabla, columna, "TIPO ...")` es la forma establecida de añadir
+> columnas sin romper bases de datos existentes — se usa intensivamente para la migración
+> multinivel de ARCO y para añadir soporte de cifrado/PKI/passkeys de forma incremental. **No**
+> se deben usar `ALTER TABLE` directos ni migraciones destructivas.
 
 ---
 
-## API / Interfaces
-
-Casa Monarca expone una **API REST** basada en Flask para operaciones HTTP. Los endpoints están protegidos con **autenticación por sesión** (cookies) y **validación de roles (RBAC)**.
-
-### Convenciones generales
-
-**Protocolo:** HTTP/HTTPS (HTTPS obligatorio en producción)
-
-**Base URL:** `http://localhost:5000` (desarrollo) o `https://casa-monarca.ejemplo.com` (producción)
-
-**Autenticación:** 
-- Método 1: Sesión con cookie (POST /login)
-- Método 2: Challenge-response con certificado (para admin/coordinador)
-
-**Formato de respuestas:** JSON (excepto descargas de archivos)
-
-**Códigos HTTP utilizados:**
-| Código | Significado |
-|--------|------------|
-| 200 | OK - Solicitud exitosa |
-| 201 | Created - Recurso creado |
-| 400 | Bad Request - Parámetro inválido |
-| 401 | Unauthorized - No autenticado |
-| 403 | Forbidden - Sin permisos para esta acción |
-| 404 | Not Found - Recurso no existe |
-| 422 | Unprocessable Entity - Datos inválidos |
-| 500 | Internal Server Error - Error del servidor |
-
-### Endpoints de autenticación
-
-#### 1. GET /login — Obtener formulario y desafío
-
-**Descripción:** Obtiene el formulario de login y genera un desafío para firmar (challenge).
-
-**Método:** `GET`
-
-**Autenticación requerida:** No
-
-**Parámetros:** Ninguno
-
-**Respuesta (200 OK):**
-```json
-{
-  "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
-  "form": "<html>...</html>"
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/login
-```
-
----
-
-#### 2. POST /login — Autenticarse con credenciales
-
-**Descripción:** Autentica usuario con contraseña y, opcionalmente, certificado + firma.
-
-**Método:** `POST`
-
-**Autenticación requerida:** No
-
-**Parámetros (form-data o JSON):**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|----------|------------|
-| `username` | string | Sí | Nombre de usuario |
-| `password` | string | Sí | Contraseña |
-| `challenge` | string | No | UUID del desafío (para login con cert) |
-| `signature_b64` | string | No | Firma Base64 del desafío (para admin/coordinador) |
-| `certificate_pem` | string | No | Certificado PEM (para login reforzado) |
-
-**Respuesta (200 OK - login exitoso):**
-```json
-{
-  "status": "success",
-  "message": "Login exitoso",
-  "user": {
-    "id": 1,
-    "username": "usuario_pru",
-    "role": "usuario",
-    "must_change_password": false
-  }
-}
-```
-
-**Respuesta (401 Unauthorized - credenciales inválidas):**
-```json
-{
-  "status": "error",
-  "message": "Contraseña incorrecta",
-  "remaining_attempts": 4
-}
-```
-
-**Respuesta (423 Locked - usuario bloqueado):**
-```json
-{
-  "status": "locked",
-  "message": "Usuario bloqueado por intentos excesivos",
-  "locked_until": "2026-05-16T15:15:00Z"
-}
-```
-
-**Ejemplo (curl - login básico):**
-```bash
-curl -X POST http://localhost:5000/login \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=usuario_pru&password=UserDemo123!" \
-  -c cookies.txt
-```
-
-**Ejemplo (curl - login con certificado):**
-```bash
-curl -X POST http://localhost:5000/login \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin_prod&password=AdminProdX2026!&challenge=a1b2c3d4-e5f6-4789-abcd-ef1234567890&signature_b64=ABC123==&certificate_pem=$(cat admin_prod.pem | base64)" \
-  -c cookies.txt
-```
-
-**Ejemplo (Python):**
-```python
-import requests
-
-session = requests.Session()
-response = session.post(
-    "http://localhost:5000/login",
-    data={
-        "username": "usuario_pru",
-        "password": "UserDemo123!"
-    }
-)
-print(response.json())
-# {'status': 'success', 'user': {...}}
-```
-
----
-
-#### 3. POST /logout — Cerrar sesión
-
-**Descripción:** Cierra la sesión del usuario autenticado.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí (sesión activa)
-
-**Parámetros:** Ninguno
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Sesión cerrada"
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/logout \
-  -b cookies.txt
-```
-
----
-
-### Endpoints de gestión de expedientes
-
-#### 4. GET /dashboard — Obtener panel del usuario
-
-**Descripción:** Retorna expedientes según el rol del usuario.
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí
-
-**Parámetros:** Ninguno
-
-**Respuesta (200 OK):**
-```json
-{
-  "user": {
-    "id": 1,
-    "username": "usuario_pru",
-    "role": "usuario"
-  },
-  "expedientes": [
-    {
-      "id": 1,
-      "titulo": "Caso #001 - Refugio",
-      "estado": "borrador",
-      "created_at": "2026-05-10T11:30:00Z",
-      "updated_at": "2026-05-10T11:30:00Z"
-    },
-    {
-      "id": 2,
-      "titulo": "Caso #002 - Legal",
-      "estado": "en_revision",
-      "created_at": "2026-05-12T09:45:00Z",
-      "updated_at": "2026-05-15T14:20:00Z"
-    }
-  ]
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/dashboard \
-  -b cookies.txt
-```
-
-**Ejemplo (Python):**
-```python
-response = session.get("http://localhost:5000/dashboard")
-dashboard = response.json()
-print(f"Usuario: {dashboard['user']['username']}")
-print(f"Expedientes: {len(dashboard['expedientes'])}")
-```
-
----
-
-#### 5. POST /expediente/crear — Crear nuevo expediente
-
-**Descripción:** Crea un nuevo expediente en estado "borrador".
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí
-
-**Parámetros (JSON):**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|----------|------------|
-| `titulo` | string | Sí | Título del expediente |
-| `descripcion` | string | No | Descripción detallada |
-
-**Respuesta (201 Created):**
-```json
-{
-  "status": "success",
-  "message": "Expediente creado",
-  "expediente": {
-    "id": 3,
-    "titulo": "Caso #003 - Medico",
-    "descripcion": "Necesita asistencia médica urgente",
-    "estado": "borrador",
-    "user_id": 1,
-    "created_at": "2026-05-16T10:30:00Z"
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/expediente/crear \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "titulo": "Caso #003 - Medico",
-    "descripcion": "Necesita asistencia médica urgente"
-  }'
-```
-
-**Ejemplo (Python):**
-```python
-response = session.post(
-    "http://localhost:5000/expediente/crear",
-    json={
-        "titulo": "Caso #003 - Medico",
-        "descripcion": "Necesita asistencia médica urgente"
-    }
-)
-expediente = response.json()["expediente"]
-print(f"Expediente creado: ID {expediente['id']}")
-```
-
----
-
-#### 6. GET /expediente/<id> — Obtener detalle de expediente
-
-**Descripción:** Retorna detalles de un expediente específico (con validación de permisos).
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí
-
-**Parámetros (path):**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|------------|
-| `id` | integer | ID del expediente |
-
-**Respuesta (200 OK):**
-```json
-{
-  "expediente": {
-    "id": 1,
-    "titulo": "Caso #001 - Refugio",
-    "descripcion": "Solicitud de refugio",
-    "estado": "borrador",
-    "user_id": 1,
-    "created_at": "2026-05-10T11:30:00Z",
-    "updated_at": "2026-05-10T11:30:00Z"
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/expediente/1 \
-  -b cookies.txt
-```
-
----
-
-#### 7. POST /expediente/<id>/canalizar — Cambiar estado de expediente
-
-**Descripción:** Canaliza (cambia de estado) un expediente. Requiere validación de firma para ciertos roles.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí
-
-**Parámetros (path + JSON):**
-
-| Parámetro | Tipo | Ubicación | Descripción |
-|-----------|------|-----------|------------|
-| `id` | integer | path | ID del expediente |
-| `nuevo_estado` | string | body | Nuevo estado: en_revision, validado, cerrado |
-| `signature_b64` | string | body | Firma del cambio (requerida para coordinador/admin) |
-| `challenge` | string | body | Challenge para validar firma |
-
-**Estados permitidos por rol:**
-- `usuario` → puede canalizar a operativo
-- `operativo` → puede canalizar a coordinador
-- `coordinador` → puede canalizar a admin (con firma)
-- `admin` → puede cerrar o volver a borrador
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Expediente canalizado",
-  "expediente": {
-    "id": 1,
-    "estado": "en_revision",
-    "updated_at": "2026-05-12T14:00:00Z"
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/expediente/1/canalizar \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "nuevo_estado": "en_revision",
-    "signature_b64": "ABC123==",
-    "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890"
-  }'
-```
-
----
-
-### Endpoints de gestión de certificados
-
-#### 8. GET /certificado/setup — Obtener página de setup de certificado
-
-**Descripción:** Retorna formulario HTML para setup de certificado (CSR).
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí
-
-**Respuesta:** HTML del formulario
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/certificado/setup \
-  -b cookies.txt
-```
-
----
-
-#### 9. POST /certificado/generar — Generar/firmar certificado
-
-**Descripción:** Genera o firma un certificado X.509 para el usuario.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí
-
-**Parámetros (form-data):**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|----------|------------|
-| `csr_pem` | string | Sí | Certificate Signing Request (PEM) o vacío para generar |
-| `days_valid` | integer | No | Días de validez (default: 30) |
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Certificado generado",
-  "certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
-  "fingerprint_sha256": "a1b2c3d4e5f6...",
-  "expires_at": "2026-06-15T08:00:00Z"
-}
-```
-
-**Ejemplo (curl - generar sin CSR):**
-```bash
-curl -X POST http://localhost:5000/certificado/generar \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -b cookies.txt \
-  -d "csr_pem=&days_valid=30"
-```
-
-**Ejemplo (curl - firmar CSR):**
-```bash
-curl -X POST http://localhost:5000/certificado/generar \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -b cookies.txt \
-  -d "csr_pem=$(cat usuario.csr.pem | base64)&days_valid=30"
-```
-
----
-
-#### 10. POST /certificado/<id>/revocar — Revocar certificado
-
-**Descripción:** Revoca un certificado (marca como revocado en BD).
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí (admin o propietario del cert)
-
-**Parámetros (path + JSON):**
-
-| Parámetro | Tipo | Ubicación | Descripción |
-|-----------|------|-----------|------------|
-| `id` | integer | path | ID del certificado |
-| `razon` | string | body | Motivo de revocación |
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Certificado revocado",
-  "certificate_id": 1,
-  "razon": "Compromiso de seguridad"
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/certificado/1/revocar \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{"razon": "Compromiso de seguridad"}'
-```
-
----
-
-### Endpoints de administración
-
-#### 11. GET /admin/usuarios — Listar usuarios (admin only)
-
-**Descripción:** Lista todos los usuarios del sistema.
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí (role = admin)
-
-**Parámetros:** Ninguno
-
-**Respuesta (200 OK):**
-```json
-{
-  "usuarios": [
-    {
-      "id": 1,
-      "username": "usuario_pru",
-      "role": "usuario",
-      "created_at": "2026-05-01T10:00:00Z"
-    },
-    {
-      "id": 4,
-      "username": "admin_prod",
-      "role": "admin",
-      "created_at": "2026-05-01T08:00:00Z"
-    }
-  ]
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/admin/usuarios \
-  -b cookies.txt
-```
-
----
-
-#### 12. POST /admin/crear_usuario — Crear usuario (admin only)
-
-**Descripción:** Crea nuevo usuario (requiere firma del admin).
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí (role = admin con certificado)
-
-**Parámetros (JSON):**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|----------|------------|
-| `username` | string | Sí | Nombre de usuario |
-| `role` | string | Sí | Rol: usuario, operativo, coordinador, admin |
-| `challenge` | string | Sí | Challenge para validar firma del admin |
-| `signature_b64` | string | Sí | Firma de admin |
-
-**Respuesta (201 Created):**
-```json
-{
-  "status": "success",
-  "message": "Usuario creado",
-  "usuario": {
-    "id": 5,
-    "username": "nuevo_operativo",
-    "role": "operativo",
-    "created_at": "2026-05-16T15:30:00Z"
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/admin/crear_usuario \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "username": "nuevo_operativo",
-    "role": "operativo",
-    "challenge": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
-    "signature_b64": "ABC123=="
-  }'
-```
-
----
-
-#### 13. POST /admin/eliminar_usuario/<id> — Eliminar usuario (admin only)
-
-**Descripción:** Elimina un usuario del sistema.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí (role = admin)
-
-**Parámetros (path):**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|------------|
-| `id` | integer | ID del usuario a eliminar |
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Usuario eliminado",
-  "user_id": 5
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/admin/eliminar_usuario/5 \
-  -b cookies.txt
-```
-
----
-
-#### 14. POST /admin/cambiar_rol/<id> — Cambiar rol de usuario (admin only)
-
-**Descripción:** Modifica el rol de un usuario.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí (role = admin)
-
-**Parámetros (path + JSON):**
-
-| Parámetro | Tipo | Ubicación | Descripción |
-|-----------|------|-----------|------------|
-| `id` | integer | path | ID del usuario |
-| `nuevo_rol` | string | body | Nuevo rol: usuario, operativo, coordinador, admin |
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Rol modificado",
-  "user_id": 5,
-  "nuevo_rol": "coordinador"
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/admin/cambiar_rol/5 \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{"nuevo_rol": "coordinador"}'
-```
-
----
-
-### Endpoints de perfil y seguridad
-
-#### 15. GET /perfil — Obtener perfil del usuario autenticado
-
-**Descripción:** Retorna información del perfil del usuario actual.
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí
-
-**Respuesta (200 OK):**
-```json
-{
-  "usuario": {
-    "id": 1,
-    "username": "usuario_pru",
-    "role": "usuario",
-    "created_at": "2026-05-01T10:00:00Z",
-    "must_change_password": false
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET http://localhost:5000/perfil \
-  -b cookies.txt
-```
-
----
-
-#### 16. POST /cambiar_contrasena — Cambiar contraseña
-
-**Descripción:** Cambia la contraseña del usuario autenticado.
-
-**Método:** `POST`
-
-**Autenticación requerida:** Sí
-
-**Parámetros (JSON):**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|----------|------------|
-| `password_actual` | string | Sí | Contraseña actual |
-| `password_nueva` | string | Sí | Nueva contraseña (mín. 12 caracteres) |
-| `password_confirmacion` | string | Sí | Confirmación de nueva contraseña |
-
-**Respuesta (200 OK):**
-```json
-{
-  "status": "success",
-  "message": "Contraseña cambiada exitosamente"
-}
-```
-
-**Respuesta (422 Unprocessable Entity - contraseña débil):**
-```json
-{
-  "status": "error",
-  "message": "Contraseña no cumple requisitos de seguridad",
-  "requirements": {
-    "min_length": 12,
-    "must_have_uppercase": true,
-    "must_have_lowercase": true,
-    "must_have_number": true,
-    "must_have_special": true
-  }
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X POST http://localhost:5000/cambiar_contrasena \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "password_actual": "UserDemo123!",
-    "password_nueva": "NewPassword456!",
-    "password_confirmacion": "NewPassword456!"
-  }'
-```
-
----
-
-### Endpoints de auditoría
-
-#### 17. GET /bitacora — Ver bitácora de eventos
-
-**Descripción:** Lista eventos auditados (acceso según rol).
-
-**Método:** `GET`
-
-**Autenticación requerida:** Sí (admin y coordinador ven todos, otros ven propios)
-
-**Parámetros (query - opcionales):**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|------------|
-| `username` | string | Filtrar por usuario (admin only) |
-| `accion` | string | Filtrar por tipo de acción |
-| `limit` | integer | Número de registros (default: 50) |
-| `offset` | integer | Desplazamiento para paginación (default: 0) |
-
-**Respuesta (200 OK):**
-```json
-{
-  "eventos": [
-    {
-      "id": 1,
-      "username": "admin_prod",
-      "accion": "crear_usuario",
-      "descripcion": "Nuevo usuario: operativo_1",
-      "timestamp": "2026-05-05T14:30:00Z",
-      "ip_address": "192.168.1.100"
-    },
-    {
-      "id": 2,
-      "username": "usuario_pru",
-      "accion": "login_exitoso",
-      "descripcion": "Login con certificado",
-      "timestamp": "2026-05-10T11:20:00Z",
-      "ip_address": "192.168.1.150"
-    }
-  ],
-  "total": 250,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-**Ejemplo (curl):**
-```bash
-curl -X GET "http://localhost:5000/bitacora?limit=20&accion=login_exitoso" \
-  -b cookies.txt
-```
-
-**Ejemplo (curl - filtrar por usuario, admin only):**
-```bash
-curl -X GET "http://localhost:5000/bitacora?username=usuario_pru&limit=30" \
-  -b cookies.txt
-```
-
----
-
-### Resumen de endpoints por rol
-
-| Endpoint | GET | POST | PUT | DELETE | Admin | Coord | Oper | Usuario |
-|----------|-----|------|-----|--------|-------|-------|------|---------|
-| /login | ✓ | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /logout |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /dashboard | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
-| /perfil | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
-| /cambiar_contrasena |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /expediente/crear |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /expediente/<id> | ✓ |  |  |  | ✓ | ✓ | ✓ | (propio) |
-| /expediente/<id>/canalizar |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /certificado/setup | ✓ |  |  |  | ✓ | ✓ | ✓ | ✓ |
-| /certificado/generar |  | ✓ |  |  | ✓ | ✓ | ✓ | ✓ |
-| /certificado/<id>/revocar |  | ✓ |  |  | ✓ | ✓ | ✓ | (propio) |
-| /admin/usuarios | ✓ |  |  |  | ✓ |  |  |  |
-| /admin/crear_usuario |  | ✓ |  |  | ✓ |  |  |  |
-| /admin/eliminar_usuario |  | ✓ |  |  | ✓ |  |  |  |
-| /admin/cambiar_rol |  | ✓ |  |  | ✓ |  |  |  |
-| /bitacora | ✓ |  |  |  | ✓ | ✓ |  |  |
-
----
-
-### Manejo de errores
-
-Todos los endpoints retornan errores en formato JSON:
-
-**Formato de error:**
-```json
-{
-  "status": "error",
-  "message": "Descripción del error",
-  "code": "ERROR_CODE",
-  "details": {}
-}
-```
-
-**Errores comunes:**
-
-```json
-// 400 Bad Request
-{
-  "status": "error",
-  "message": "Parámetro 'titulo' es requerido",
-  "code": "MISSING_PARAMETER"
-}
-
-// 401 Unauthorized
-{
-  "status": "error",
-  "message": "No autenticado",
-  "code": "NOT_AUTHENTICATED"
-}
-
-// 403 Forbidden
-{
-  "status": "error",
-  "message": "No tienes permisos para esta acción",
-  "code": "FORBIDDEN",
-  "details": {"required_role": "admin", "current_role": "usuario"}
-}
-
-// 404 Not Found
-{
-  "status": "error",
-  "message": "Expediente no encontrado",
-  "code": "NOT_FOUND"
-}
-
-// 422 Unprocessable Entity
-{
-  "status": "error",
-  "message": "Validación fallida",
-  "code": "VALIDATION_ERROR",
-  "details": {
-    "username": "Longitud mínima: 3 caracteres",
-    "password": "Debe contener mayúscula, minúscula, número y símbolo"
-  }
-}
-```
-
----
-
-### Ejemplo de flujo completo (Python)
-
-```python
-import requests
-import json
-
-BASE_URL = "http://localhost:5000"
-session = requests.Session()
-
-# 1. Login
-print("=== 1. Login ===")
-login_response = session.post(
-    f"{BASE_URL}/login",
-    data={"username": "usuario_pru", "password": "UserDemo123!"}
-)
-print(f"Status: {login_response.status_code}")
-print(f"Response: {login_response.json()}\n")
-
-# 2. Ver dashboard
-print("=== 2. Dashboard ===")
-dashboard = session.get(f"{BASE_URL}/dashboard").json()
-print(f"Usuario: {dashboard['user']['username']} ({dashboard['user']['role']})")
-print(f"Expedientes: {len(dashboard['expedientes'])}\n")
-
-# 3. Crear expediente
-print("=== 3. Crear expediente ===")
-new_exp = session.post(
-    f"{BASE_URL}/expediente/crear",
-    json={
-        "titulo": "Nuevo caso",
-        "descripcion": "Descripción del caso"
-    }
-).json()
-exp_id = new_exp["expediente"]["id"]
-print(f"Expediente creado: ID {exp_id}\n")
-
-# 4. Ver detalles
-print("=== 4. Ver detalles ===")
-exp_detail = session.get(f"{BASE_URL}/expediente/{exp_id}").json()
-print(f"Estado: {exp_detail['expediente']['estado']}\n")
-
-# 5. Canalizar expediente
-print("=== 5. Canalizar ===")
-canal_response = session.post(
-    f"{BASE_URL}/expediente/{exp_id}/canalizar",
-    json={"nuevo_estado": "en_revision"}
-).json()
-print(f"Nuevo estado: {canal_response['expediente']['estado']}\n")
-
-# 6. Ver bitácora
-print("=== 6. Bitácora ===")
-bitacora = session.get(f"{BASE_URL}/bitacora?limit=5").json()
-for evento in bitacora["eventos"][-3:]:
-    print(f"- {evento['timestamp']}: {evento['accion']}")
-
-# 7. Logout
-print("\n=== 7. Logout ===")
-session.post(f"{BASE_URL}/logout")
-print("Sesión cerrada")
-```
-
-**Output esperado:**
-```
-=== 1. Login ===
-Status: 200
-Response: {'status': 'success', 'user': {'id': 1, 'username': 'usuario_pru', ...}}
-
-=== 2. Dashboard ===
-Usuario: usuario_pru (usuario)
-Expedientes: 2
-
-=== 3. Crear expediente ===
-Expediente creado: ID 3
-
-=== 4. Ver detalles ===
-Estado: borrador
-
-=== 5. Canalizar ===
-Nuevo estado: en_revision
-
-=== 6. Bitácora ===
-- 2026-05-16T15:30:00Z: crear_expediente
-- 2026-05-16T15:30:15Z: cambiar_estado_expediente
-- 2026-05-16T15:30:20Z: ver_bitacora
-
-=== 7. Logout ===
-Sesión cerrada
-```
+## Rutas HTTP (interfaz web)
+
+La aplicación **no expone una API JSON/REST**: cada ruta renderiza una plantilla Jinja2
+(`render_template`) o realiza una redirección (`redirect`/`url_for`) tras procesar un formulario
+HTML. Las únicas respuestas JSON corresponden a los endpoints **WebAuthn** (que siguen el
+protocolo `navigator.credentials.create/get` del lado del cliente) y a algunos endpoints
+auxiliares de PKI/cifrado consumidos por `fetch()` desde las plantillas de administración.
+
+### Autenticación e identidad
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/` | GET, POST | Login: verificación Argon2id, control de bloqueo (`login_lockouts`), `must_change_password`, disparo de reto-respuesta de certificado/passkey para roles críticos |
+| `/auth/passkey/register/options` `/verify` | POST | Ceremonia WebAuthn de **registro** de passkey (genera opciones / verifica el atestado) |
+| `/auth/check-passkey-required` | POST | Indica al cliente si la cuenta requiere autenticación con passkey |
+| `/auth/passkey/login/options` `/verify` | POST | Ceremonia WebAuthn de **autenticación** (login sin contraseña con passkey) |
+| `/action/passkey/options` `/verify` | POST | Firma de **acciones críticas** con passkey (rotación de llaves, revocaciones, etc.), gateado por `check_and_consume_passkey_action` |
+| `/certificado/setup` | GET, POST | Alta de certificado X.509 propio (generación en servidor o importación vía CSR) |
+| `/password/update` | GET, POST | Cambio de contraseña (incluye flujo forzado por `must_change_password`) |
+| `/logout` | GET | Cierre de sesión |
+
+### Expedientes y bandeja de trabajo
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/dashboard` | GET | Panel principal según rol |
+| `/survey` | GET, POST | Formulario de levantamiento de un nuevo expediente (cifra `datos` con Fernet al guardar) |
+| `/bandeja` | GET | Bandeja de expedientes pendientes de revisión por el rol en sesión |
+| `/encuesta/<id>/avanzar` | POST | Avanza el estado del expediente según `next_status_for_role` |
+| `/solicitar-eliminacion/<id>` | POST | Solicita eliminación de un expediente |
+| `/solicitud/<id>/resolver` | POST | Resuelve una solicitud de eliminación |
+| `/admin` | GET | Panel de administración general |
+
+### Gestión de usuarios e identidades (PKI / passkeys)
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/usuarios` | GET, POST | Alta/edición de cuentas de usuario |
+| `/eliminar-usuario/<id>` | POST | Elimina un usuario (limpia artefactos PKI huérfanos) |
+| `/admin/identidades` | GET | Vista consolidada de identidades reforzadas (certificados + passkeys) |
+| `/admin/pki` | GET | Panel de administración de PKI |
+| `/admin/pki/passkey-certificate-status` | GET | Estado del vínculo passkey↔certificado por usuario |
+| `/admin/pki/revoke-passkey` | POST | Revoca una passkey (y su certificado vinculado si corresponde) |
+| `/admin/pki/revoke-certificate` | POST | Revoca un certificado (y las passkeys vinculadas) |
+| `/certificado/<id>/descargar` | POST | Descarga el certificado emitido (PEM) |
+| `/certificado/<id>/revocar` | POST | Revoca un certificado específico |
+
+### Cifrado y rotación de llaves
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/admin/cifrado` | GET, POST | Panel de estado de cifrado (llave activa, llaves legadas, métricas) |
+| `/admin/cifrado/metrics` | GET | Métricas de latencia/uso de cifrado (`encryption_metrics`) |
+| `/admin/cifrado/jobs` | GET | Estado de los trabajos de re-cifrado (`reencrypt_jobs`) |
+| `/admin/keys/configure` | POST | Configura una nueva llave candidata (requiere firma con passkey de acción) |
+| `/admin/keys/<fp>/activate` | POST | Activa una llave por huella y encola el re-cifrado masivo |
+
+### Auditoría y perfil
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/logs` | GET | Visualización de la bitácora de auditoría |
+| `/logs/clear` | POST | Limpieza de la bitácora (acción crítica, sólo `admin`) |
+| `/profile` | GET, POST | Perfil del usuario en sesión |
+
+### ARCO (derechos de datos)
+
+| Ruta | Métodos | Descripción |
+|---|---|---|
+| `/arco` | GET | Formulario público de solicitud ARCO |
+| `/arco/solicitud` | POST | Registra una nueva solicitud (`nivel_actual = 'usuarios'`) |
+| `/arco/<id>/aprobar` | POST | Aprobación en cascada por nivel (usuarios → operativos → coordinadores) |
+| `/arco/<id>/resolver` | POST | Resolución de una solicitud en el nivel correspondiente |
+| `/arco/<id>/resolver-coordinador` | POST | El coordinador marca como resuelta **o** la reenvía (`reenviado_por_coordinador`) a `nivel_actual = 'admin'` |
 
 ---
 
 ## Flujos y Lógica de Negocio
 
-### Procesos clave del sistema
+### 1. Inicio de sesión y refuerzo de identidad
 
-#### 1. Autenticación y Control de Acceso
+1. El usuario envía usuario/contraseña a `/`.
+2. Se valida el formato y se verifica contra `password_hash` con `verify_password_argon2id`
+   (Argon2id, comparación de hash constante en tiempo vía la librería `argon2-cffi`).
+3. Antes de comprobar la contraseña se consulta `_is_locked(identifier)`: si la cuenta/IP está
+   bloqueada (`login_lockouts`), se rechaza sin revelar si el usuario existe.
+4. Si la contraseña es incorrecta, `_record_failed(identifier)` incrementa el contador; al llegar
+   a `LOGIN_MAX_ATTEMPTS` (5) dentro de `LOGIN_WINDOW_SECONDS` (300 s) se fija
+   `locked_until = ahora + LOGIN_LOCKOUT_SECONDS` (900 s) y se registra en `logs` con
+   `categoria="seguridad"`.
+5. Si la contraseña es correcta, `_clear_failed(identifier)` limpia el contador.
+6. `password_is_legacy_or_weak` detecta hashes heredados o contraseñas que ya no cumplen la
+   política vigente y fuerza `must_change_password`.
+7. Para roles críticos (`admin`, `coordinador`), `enforce_certificate_setup()`
+   (`before_request`, `app.py:3155`) obliga a completar la configuración de certificado/passkey
+   antes de permitir cualquier otra acción — se redirige a `/certificado/setup` o al flujo de
+   registro de passkey según el estado de la cuenta.
+8. Si la cuenta tiene passkeys activas, se exige (o se ofrece, según `PASSKEY_ENFORCE_CRITICAL`)
+   una ceremonia WebAuthn de autenticación (`/auth/passkey/login/options` → `/verify`) o un reto
+   firmado con el certificado, antes de abrir la sesión completa.
 
-**Flujo de autenticación básica (usuario):**
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   AUTENTICACIÓN BÁSICA                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  1. USUARIO ACCEDE A /login                                     │
-│     └─→ Servidor genera UUID challenge                         │
-│     └─→ Retorna formulario HTML                                │
-│                                                                   │
-│  2. USUARIO INGRESA CREDENCIALES                               │
-│     ├─ username                                                 │
-│     └─ password                                                 │
-│                                                                   │
-│  3. CLIENTE ENVÍA POST /login                                  │
-│                                                                   │
-│  4. SERVIDOR VALIDA                                            │
-│     ├─ ¿Usuario existe?                                        │
-│     │  └─→ NO: Retorna 401 "Usuario no existe"               │
-│     ├─ ¿Está bloqueado por intentos?                          │
-│     │  └─→ SÍ: Retorna 423 "Usuario bloqueado"               │
-│     ├─ ¿Contraseña es correcta?                               │
-│     │  ├─→ NO: login_attempts++                               │
-│     │  │   └─ Si intentos >= 5:                              │
-│     │  │      └─ locked_until = NOW + 900 seg                │
-│     │  │   └─→ Retorna 401 "Contraseña incorrecta"           │
-│     │  └─→ SÍ: Continuar                                      │
-│     └─ Resetear login_attempts a 0                            │
-│                                                                   │
-│  5. CREAR SESIÓN                                               │
-│     ├─ Generar session_id                                      │
-│     ├─ Almacenar en Flask session                              │
-│     ├─ Configurar cookie HttpOnly + SameSite                   │
-│     └─ Registrar evento "login_exitoso" en bitácora            │
-│                                                                   │
-│  6. RETORNAR RESPUESTA 200                                     │
-│     └─ {"status": "success", "user": {...}}                   │
-│                                                                   │
-│  7. CLIENTE RECIBE COOKIE DE SESIÓN                            │
-│     └─ Se almacena en cliente de forma segura                  │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Flujo de autenticación reforzada (admin/coordinador con certificado):**
+### 2. Ciclo de vida de un expediente (`encuestas`)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│            AUTENTICACIÓN CON CERTIFICADO + FIRMA                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  1. USUARIO ACCEDE A /login                                     │
-│     └─→ Servidor genera UUID challenge                         │
-│                                                                   │
-│  2. USUARIO CONSTRUYE PAYLOAD PARA FIRMAR                       │
-│     Formato: CasaMonarca|<proposito>|<username>|<challenge>    │
-│     Ejemplo: CasaMonarca|login|admin_prod|a1b2c3d4-...        │
-│                                                                   │
-│  3. USUARIO FIRMA CON CLAVE PRIVADA                            │
-│     Command: openssl dgst -sha256 -sign private.key             │
-│     Resultado: signature_b64 (Base64)                           │
-│                                                                   │
-│  4. USUARIO ENVÍA POST /login                                  │
-│     ├─ username                                                 │
-│     ├─ password                                                 │
-│     ├─ challenge                                                │
-│     ├─ signature_b64                                            │
-│     └─ certificate_pem                                          │
-│                                                                   │
-│  5. SERVIDOR VALIDA CONTRASEÑA (igual que arriba)              │
-│                                                                   │
-│  6. SERVIDOR VALIDA CERTIFICADO                                │
-│     ├─ ¿Certificado tiene firma válida de CA?                 │
-│     │  └─→ NO: Retorna 401 "Certificado inválido"             │
-│     ├─ ¿Certificado está expirado?                            │
-│     │  └─→ SÍ: Retorna 401 "Certificado expirado"             │
-│     ├─ ¿CN del certificado == username?                       │
-│     │  └─→ NO: Retorna 401 "CN no coincide"                   │
-│     ├─ ¿Certificado está revocado?                            │
-│     │  └─→ SÍ: Retorna 401 "Certificado revocado"             │
-│     └─→ VÁLIDO: Continuar                                      │
-│                                                                   │
-│  7. SERVIDOR VALIDA FIRMA                                      │
-│     ├─ Extraer clave pública del certificado                   │
-│     ├─ Verificar: signature_b64 = RSA-SHA256(payload)          │
-│     │  └─→ NO: Retorna 401 "Firma inválida"                   │
-│     └─→ VÁLIDA: Continuar                                      │
-│                                                                   │
-│  8. CREAR SESIÓN (igual que autenticación básica)              │
-│     └─ Sesión ahora tiene "certificado_validado: true"        │
-│                                                                   │
-│  9. REGISTRAR EN BITÁCORA                                      │
-│     └─ "login_exitoso" + "Con certificado + firma"            │
-│                                                                   │
-│  10. RETORNAR RESPUESTA 200                                    │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
+borrador ──(operativo revisa)──▶ en_revision_operativa
+         ──(coordinador revisa)──▶ en_revision_coordinacion
+         ──(coordinador valida)──▶ validado_coordinacion
+         ──(admin cierra)──▶ cerrado
 ```
 
-#### 2. Ciclo de vida de expedientes
+- `/survey` crea el expediente en estado `borrador`, cifrando el payload de datos sensibles con
+  `encrypt_data()` antes de guardarlo en `encuestas.datos`.
+- `/bandeja` filtra los expedientes visibles según el rol (cada rol ve los que le corresponde
+  revisar, conforme a `PERMISSIONS` y al estado actual).
+- `/encuesta/<id>/avanzar` consulta `next_status_for_role(role)` para determinar el estado
+  esperado y el estado siguiente; si el expediente no está en el estado que el rol puede mover,
+  la transición se rechaza. Cada cambio de estado se registra en `logs`.
+- Al leer un expediente, `decrypt_data()` (con soporte de *keyring* para llaves legadas) descifra
+  `datos` de forma transparente, registrando métricas de latencia.
 
-**Estados y transiciones:**
+### 3. Cifrado de datos y rotación de llaves (Fernet + keyring)
 
-```
-                ┌──────────────┐
-                │   BORRADOR   │ ◄──────┐ Usuario crea
-                └──────┬───────┘        │ expediente
-                       │
-                       │ canalizar (usuario)
-                       ▼
-                ┌──────────────┐
-                │ EN_REVISIÓN  │
-                └──────┬───────┘
-                       │
-                       │ canalizar (operativo)
-                       ▼
-                ┌──────────────┐
-                │  VALIDADO    │
-                └──────┬───────┘
-                       │
-                       │ canalizar (coordinador + firma)
-                       ▼
-                ┌──────────────┐
-                │   CERRADO    │
-                └──────────────┘
-                       ▲
-                       │
-                       └─ Cualquier estado → borrador (admin, para revisar)
-```
+- `encrypt_data(payload, ...)` cifra con la llave **activa** y devuelve un blob con el formato
+  `b"fp:" + <huella SHA-256 de la llave>.encode() + b"\n" + <token Fernet>`
+  (`app.py:2999`). La huella permite identificar, sin descifrar, **con qué llave** se cifró
+  cada registro.
+- `decrypt_data(blob, ...)` (`app.py:2922`) reconoce el prefijo `fp:`, ubica la llave
+  correspondiente en el *keyring* (`get_cipher_for_fingerprint`) — que incluye la llave activa
+  más las legadas en `ENCRYPTION_LEGACY_KEY_PATHS` — y descifra. Esto permite **leer datos
+  cifrados con llaves anteriores** mientras se completa una rotación.
+- **Rotación**: un administrador configura una nueva llave candidata
+  (`/admin/keys/configure`, requiere firma de acción con passkey vía
+  `check_and_consume_passkey_action`), y al activarla (`/admin/keys/<fp>/activate`) se
+  encola un trabajo en `reencrypt_jobs`. `tools/reencrypt_worker.py` procesa la cola en lotes,
+  re-descifrando con la llave anterior y re-cifrando con la nueva (`reencrypt_all_surveys`),
+  actualizando `encryption_keys.state` (`activo` → `legada` → eventualmente `retiring`).
+- `record_encryption_metric()` / `get_encryption_metrics()` registran tiempos de cifrado/
+  descifrado en `encryption_metrics`, comparándolos contra
+  `ENCRYPTION_LATENCY_WARNING_SECONDS` para detectar degradación.
 
-**Reglas de transición:**
+### 4. PKI X.509 y reto-respuesta
 
-| De → A | Rol requerido | Autenticación | Condiciones adicionales |
-|--------|---------------|--------------|----------------------|
-| BORRADOR → EN_REVISIÓN | usuario | Contraseña | Solo propietario |
-| EN_REVISIÓN → VALIDADO | operativo | Contraseña | Solo asignado |
-| VALIDADO → CERRADO | coordinador | Cert + Firma | Debe registrarse en bitácora |
-| * → BORRADOR | admin | Cert + Firma | Para revisar/editar |
-| * → CERRADO | admin | Cert + Firma | Cierre de emergencia |
+- `_load_or_create_certificate_authority()` genera (si no existe) una **CA local de
+  desarrollo**: llave RSA de **3072 bits**, certificado autofirmado válido **10 años**
+  (`days=3650`), firmado con **SHA-256**.
+- `issue_user_certificate*` emite certificados de usuario: llave RSA de **2048 bits**, firmados
+  por la CA con **SHA-256**, validez `CERT_VALIDITY_HOURS` = **720 horas (30 días)**. Pueden
+  generarse en servidor o a partir de un **CSR** enviado por el cliente
+  (`_build_signed_certificate_from_csr`).
+- El **reto-respuesta** (`issue_signature_challenge` / `consume_signature_challenge`,
+  `app.py:2182`) construye un *payload* determinista
+  `f"CasaMonarca|{purpose}|{username}|{challenge}"` (`build_signature_payload`, `app.py:2243`),
+  que el cliente firma con su llave privada y el servidor verifica con
+  `verify_certificate_challenge_response` usando **`padding.PKCS1v15()` + `hashes.SHA256()`**
+  contra la llave pública del certificado activo del usuario. Los retos tienen un TTL
+  (`SIGNATURE_CHALLENGE_TTL`, 300 s) y se consumen una sola vez (anti-repetición).
+- `revoke_certificate` / `revoke_certificate_and_passkeys` marcan el certificado como
+  `revocado`, registran el motivo y desactivan las passkeys vinculadas.
+- `check_certificate_expiration` detecta certificados vencidos y **desactiva automáticamente**
+  las passkeys que dependían de ellos (vínculo N:1).
 
-**Permisos por rol en cada estado:**
+### 5. WebAuthn / Passkeys y vínculo con PKI
 
-| Estado | Usuario | Operativo | Coordinador | Admin |
-|--------|---------|-----------|-------------|-------|
-| BORRADOR | Ver, Canalizar | - | - | Ver, Canalizar, Editar |
-| EN_REVISIÓN | Ver (propio) | Ver, Canalizar | Ver | Ver, Canalizar |
-| VALIDADO | Ver (propio) | Ver | Ver, Canalizar | Ver, Canalizar |
-| CERRADO | Ver (propio) | Ver | Ver | Ver, Reabrir |
+- Registro: `/auth/passkey/register/options` genera el reto de creación
+  (`generate_registration_options`); `/verify` valida el atestado
+  (`verify_registration_response`) y guarda la credencial (`save_passkey_credential`).
+- **La primera passkey registrada deriva automáticamente un certificado X.509** para el usuario
+  (`derive_certificate_from_first_passkey`, `app.py:1645` → `link_passkey_to_certificate`):
+  arquitectura **N:1** — múltiples passkeys de un usuario pueden enlazarse al mismo certificado,
+  de modo que revocar el certificado revoca/desactiva todas las passkeys vinculadas
+  (`revoke_certificate_and_passkeys`) y viceversa (`revoke_passkey_and_cert`).
+- Login: `/auth/passkey/login/options` → `/verify` ejecuta la ceremonia de autenticación
+  (`generate_authentication_options` / `verify_authentication_response`), valida la firma
+  contra la llave pública COSE almacenada y **comprueba que `sign_count` haya aumentado**
+  respecto al valor guardado — la defensa estándar contra clonación de autenticadores.
+- Firma de acciones críticas: `/action/passkey/options` → `/verify`, validadas por
+  `check_and_consume_passkey_action(expected_action_label, max_age_seconds=60)`
+  (`app.py:4143`), exigida antes de operaciones como rotar llaves de cifrado o revocar
+  identidades — aporta **no repudio** operativo (la acción queda ligada criptográficamente a
+  una credencial específica del usuario, auditada en `logs`).
 
-#### 3. Gestión de certificados
+### 6. Política de contraseñas
 
-**Ciclo de vida de certificados:**
+`validate_new_password_policy` combina:
+- Longitud mínima `PASSWORD_MIN_LENGTH` (12).
+- `password_has_minimum_entropy` (rechaza patrones triviales/`COMMON_WEAK_PASSWORDS`).
+- `check_password_pwned` — consulta el **modelo de k-anonimato de Have I Been Pwned**: se
+  calcula `SHA-1(password)`, se envían sólo los **primeros 5 caracteres hexadecimales** del hash
+  a `https://api.pwnedpasswords.com/range/<prefijo>`, y se compara localmente el sufijo contra
+  la lista de sufijos devueltos — el servicio externo nunca recibe la contraseña ni el hash
+  completo (`app.py:1175-1193`).
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  CICLO DE VIDA DE CERTIFICADOS                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  USUARIO SOLICITA CERTIFICADO EN /certificado/setup             │
-│  ├─ Opción A: Generar localmente (sin CSR)                     │
-│  │  └─ CA genera clave privada + CSR + certificado             │
-│  │  └─ Usuario descarga (.pem)                                 │
-│  └─ Opción B: Cargar CSR existente                             │
-│     └─ Usuario previamente generó CSR con clave privada        │
-│     └─ CA firma el CSR                                         │
-│     └─ Usuario descarga certificado firmado                    │
-│                                                                   │
-│  CERTIFICADO EMITIDO (estado: ACTIVO)                           │
-│  ├─ Stored en BD (huella SHA-256, PEM)                         │
-│  ├─ Válido por 30 días (720 horas)                             │
-│  └─ Puede usar para:                                           │
-│     ├─ Autenticación reforzada (login)                         │
-│     └─ Firmar acciones críticas                                │
-│                                                                   │
-│  ANTES DE EXPIRACIÓN                                            │
-│  └─ Usuario recibe notificación (7 días antes)                 │
-│     └─ Puede renovar en /certificado/setup                     │
-│                                                                   │
-│  USUARIO REVOCA (acción crítica)                               │
-│  ├─ POST /certificado/<id>/revocar con motivo                  │
-│  ├─ Motivo obligatorio: "Compromiso", "Pérdida", "Rotación"    │
-│  ├─ Certificado marcado como REVOCADO                          │
-│  ├─ Evento registrado en bitácora                              │
-│  └─ No puede volver a usar (incluso si había tiempo)           │
-│                                                                   │
-│  CERTIFICADO EXPIRA                                            │
-│  └─ Después de 30 días                                         │
-│  └─ Estado automático: EXPIRADO                                │
-│  └─ No puede usar para autenticación                           │
-│  └─ Debe generar nuevo                                         │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+`hash_password_argon2id` usa **Argon2id** (`Type.ID`) con
+`memory_cost=65536` (64 MiB), `time_cost=3`, `parallelism=2`, `hash_len=32`, `salt_len=16`
+(`ARGON2_*`, `app.py:60-64`), generando una sal aleatoria de 16 bytes por contraseña
+(`generate_password_salt` → `os.urandom(ARGON2_SALT_LEN)`).
 
-**Validaciones de certificado en login:**
-
-```python
-def validate_certificate_for_login(cert_pem, username):
-    # 1. Parsear certificado
-    cert = load_pem_x509_certificate(cert_pem)
-    
-    # 2. Validar firma de CA
-    if not verify_ca_signature(cert):
-        raise InvalidCertificate("CA signature invalid")
-    
-    # 3. Validar CN
-    cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-    if cn != username:
-        raise InvalidCertificate("CN mismatch")
-    
-    # 4. Validar vigencia
-    if cert.not_valid_after < datetime.now():
-        raise CertificateExpired()
-    
-    # 5. Consultar BD
-    db_cert = get_certificate_by_fingerprint(certificate_fingerprint(cert))
-    
-    # 6. Validar estado en BD
-    if db_cert.estado != 'activo':
-        raise CertificateRevoked()
-    
-    return True
-```
-
-#### 4. Rate-limiting y protección
-
-**Lógica de bloqueo por intentos fallidos:**
+### 7. Solicitudes ARCO multinivel
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                   RATE-LIMITING DE LOGIN                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  Configuración:                                                 │
-│  ├─ MAX_ATTEMPTS = 5 intentos                                   │
-│  ├─ WINDOW = 300 segundos (5 minutos)                           │
-│  └─ LOCKOUT = 900 segundos (15 minutos)                         │
-│                                                                   │
-│  USUARIO INTENTA LOGIN                                          │
-│  ├─ ¿Existe registro en login_attempts?                         │
-│  │  └─ NO: Crear registro nuevo (intentos=0)                   │
-│  │  └─ SÍ: Continuar                                           │
-│  │                                                               │
-│  ├─ ¿locked_until > NOW?                                       │
-│  │  └─ SÍ: RECHAZAR "Usuario bloqueado hasta ..."             │
-│  │  └─ NO: Continuar                                           │
-│  │                                                               │
-│  ├─ ¿ ventana_inicio + 300 < NOW?                             │
-│  │  └─ SÍ: RESETEAR (intentos=0, ventana_inicio=NOW)          │
-│  │  └─ NO: Continuar con ventana actual                        │
-│  │                                                               │
-│  ├─ VALIDAR CREDENCIALES                                       │
-│  │  └─ ¿Correctas?                                             │
-│  │     ├─ SÍ: intentos=0, locked_until=NULL → LOGIN OK       │
-│  │     └─ NO: intentos++ → Continuar                           │
-│  │                                                               │
-│  ├─ ¿intentos >= MAX_ATTEMPTS (5)?                            │
-│  │  └─ SÍ:                                                      │
-│  │     ├─ locked_until = NOW + 900 seg                         │
-│  │     ├─ Registrar "login_bloqueado" en bitácora              │
-│  │     └─ RECHAZAR "Usuario bloqueado 15 minutos"             │
-│  │  └─ NO:                                                      │
-│  │     ├─ remaining = 5 - intentos                             │
-│  │     └─ RECHAZAR "Contraseña incorrecta. Intenta: X/5"      │
-│  │                                                               │
-│  ├─ DESPUÉS DE 15 MINUTOS                                      │
-│  │  └─ locked_until < NOW                                      │
-│  │  └─ Siguiente intento: resetea automáticamente              │
-│  │  └─ Vuelve a contar desde 0                                 │
-│  │                                                               │
-└─────────────────────────────────────────────────────────────────┘
+/arco (formulario público)
+  → INSERT en solicitudes_arco, nivel_actual = 'usuarios'
+  → aprobado_usuarios       (nivel "usuarios")
+  → aprobado_operativos     (nivel "operativos")
+  → aprobado_coordinadores  (nivel "coordinadores")
+        ├─ resuelto = 1                                    (fin del flujo)
+        └─ reenviado_por_coordinador = 1, nivel_actual='admin'  (escalado a Admin)
 ```
 
-### Reglas importantes
-
-#### 1. Reglas de seguridad
-
-**Contraseña:**
-- Mínimo 12 caracteres
-- Debe contener: mayúscula, minúscula, número, símbolo especial
-- No puede ser contraseña débil común (lista negra)
-- Hashing: Argon2id con:
-  - `memory_cost` = 65536 KB (64 MB)
-  - `time_cost` = 3 iteraciones
-  - `parallelism` = 2
-  - `hash_len` = 32 bytes
-
-**Certificados X.509:**
-- Generados por CA local
-- Válidos por 30 días (720 horas)
-- Utilizan RSA-2048 para claves
-- SHA-256 para firma
-- CN debe coincidir con username
-
-**Sesiones:**
-- Cookie HttpOnly: No accesible por JavaScript
-- Cookie SameSite: Strict (producción) / Lax (desarrollo)
-- Cookie Secure: Requiere HTTPS en producción
-- Tiempo de vida: 8 horas (configurable)
-
-#### 2. Reglas de integridad de datos
-
-**Expedientes:**
-- Solo el propietario puede editar en estado "BORRADOR"
-- Una vez canalizados, no pueden volver a "BORRADOR" excepto admin
-- Cambios de estado se registran en bitácora con timestamp
-- Auditoría completa: quién, cuándo, qué acción
-
-**Certificados:**
-- Una vez revocado, no se puede reactivar (debe generar nuevo)
-- Huella SHA-256 es única (no puede haber dos certificados con misma huella)
-- Expiración es automática en BD (chequeo al login)
-
-**Usuarios:**
-- username es único (constraint UNIQUE)
-- No se puede cambiar username después de creación
-- Eliminar usuario es operación crítica (cascada a expedientes)
-
-#### 3. Reglas de auditoría
-
-**Eventos auditados (14 tipos):**
-1. `login_exitoso` — Login correcto
-2. `login_fallido` — Credenciales incorrectas
-3. `login_bloqueado` — Usuario bloqueado por intentos
-4. `logout` — Cierre de sesión
-5. `cambiar_contrasena` — Cambio de contraseña
-6. `crear_expediente` — Nuevo expediente
-7. `cambiar_estado_expediente` — Canalización
-8. `crear_usuario` — Creación por admin (requiere firma)
-9. `eliminar_usuario` — Eliminación por admin
-10. `cambiar_rol_usuario` — Cambio de rol por admin
-11. `generar_certificado` — Emisión de certificado
-12. `revocar_certificado` — Revocación de certificado
-13. `backup_realizado` — Backup cifrado
-14. `backup_restaurado` — Restauración de backup
-
-**Registro obligatorio:**
-- username: usuario que realizó la acción
-- accion: tipo de evento
-- descripcion: detalles (ej: "User: operativo_1, Estado: borrador → en_revision")
-- timestamp: fecha/hora exacta (UTC)
-- ip_address: IP del cliente (para auditoría de seguridad)
-
-#### 4. Reglas de acceso RBAC
-
-**Roles y permisos:**
-
-| Rol | Crear Expediente | Canalizar | Ver Bitácora | Crear Usuario | Revocar Cert |
-|-----|-----------------|-----------|--------------|---------------|-------------|
-| usuario | ✓ (propio) | ✓ | - | - | ✓ (propio) |
-| operativo | - | ✓ | - | - | ✓ (propio) |
-| coordinador | - | ✓ (con firma) | ✓ (todo) | - | ✓ (todo) |
-| admin | ✓ | ✓ | ✓ (todo) | ✓ (con firma) | ✓ (todo) |
-
-**Validación en cada request:**
-```python
-@require_login
-@require_role("admin")  # Solo admin
-def admin_crear_usuario():
-    # Si no es admin → 403 Forbidden
-    # Si no está autenticado → 401 Unauthorized
-    pass
-```
-
-### Casos críticos
-
-#### 1. Usuario bloqueado por intentos
-
-**Escenario:** Usuario ingresa contraseña incorrecta 5 veces en 5 minutos.
-
-**Lógica:**
-1. Intento 1-4: Rechaza con "Credenciales incorrectas. Intentos restantes: X"
-2. Intento 5: locked_until = NOW + 900 segundos (15 minutos)
-3. Login rechazado: "Usuario bloqueado hasta 2026-05-16T15:15:00Z"
-4. Evento registrado: `login_bloqueado`
-5. Después de 15 min: Usuario puede intentar de nuevo (contador resetea)
-
-**Código:**
-```python
-def check_login_attempts(username):
-    record = db.query(LoginAttempts).filter_by(username=username).first()
-    
-    # Si no existe, crear
-    if not record:
-        record = LoginAttempts(username=username, intentos=0)
-        db.add(record)
-        db.commit()
-        return True
-    
-    # Si está bloqueado y aún vigente
-    if record.locked_until and record.locked_until > datetime.now():
-        log_event(username, "login_bloqueado", f"Bloqueado hasta {record.locked_until}")
-        return False
-    
-    # Si pasó la ventana de bloqueo, resetear
-    if record.ventana_inicio and (datetime.now() - record.ventana_inicio).total_seconds() > 300:
-        record.intentos = 0
-        record.ventana_inicio = datetime.now()
-        db.commit()
-    
-    return True
-
-def handle_failed_login(username):
-    record = db.query(LoginAttempts).filter_by(username=username).first()
-    record.intentos += 1
-    
-    if record.intentos >= 5:
-        record.locked_until = datetime.now() + timedelta(seconds=900)
-        log_event(username, "login_bloqueado", "Por intentos excesivos")
-    else:
-        log_event(username, "login_fallido", f"Intento {record.intentos}/5")
-    
-    db.commit()
-```
-
-#### 2. Certificado próximo a expirar
-
-**Escenario:** Certificado expira en 7 días.
-
-**Lógica:**
-1. Sistema detecta: expires_at < NOW + 7 días
-2. En siguiente login: Mostrar banner amarillo "Tu certificado expira el X"
-3. Usuario navega a /certificado/setup
-4. Si intenta usar certificado expirado:
-   - Rechaza login con "Certificado expirado"
-   - Debe generar nuevo certificado
-
-**Consulta de detección:**
-```sql
-SELECT * FROM certificados
-WHERE user_id = ? 
-  AND estado = 'activo'
-  AND expires_at < datetime('now', '+7 days')
-ORDER BY expires_at ASC;
-```
-
-#### 3. Expediente en transición de estado bloqueado
-
-**Escenario:** Coordinador intenta canalizar expediente que está en revisión pero sin firma.
-
-**Lógica:**
-1. POST /expediente/<id>/canalizar
-2. Servidor valida:
-   - ¿Usuario es coordinador? ✓
-   - ¿Expediente está en VALIDADO? ✓
-   - ¿Tiene firma? ✗ (signature_b64 vacío)
-3. Rechaza: "Firma requerida para canalizar"
-4. Usuario debe firmar con certificado privado
-
-**Validación:**
-```python
-def canalizar_expediente(exp_id, nuevo_estado, signature_b64=None):
-    exp = get_expediente(exp_id)
-    user = get_current_user()
-    
-    # Validar transición
-    if not es_transicion_valida(exp.estado, nuevo_estado, user.role):
-        raise PermissionError(f"Transición no permitida para {user.role}")
-    
-    # Si es coordinador/admin, requiere firma
-    if user.role in ["coordinador", "admin"]:
-        if not signature_b64:
-            raise ValueError("Firma requerida")
-        
-        if not verify_signature(signature_b64, user.certificate_pem):
-            raise ValueError("Firma inválida")
-    
-    # Actualizar y auditar
-    exp.estado = nuevo_estado
-    exp.updated_at = datetime.now()
-    db.commit()
-    
-    log_event(user.username, "cambiar_estado_expediente",
-              f"ID: {exp_id}, {exp.estado} → {nuevo_estado}")
-```
-
-#### 4. Admin resetea contraseña de usuario bloqueado
-
-**Escenario:** User "operativo_1" está bloqueado por intentos. Admin lo resetea.
-
-**Lógica:**
-1. Admin accede (autenticado)
-2. Admin navega a /admin/usuarios
-3. Localiza "operativo_1"
-4. Opción: "Resetear contraseña"
-5. Sistema:
-   - Genera nueva contraseña temporal
-   - Establece `must_change_password = 1`
-   - Resetea `login_attempts.locked_until = NULL`
-   - Resetea `login_attempts.intentos = 0`
-   - Registra evento: "cambiar_contrasena_forzado"
-6. Admin comparte password temporal con usuario
-7. Usuario en siguiente login debe cambiar contraseña
-
-#### 5. Backup fallido durante operación crítica
-
-**Escenario:** Proceso de backup interrumpido mientras se escribía archivo .enc
-
-**Lógica:**
-1. `tools/backup_db.py` inicia
-2. Genera IV aleatorio
-3. Cifra database.db con AES-256
-4. Escribe backup a `backups/db_backup_YYYYMMDDTHHMMSSZ.enc`
-5. Si falla a mitad:
-   - Archivo .enc queda incompleto/corrupto
-   - Siguiente intento crea nuevo archivo
-   - No intenta completar anterior
-
-**Protección:**
-```python
-def backup_database():
-    try:
-        # Leer BD
-        with open("database.db", "rb") as f:
-            db_data = f.read()
-        
-        # Generar IV aleatorio
-        iv = os.urandom(16)
-        
-        # Cifrar
-        cipher = Cipher(
-            algorithms.AES(key),
-            modes.CBC(iv),
-            backend=default_backend()
-        )
-        encryptor = cipher.encryptor()
-        encrypted = encryptor.update(db_data) + encryptor.finalize()
-        
-        # Escribir a archivo temporal primero
-        timestamp = datetime.now().isoformat().replace(":", "").replace(".", "")
-        temp_path = f"backups/db_backup_{timestamp}.tmp"
-        final_path = f"backups/db_backup_{timestamp}.enc"
-        
-        with open(temp_path, "wb") as f:
-            f.write(iv + encrypted)
-        
-        # Renombrar solo si todo fue bien
-        os.rename(temp_path, final_path)
-        
-        log_event("system", "backup_realizado", f"File: {final_path}")
-        
-    except Exception as e:
-        log_event("system", "backup_fallido", f"Error: {str(e)}")
-        raise
-```
-
-#### 6. Validación de CSR cargado por usuario
-
-**Escenario:** Usuario carga CSR generado con su clave privada en /certificado/setup
-
-**Lógica:**
-1. Usuario navega a /certificado/setup
-2. Selecciona "Usar CSR existente"
-3. Carga archivo: `usuario.csr.pem`
-4. Servidor valida:
-   - ¿Es formato PEM válido?
-   - ¿CSR está bien formado?
-   - ¿CN en CSR == username del usuario?
-   - ¿Clave pública en CSR es válida?
-5. Si todo OK:
-   - CA firma el CSR
-   - Emite certificado X.509
-   - Almacena en BD
-6. Si error: Rechaza con mensaje claro
-
-**Validación:**
-```python
-def validar_csr(csr_pem, username):
-    try:
-        # Parsear CSR
-        csr = load_pem_x509_csr(csr_pem.encode())
-        
-        # Validar CN
-        cn = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-        if cn != username:
-            raise ValueError(f"CSR CN ({cn}) no coincide con usuario ({username})")
-        
-        # Validar clave pública
-        public_key = csr.public_key()
-        if not isinstance(public_key, RSAPublicKey):
-            raise ValueError("CSR debe usar RSA")
-        
-        if public_key.key_size < 2048:
-            raise ValueError("CSR debe usar RSA-2048 o mayor")
-        
-        return True
-        
-    except Exception as e:
-        raise ValueError(f"CSR inválido: {str(e)}")
-```
+Cada nivel registra su aprobación en columnas dedicadas (`aprobado_<nivel>`,
+`_at`, `_por`), preservando una pista de auditoría completa de quién aprobó qué y cuándo,
+adicional a la bitácora general `logs`. Documentación de diseño extendida en
+`IMPLEMENTACION_ARCO_MULTINIVEL.md`.
 
 ---
 
-## Ejemplos de Uso
+## Seguridad: Cifrado, PKI y Passkeys en detalle
 
-### 1. Caso típico: Usuario crea y canaliza expediente
+Esta sección resume, con nombres de funciones y constantes reales, los mecanismos
+criptográficos del sistema — referencia directa para la sección de Q&A más abajo.
 
-**Escenario:** Usuario operativo crea un expediente, lo revisa y lo canaliza a coordinador.
+| Mecanismo | Algoritmo / parámetros | Función(es) clave |
+|---|---|---|
+| Hash de contraseñas | Argon2id, `memory_cost=65536`, `time_cost=3`, `parallelism=2`, sal de 16 B | `hash_password_argon2id`, `verify_password_argon2id` |
+| Cifrado de campo | Fernet (AES-128-CBC + HMAC-SHA256 autenticado, con *token* versionado y marca de tiempo) | `encrypt_data`, `decrypt_data` |
+| Identificación de llaves | SHA-256 de la llave Fernet → huella hexadecimal (`fingerprint`) | `_build_keyring`, `get_cipher_for_fingerprint` |
+| CA local | RSA 3072 bits, autofirmada, SHA-256, validez 10 años | `_load_or_create_certificate_authority` |
+| Certificados de usuario | RSA 2048 bits, firmados por la CA con SHA-256, validez 720 h | `issue_user_certificate*`, `_build_signed_certificate_from_csr` |
+| Reto-respuesta | Payload determinista + firma RSA con `PKCS1v15` + `SHA-256` | `issue_signature_challenge`, `build_signature_payload`, `verify_certificate_challenge_response` |
+| WebAuthn (passkeys) | Pares de llaves asimétricas por autenticador (COSE), reto-respuesta del navegador, `sign_count` anti-clonación | `save_passkey_credential`, `verify_authentication_response` (vía librería `webauthn`) |
+| Verificación de breach | HIBP, k-anonimato sobre SHA-1 (prefijo de 5 hex) | `check_password_pwned` |
+| Respaldo cifrado | Fernet sobre el archivo completo de la base de datos | `tools/backup_db.py` / `restore_db.py` |
 
-```bash
-# 1. Login
-curl -X POST http://localhost:5000/login \
-  -d "username=operativo_1&password=Operativo123!" \
-  -c cookies.txt
-
-# 2. Ver dashboard
-curl http://localhost:5000/dashboard -b cookies.txt
-
-# 3. Crear expediente
-curl -X POST http://localhost:5000/expediente/crear \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{"titulo":"Caso refugio","descripcion":"Solicitud urgente"}'
-# Response: {"expediente": {"id": 10, ...}}
-
-# 4. Canalizar a coordinador
-curl -X POST http://localhost:5000/expediente/10/canalizar \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{"nuevo_estado":"en_revision"}'
-
-# 5. Logout
-curl -X POST http://localhost:5000/logout -b cookies.txt
-```
-
-### 2. Caso típico: Admin crea usuario con certificado
-
-**Escenario:** Admin crea nuevo usuario operativo mediante certificado.
-
-```bash
-# 1. Admin obtiene challenge
-CHALLENGE=$(curl http://localhost:5000/login | jq -r '.challenge')
-
-# 2. Admin construye y firma payload
-PAYLOAD="CasaMonarca|creacion de usuario|admin_prod|$CHALLENGE"
-echo -n "$PAYLOAD" | openssl dgst -sha256 -sign admin_prod.key | base64 > sig.b64
-SIGNATURE=$(cat sig.b64 | tr -d '\n')
-
-# 3. Admin login con certificado
-curl -X POST http://localhost:5000/login \
-  -d "username=admin_prod&password=AdminProdX2026!&challenge=$CHALLENGE&signature_b64=$SIGNATURE&certificate_pem=$(cat admin_prod.pem | base64)" \
-  -c cookies.txt
-
-# 4. Admin crea usuario (requiere firma)
-curl -X POST http://localhost:5000/admin/crear_usuario \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{"username":"nuevo_operativo","role":"operativo","challenge":"...","signature_b64":"..."}'
-```
-
-### 3. Integración básica: Cliente Python
-
-**Cliente reutilizable para integración:**
-
-```python
-import requests
-import json
-
-class CasaMonarcaClient:
-    def __init__(self, base_url="http://localhost:5000"):
-        self.base_url = base_url
-        self.session = requests.Session()
-    
-    def login(self, username, password):
-        """Autentica usuario con contraseña."""
-        resp = self.session.post(
-            f"{self.base_url}/login",
-            data={"username": username, "password": password}
-        )
-        return resp.json()
-    
-    def crear_expediente(self, titulo, descripcion=""):
-        """Crea nuevo expediente."""
-        return self.session.post(
-            f"{self.base_url}/expediente/crear",
-            json={"titulo": titulo, "descripcion": descripcion}
-        ).json()
-    
-    def canalizar_expediente(self, exp_id, nuevo_estado):
-        """Canaliza expediente a nuevo estado."""
-        return self.session.post(
-            f"{self.base_url}/expediente/{exp_id}/canalizar",
-            json={"nuevo_estado": nuevo_estado}
-        ).json()
-    
-    def obtener_bitacora(self, limit=20):
-        """Obtiene últimos eventos auditados."""
-        return self.session.get(
-            f"{self.base_url}/bitacora",
-            params={"limit": limit}
-        ).json()
-    
-    def logout(self):
-        """Cierra sesión."""
-        return self.session.post(f"{self.base_url}/logout").json()
-
-# Uso
-client = CasaMonarcaClient()
-client.login("usuario_pru", "UserDemo123!")
-exp = client.crear_expediente("Mi caso", "Descripción")
-print(f"Expediente creado: {exp['expediente']['id']}")
-client.canalizar_expediente(exp['expediente']['id'], "en_revision")
-client.logout()
-```
-
-### 4. Ejecución de funciones clave desde Python
-
-**Operaciones comunes directas:**
-
-```python
-# Login básico
-import requests
-session = requests.Session()
-r = session.post("http://localhost:5000/login",
-                 data={"username": "usuario_pru", "password": "UserDemo123!"})
-print(r.json())
-
-# Crear expediente
-r = session.post("http://localhost:5000/expediente/crear",
-                 json={"titulo": "Nuevo caso", "descripcion": "Detalles"})
-expediente_id = r.json()["expediente"]["id"]
-
-# Obtener dashboard
-r = session.get("http://localhost:5000/dashboard")
-print(f"Expedientes: {len(r.json()['expedientes'])}")
-
-# Canalizar
-r = session.post(f"http://localhost:5000/expediente/{expediente_id}/canalizar",
-                 json={"nuevo_estado": "en_revision"})
-print(r.json()["message"])
-
-# Ver bitácora
-r = session.get("http://localhost:5000/bitacora?limit=5")
-for evt in r.json()["eventos"]:
-    print(f"{evt['timestamp']}: {evt['accion']}")
-
-# Logout
-session.post("http://localhost:5000/logout")
-```
-
-### 5. Script de administración (backup y restore)
-
-```bash
-# Hacer backup cifrado
-python tools/backup_db.py
-# Salida: Backup guardado en backups/db_backup_20260516T153000Z.enc
-
-# Restaurar desde backup
-python tools/restore_db.py backups/db_backup_20260516T153000Z.enc
-# Salida: Base de datos restaurada exitosamente
-
-# Ver usuarios en BD
-sqlite3 database.db "SELECT id, username, role FROM usuarios;"
-
-# Crear usuario vía CLI
-python -c "
-import sqlite3
-from werkzeug.security import generate_password_hash
-conn = sqlite3.connect('database.db')
-c = conn.cursor()
-c.execute('INSERT INTO usuarios (username, password_hash, role) VALUES (?, ?, ?)',
-          ('nuevo_user', generate_password_hash('Pass123!'), 'usuario'))
-conn.commit()
-"
-```
-
-### 6. Testing rápido de endpoints
-
-```bash
-# Setup: guardar BASE_URL
-BASE_URL="http://localhost:5000"
-
-# 1. Login
-curl -s -X POST "$BASE_URL/login" \
-  -d "username=usuario_pru&password=UserDemo123!" \
-  -c /tmp/cookies.txt | jq .
-
-# 2. Dashboard
-curl -s "$BASE_URL/dashboard" -b /tmp/cookies.txt | jq '.expedientes | length'
-
-# 3. Crear expediente
-curl -s -X POST "$BASE_URL/expediente/crear" \
-  -H "Content-Type: application/json" \
-  -b /tmp/cookies.txt \
-  -d '{"titulo":"Test","descripcion":"Quick test"}' | jq '.expediente.id'
-
-# 4. Bitácora
-curl -s "$BASE_URL/bitacora?limit=3" -b /tmp/cookies.txt | jq '.eventos[-1]'
-
-# 5. Logout
-curl -s -X POST "$BASE_URL/logout" -b /tmp/cookies.txt | jq .
-```
+`CERT_PRODUCT_ALGORITHM = "X509/RSA-2048/AES-256-CBC"` (`app.py:56`) es la cadena descriptiva
+almacenada junto a cada certificado emitido — documenta tanto el algoritmo de firma del
+certificado (RSA 2048) como el cifrado simétrico usado por `cryptography` para envolver la
+llave privada en disco (`BestAvailableEncryption`, equivalente a AES-256-CBC vía OpenSSL).
 
 ---
 
-## Manejo de Errores
+## Auditoría, CSRF y Manejo de Errores
 
-### Estrategia de errores
+### Bitácora (`logs`)
 
-Casa Monarca implementa una **estrategia consistente de manejo de errores** con:
+`log(usuario, accion, categoria="operacion", detalle=None)` (`app.py:707`) inserta una fila en
+`logs` con marca de tiempo e IP. Se invoca en cada operación sensible: intentos de login
+(éxito/fallo/bloqueo), cambios de estado de expediente, emisión/activación/revocación de
+certificados y passkeys, configuración/rotación de llaves de cifrado, resoluciones ARCO,
+eliminación de usuarios, etc. La categoría `seguridad` distingue eventos de interés para
+auditoría de seguridad (bloqueos, revocaciones, fallos de verificación) de las operaciones de
+negocio normales (`operacion`). `/logs` permite visualizar la bitácora (acceso restringido por
+rol) y `/logs/clear` su limpieza (acción crítica reservada a `admin`).
 
-1. **Validación en capas:**
-   - Capa 1: Validación HTTP (parámetros, headers)
-   - Capa 2: Validación de negocio (roles, estados)
-   - Capa 3: Validación de seguridad (certs, firmas)
+### CSRF
 
-2. **Respuestas de error normalizadas:**
-```json
-{
-  "status": "error",
-  "message": "Descripción legible para el usuario",
-  "code": "ERROR_CODE",
-  "details": {"field": "error_specific"}
-}
-```
+Protección global registrada como hook `before_request`:
+- `ensure_csrf_token()` (`app.py:3087`) genera y guarda en sesión un token CSRF si no existe.
+- `validate_csrf()` (`app.py:3093`) compara el token recibido (formulario/cabecera) contra el de
+  sesión.
+- `csrf_protect()` (`app.py:3103`) aplica la validación a todas las solicitudes que modifican
+  estado (POST/PUT/DELETE), rechazando con error si no coincide o falta.
 
-3. **Códigos HTTP apropriados:**
-   - `400` — Parámetro inválido (culpa del cliente)
-   - `401` — No autenticado (sesión expirada)
-   - `403` — Sin permisos (RBAC denied)
-   - `404` — Recurso no existe
-   - `422` — Validación fallida (datos inválidos)
-   - `423` — Recurso bloqueado (usuario locked, expediente en transición)
-   - `500` — Error del servidor (excepción no manejada)
+### Cookies de sesión
 
-4. **Manejo de excepciones:**
-   - Captura de excepciones en decoradores de rutas
-   - Logging de stack trace en servidor
-   - Respuesta genérica al cliente (nunca exponer detalles internos)
+`enforce_cookie_flags(response)` (`app.py:3118`, hook `after_request`) añade los atributos
+`HttpOnly`, `Secure` (según configuración del entorno) y `SameSite` a las cookies de sesión,
+mitigando robo de sesión vía XSS y ataques CSRF/cross-site basados en cookies.
 
-### Mensajes comunes
+### Control de acceso y *gating* de identidad
 
-#### Autenticación
+- `require_role(*roles)` decorador para restringir rutas completas a ciertos roles.
+- `has_permission(action)` valida acciones CRUD contra `PERMISSIONS` del rol en sesión.
+- `enforce_certificate_setup()` (`before_request`) obliga a `admin`/`coordinador` a completar
+  certificado y/o passkey antes de continuar — impide que cuentas críticas operen sin la
+  identidad reforzada exigida por la política del sistema.
 
-| Error | Código HTTP | Mensaje | Causa |
-|-------|------------|---------|-------|
-| Credenciales inválidas | 401 | `Credenciales inválidas` | Usuario/password incorrecto |
-| Usuario no existe | 401 | `Usuario no encontrado` | username no existe en BD |
-| Usuario bloqueado | 423 | `Usuario bloqueado hasta {timestamp}` | 5 intentos fallidos |
-| Certificado inválido | 401 | `Certificado no válido` | Firma CA falló |
-| Certificado expirado | 401 | `Certificado expirado` | Fecha de expiración pasada |
-| CN mismatch | 401 | `CN del certificado no coincide con usuario` | Cert CN ≠ username |
-| Certificado revocado | 401 | `Certificado ha sido revocado` | Estado = revocado en BD |
-| Firma inválida | 401 | `Firma digital inválida` | Verificación RSA-SHA256 falló |
-| No autenticado | 401 | `No autenticado. Inicia sesión` | Sin sesión activa |
-| Sesión expirada | 401 | `Tu sesión ha expirado` | Cookie > 8 horas |
+### Manejo de errores
 
-#### Autorización
-
-| Error | Código HTTP | Mensaje | Causa |
-|-------|------------|---------|-------|
-| Rol insuficiente | 403 | `No tienes permisos. Rol requerido: {role}` | User role < required |
-| Acceso denegado | 403 | `No puedes acceder a este recurso` | RBAC validation failed |
-| Sin firma requerida | 422 | `Firma requerida para esta acción` | Certificado + firma no provided |
-
-#### Validación de datos
-
-| Error | Código HTTP | Mensaje | Detalles |
-|-------|------------|---------|----------|
-| Parámetro faltante | 400 | `Parámetro '{field}' es requerido` | `{"field": "titulo"}` |
-| Formato inválido | 422 | `'{field}' tiene formato inválido` | `{"field": "email", "expected": "email"}` |
-| Longitud mínima | 422 | `'{field}' debe tener ≥ {min} caracteres` | `{"field": "password", "min": 12}` |
-| Contraseña débil | 422 | `Contraseña no cumple requisitos` | `{"requirements": [...]}` |
-| Username duplicado | 422 | `Username ya existe` | `{"field": "username"}` |
-| Expediente no existe | 404 | `Expediente no encontrado` | `{"id": 999}` |
-| Transición inválida | 422 | `No puedes cambiar de {from} a {to}` | `{"from": "borrador", "to": "cerrado"}` |
-
-#### Certificados
-
-| Error | Código HTTP | Mensaje | Causa |
-|-------|------------|---------|-------|
-| CSR inválido | 422 | `CSR tiene formato inválido` | PEM parse error |
-| CN en CSR inválido | 422 | `CN del CSR no coincide con usuario` | CSR CN ≠ username |
-| Clave débil | 422 | `CSR debe usar RSA-2048 o mayor` | Key size < 2048 |
-| Certificado no encontrado | 404 | `Certificado no existe` | cert_id invalid |
-| Ya tiene certificado activo | 422 | `Ya tienes un certificado activo` | User already has active cert |
-
-#### Sistema
-
-| Error | Código HTTP | Mensaje | Causa |
-|-------|------------|---------|-------|
-| Error interno | 500 | `Error interno del servidor` | Excepción no manejada |
-| BD indisponible | 503 | `Base de datos no disponible` | SQLite locked/missing |
-| Backup fallido | 500 | `No se pudo crear backup` | Escritura a disco falló |
-
-### Ejemplos de respuestas de error
-
-**Formato estándar de error:**
-```json
-{
-  "status": "error",
-  "message": "Contraseña incorrecta",
-  "code": "INVALID_CREDENTIALS",
-  "remaining_attempts": 4
-}
-```
-
-**Error de validación (422):**
-```json
-{
-  "status": "error",
-  "message": "Validación fallida",
-  "code": "VALIDATION_ERROR",
-  "details": {
-    "titulo": "Mínimo 5 caracteres",
-    "descripcion": "Campo opcional"
-  }
-}
-```
-
-**Error de permisos (403):**
-```json
-{
-  "status": "error",
-  "message": "No tienes permisos para esta acción",
-  "code": "FORBIDDEN",
-  "details": {
-    "required_role": "admin",
-    "current_role": "usuario"
-  }
-}
-```
-
-**Error de bloqueo (423):**
-```json
-{
-  "status": "locked",
-  "message": "Usuario bloqueado por intentos excesivos",
-  "code": "USER_LOCKED",
-  "locked_until": "2026-05-16T15:15:00Z"
-}
-```
-
-### Registro (logs)
-
-#### Niveles de log
-
-| Nivel | Propósito | Ejemplo |
-|-------|-----------|---------|
-| DEBUG | Desarrollo, variables internas | "Iniciando validación de cert..." |
-| INFO | Eventos normales significativos | "Usuario login_exitoso", "Backup completado" |
-| WARNING | Situaciones anormales | "Usuario bloqueado", "Certificado próximo a expirar" |
-| ERROR | Errores que requieren atención | "Login fallido x5", "Backup fallido" |
-| CRITICAL | Fallos de sistema | "BD indisponible", "Clave CA corrupta" |
-
-#### Ubicación de logs
-
-```
-proyecto/
-├── logs/
-│   ├── app.log              # Logs principales de aplicación
-│   ├── security.log         # Eventos de seguridad
-│   ├── audit.log            # Auditoría (duplica bitácora)
-│   └── error.log            # Solo errores
-├── flask.log                # Log Flask por defecto
-└── database.db              # Bitácora en BD (inmutable)
-```
-
-#### Configuración de logging
-
-```python
-import logging
-import logging.handlers
-
-# Logger principal
-logger = logging.getLogger('casa_monarca')
-logger.setLevel(logging.DEBUG)
-
-# Handler para archivo (rotación)
-fh = logging.handlers.RotatingFileHandler(
-    'logs/app.log',
-    maxBytes=10*1024*1024,  # 10 MB
-    backupCount=5           # Mantener 5 backups
-)
-fh.setLevel(logging.DEBUG)
-
-# Handler para errores solo
-error_handler = logging.handlers.RotatingFileHandler(
-    'logs/error.log',
-    maxBytes=5*1024*1024,
-    backupCount=3
-)
-error_handler.setLevel(logging.ERROR)
-
-# Formato
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-fh.setFormatter(formatter)
-error_handler.setFormatter(formatter)
-
-logger.addHandler(fh)
-logger.addHandler(error_handler)
-```
-
-#### Eventos de seguridad (security.log)
-
-```
-2026-05-16 15:30:00 - INFO - [LOGIN_EXITOSO] usuario_pru (192.168.1.150)
-2026-05-16 15:31:15 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 1/5 (192.168.1.155)
-2026-05-16 15:31:42 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 2/5 (192.168.1.155)
-2026-05-16 15:32:30 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 3/5 (192.168.1.155)
-2026-05-16 15:33:15 - WARNING - [LOGIN_FALLIDO] operativo_1 intento 4/5 (192.168.1.155)
-2026-05-16 15:34:00 - ERROR - [LOGIN_BLOQUEADO] operativo_1 (192.168.1.155) hasta 2026-05-16T15:49:00Z
-2026-05-16 15:40:20 - INFO - [CERTIFICADO_GENERADO] admin_prod (huella: a1b2c3d4...)
-2026-05-16 15:41:10 - WARNING - [CERTIFICADO_PROXIMO_EXPIRAR] coord_admin expira en 7 días
-```
-
-#### Auditoría en código
-
-```python
-def log_event(username, accion, descripcion="", ip_address=""):
-    """Registra evento en BD y log de auditoría."""
-    try:
-        # Registrar en BD (bitácora)
-        evento = Bitacora(
-            username=username,
-            accion=accion,
-            descripcion=descripcion,
-            timestamp=datetime.now(timezone.utc),
-            ip_address=ip_address
-        )
-        db.session.add(evento)
-        db.commit()
-        
-        # Registrar en archivo de auditoría
-        logger.info(f"[{accion}] {username} - {descripcion} ({ip_address})")
-        
-    except Exception as e:
-        logger.error(f"Error logging event: {str(e)}")
-
-# Uso en rutas
-@app.route('/login', methods=['POST'])
-def login():
-    username = request.form.get('username')
-    password = request.form.get('password')
-    ip = request.remote_addr
-    
-    user = get_user(username)
-    if not user:
-        log_event(username, "login_fallido", "Usuario no existe", ip)
-        return {"status": "error", "message": "Usuario no encontrado"}, 401
-    
-    if not verify_password(user, password):
-        log_event(username, "login_fallido", "Contraseña incorrecta", ip)
-        return {"status": "error", "message": "Credenciales inválidas"}, 401
-    
-    # Login exitoso
-    session['user_id'] = user.id
-    log_event(username, "login_exitoso", "Autenticación correcta", ip)
-    return {"status": "success", "user": user.to_dict()}, 200
-```
-
-#### Consultar logs
-
-```bash
-# Ver últimos 50 eventos de app.log
-tail -50 logs/app.log
-
-# Monitorear en tiempo real
-tail -f logs/app.log
-
-# Buscar logins fallidos
-grep "login_fallido" logs/security.log
-
-# Contar eventos por tipo
-grep "INFO\|WARNING\|ERROR" logs/app.log | cut -d'-' -f4 | sort | uniq -c
-
-# Ver solo errores de las últimas 24 horas
-find logs/ -name "*.log" -mtime -1 -exec grep -h "ERROR\|CRITICAL" {} \;
-
-# Limpiar logs antiguos (> 30 días)
-find logs/ -name "*.log" -mtime +30 -delete
-```
-
-#### Monitoreo y alertas
-
-**Problemas a monitorear:**
-
-```bash
-# 1. Múltiples intentos fallidos (potencial ataque)
-grep -c "login_fallido" logs/security.log
-# Si > 50 en última hora → ALERTA
-
-# 2. Certificados a punto de expirar
-sqlite3 database.db \
-  "SELECT username FROM certificados 
-   WHERE expires_at < datetime('now', '+7 days') 
-   AND estado='activo';"
-
-# 3. Tamaño de logs
-du -sh logs/
-# Si > 1GB → Considerar rotación manual
-
-# 4. Errores de sistema
-grep "CRITICAL\|500" logs/error.log
-```
+No existe un *framework* de errores estructurado tipo JSON; los errores se comunican mediante
+mensajes flash renderizados en las plantillas (`flash()` + `render_template`) y, para flujos
+WebAuthn/AJAX, respuestas JSON con código de estado HTTP apropiado y un campo de error legible.
+Los fallos de operaciones criptográficas (firma inválida, certificado expirado, reto vencido,
+descifrado fallido por huella desconocida) se traducen en mensajes específicos al usuario y, en
+paralelo, en entradas de auditoría con `categoria="seguridad"`.
 
 ---
 
 ## Pruebas
 
-### Tipos de tests
+La suite vive en `tests/` y usa *fixtures* (`app_module`) que aplican `monkeypatch.chdir(tmp_path)`
+para reconstruir, por cada prueba, una base de datos, un conjunto de certificados y llaves
+**aislados** (ver `tests/test_password_security.py` como referencia del patrón). Cobertura
+observada incluye:
 
-#### 1. Tests unitarios (Unit Tests)
+- Seguridad de contraseñas: rechazo de contraseñas débiles en alta forzada, bloqueo de usuarios
+  con hashes "legados"/débiles (`test_password_security.py`).
+- Límite de intentos de login y bloqueo temporal (`login_lockouts`).
+- Emisión, activación, revocación y flujo CSR de certificados X.509.
+- Firma de acciones críticas con passkeys y verificación CSRF (`test_csrf_arco.py`).
+- Ciclo completo de canalización de un expediente entre los cuatro roles.
+- Flujo y escalamiento de solicitudes ARCO multinivel (incluye reenvío a `admin`).
 
-**Propósito:** Validar funciones individuales en aislamiento.
-
-**Cobertura:**
-- Hashing de contraseñas (Argon2)
-- Validación de emails
-- Cálculo de huellas SHA-256
-- Generación de desafíos UUID
-- Lógica de rate-limiting
-
-**Ejemplo:**
-```python
-# tests/test_password_security.py
-import pytest
-from werkzeug.security import generate_password_hash, check_password_hash
-from argon2.low_level import hash_secret, Type
-
-def test_password_hashing():
-    """Test que hash de contraseña es verificable."""
-    password = "SecurePass123!"
-    hash_pwd = generate_password_hash(password, method='pbkdf2')
-    assert check_password_hash(hash_pwd, password)
-
-def test_weak_password_rejected():
-    """Test que contraseña débil es rechazada."""
-    weak_passwords = ["123456", "password", "admin123"]
-    for pwd in weak_passwords:
-        assert is_weak_password(pwd)
-
-def test_login_attempts_reset():
-    """Test que intentos de login se resetean."""
-    record = LoginAttempts(username="test", intentos=3)
-    reset_login_attempts(record)
-    assert record.intentos == 0
-    assert record.locked_until is None
-```
-
-**Ejecución:**
-```bash
-PYTHONPATH=. pytest tests/test_password_security.py -v
-```
-
-#### 2. Tests de integración (Integration Tests)
-
-**Propósito:** Validar flujos completos entre módulos (autenticación, BD, lógica).
-
-**Cobertura:**
-- Flujo de login (usuario + contraseña)
-- Flujo de login con certificado + firma
-- Creación y canalización de expedientes
-- Generación y revocación de certificados
-- Operaciones de backup/restore
-
-**Ejemplo:**
-```python
-# tests/test_integration.py
-import pytest
-from app import app, db
-from database import create_tables, add_user, get_user
-
-@pytest.fixture
-def client():
-    """Fixture para cliente de prueba."""
-    app.config['TESTING'] = True
-    with app.test_client() as client:
-        with app.app_context():
-            create_tables()
-            yield client
-
-def test_login_flow(client):
-    """Test flujo completo de login."""
-    # 1. Crear usuario
-    add_user("test_user", "TestPass123!", "usuario")
-    
-    # 2. Login exitoso
-    response = client.post('/login',
-        data={"username": "test_user", "password": "TestPass123!"})
-    assert response.status_code == 200
-    assert response.json['status'] == 'success'
-    
-    # 3. Acceder a dashboard (requiere sesión)
-    response = client.get('/dashboard')
-    assert response.status_code == 200
-
-def test_crear_expediente_unauthorized(client):
-    """Test que usuario no autenticado no puede crear."""
-    response = client.post('/expediente/crear',
-        json={"titulo": "Test"})
-    assert response.status_code == 401
-```
-
-**Ejecución:**
-```bash
-PYTHONPATH=. pytest tests/test_integration.py -v
-```
-
-#### 3. Tests de seguridad (Security Tests)
-
-**Propósito:** Validar controles de seguridad (RBAC, SSL, CSRF, rate-limiting).
-
-**Cobertura:**
-- Autenticación obligatoria en endpoints protegidos
-- Validación de roles (admin, coordinador, operativo, usuario)
-- CSRF token en formularios
-- Rate-limiting en login
-- Validación de certificados (CA, expiración, revocación)
-- Hashing de contraseñas con salt
-
-**Ejemplo:**
-```python
-# tests/test_security.py
-import pytest
-
-def test_rbac_admin_only(client, auth_user):
-    """Test que solo admin accede a /admin/usuarios."""
-    # 1. Usuario normal intenta acceder
-    client.post('/login', data={"username": "user", "password": "Pass123!"})
-    response = client.get('/admin/usuarios')
-    assert response.status_code == 403
-    
-    # 2. Admin accede exitosamente
-    client.post('/login', data={"username": "admin", "password": "Pass123!"})
-    response = client.get('/admin/usuarios')
-    assert response.status_code == 200
-
-def test_rate_limiting(client):
-    """Test que usuario se bloquea tras 5 intentos fallidos."""
-    for i in range(5):
-        response = client.post('/login',
-            data={"username": "test", "password": "wrong"})
-        assert response.status_code == 401
-    
-    # 6to intento debe estar bloqueado
-    response = client.post('/login',
-        data={"username": "test", "password": "correct"})
-    assert response.status_code == 423  # Locked
-
-def test_certificate_validation(client):
-    """Test que certificado expirado es rechazado."""
-    # Crear certificado con expiración pasada
-    old_cert = create_expired_certificate("test_user")
-    
-    response = client.post('/login',
-        data={"username": "test_user", "password": "Pass123!",
-              "certificate_pem": old_cert})
-    assert response.status_code == 401
-    assert "expirado" in response.json['message'].lower()
-```
-
-**Ejecución:**
-```bash
-PYTHONPATH=. pytest tests/test_security.py -v
-```
-
-#### 4. Tests de carga (Load Tests - opcional)
-
-**Propósito:** Validar rendimiento bajo carga.
-
-**Herramienta:** `locust` (opcional, instalar con `pip install locust`)
-
-**Ejemplo:**
-```python
-# tests/locustfile.py
-from locust import HttpUser, task, between
-
-class CasaMonarcaUser(HttpUser):
-    wait_time = between(1, 3)
-    
-    @task(3)
-    def login(self):
-        self.client.post("/login",
-            data={"username": "user", "password": "Pass123!"})
-    
-    @task(1)
-    def dashboard(self):
-        self.client.get("/dashboard")
-
-# Ejecutar: locust -f tests/locustfile.py --host=http://localhost:5000
-```
-
-### Cómo ejecutarlos
-
-#### Setup inicial
+Los archivos `test_arco_*.py`, `test_csrf_arco.py` y `test_final_verification.py` en la raíz del
+repositorio son **scripts de verificación ad hoc**, no parte de la suite `pytest` formal en
+`tests/`.
 
 ```bash
-# 1. Activar entorno virtual
-source .venv/bin/activate
-
-# 2. Instalar pytest
-pip install pytest pytest-cov
-
-# 3. Crear directorio de tests (si no existe)
-mkdir -p tests
-```
-
-#### Ejecutar todos los tests
-
-```bash
-# Ejecutar todos los tests
-PYTHONPATH=. pytest -v
-
-# Con reporte de cobertura
-PYTHONPATH=. pytest --cov=. --cov-report=html
-
-# Ver reporte HTML
-open htmlcov/index.html
-```
-
-#### Ejecutar tests específicos
-
-```bash
-# Solo tests de password
-PYTHONPATH=. pytest tests/test_password_security.py -v
-
-# Solo tests de integración
-PYTHONPATH=. pytest tests/test_integration.py -v
-
-# Solo tests de seguridad
-PYTHONPATH=. pytest tests/test_security.py -v
-
-# Un test específico
-PYTHONPATH=. pytest tests/test_password_security.py::test_weak_password_rejected -v
-
-# Tests que coincidan con patrón
-PYTHONPATH=. pytest -k "login" -v
-```
-
-#### Opciones útiles de pytest
-
-```bash
-# Mostrar salida (print statements)
-PYTHONPATH=. pytest -v -s
-
-# Parar en primer error
-PYTHONPATH=. pytest -x
-
-# Parar después de N errores
-PYTHONPATH=. pytest --maxfail=3
-
-# Ejecutar en paralelo (instalar pytest-xdist)
-PYTHONPATH=. pytest -n auto
-
-# Listar tests sin ejecutarlos
-PYTHONPATH=. pytest --collect-only
-
-# Ejecutar con markers (tests lentos, rápidos)
-PYTHONPATH=. pytest -m "not slow"
-```
-
-#### Cobertura de código
-
-```bash
-# Generar reporte HTML de cobertura
-PYTHONPATH=. pytest --cov=. --cov-report=html tests/
-
-# Ver cobertura por módulo
-PYTHONPATH=. pytest --cov=. --cov-report=term-missing
-
-# Excluir archivos de cobertura
-PYTHONPATH=. pytest --cov=. --cov-report=html \
-  --cov-config=.coveragerc
-```
-
-#### Archivo .coveragerc (excluir archivos)
-
-```ini
-[run]
-omit =
-    .venv/*
-    tests/*
-    setup.py
-    */__pycache__/*
-
-[report]
-exclude_lines =
-    pragma: no cover
-    def __repr__
-    raise AssertionError
-    raise NotImplementedError
-    if __name__ == .__main__.:
-```
-
-#### Ejemplo: Ejecutar tests con Jenkins/CI
-
-```bash
-#!/bin/bash
-# .gitlab-ci.yml o similar
-
-test:
-  stage: test
-  script:
-    - python -m venv venv
-    - source venv/bin/activate
-    - pip install -r requirements.txt pytest pytest-cov
-    - PYTHONPATH=. pytest --cov=. --cov-report=xml --cov-report=html
-  artifacts:
-    paths:
-      - htmlcov/
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
-```
-
-#### Checklist de tests antes de desplegar
-
-```bash
-#!/bin/bash
-# tests/pre_deploy.sh
-
-set -e
-
-echo "=== Tests de Seguridad ==="
-PYTHONPATH=. pytest tests/test_security.py -v
-
-echo "=== Tests de Integración ==="
-PYTHONPATH=. pytest tests/test_integration.py -v
-
-echo "=== Tests Unitarios ==="
-PYTHONPATH=. pytest tests/test_password_security.py -v
-
-echo "=== Cobertura ==="
-PYTHONPATH=. pytest --cov=. --cov-report=term-missing \
-  --cov-fail-under=80  # Fallar si cobertura < 80%
-
-echo "✅ Todos los tests pasaron"
-```
-
-**Ejecutar:**
-```bash
-chmod +x tests/pre_deploy.sh
-./tests/pre_deploy.sh
+PYTHONPATH=. .venv/bin/pytest -q
+PYTHONPATH=. .venv/bin/pytest tests/test_password_security.py -q
+PYTHONPATH=. .venv/bin/pytest tests/test_password_security.py::test_qa_a_rejects_weak_password_on_forced_update -q
 ```
 
 ---
 
-## Despliegue
-
-### Cómo hacerlo
-
-#### 1. Pre-despliegue (Checklist)
-
-```bash
-#!/bin/bash
-# scripts/pre_deploy.sh
-
-set -e
-
-echo "🔍 Pre-despliegue checklist"
-
-# 1. Verificar rama
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "release" ]; then
-    echo "❌ No estás en main o release"
-    exit 1
-fi
-
-# 2. Verificar cambios sin commit
-if [ -n "$(git status --porcelain)" ]; then
-    echo "❌ Cambios sin commit"
-    git status
-    exit 1
-fi
-
-# 3. Ejecutar tests
-echo "▶️  Ejecutando tests..."
-PYTHONPATH=. pytest --cov=. --cov-fail-under=80 -q
-
-# 4. Verificar variables de entorno
-echo "▶️  Verificando .env..."
-for var in SECRET_KEY DATABASE_URL AES_KEY; do
-    if [ -z "${!var}" ]; then
-        echo "❌ Variable $var no configurada en .env"
-        exit 1
-    fi
-done
-
-# 5. Verificar certificados
-if [ ! -f "ca.key" ] || [ ! -f "ca.crt" ]; then
-    echo "❌ Certificados CA no encontrados"
-    exit 1
-fi
-
-# 6. Verificar clave de encriptación
-if [ ! -f "key.key" ]; then
-    echo "❌ key.key no encontrada"
-    exit 1
-fi
-
-# 7. Generar backup pre-despliegue
-echo "▶️  Creando backup..."
-python tools/backup_db.py
-
-echo "✅ Pre-despliegue OK. Listo para desplegar."
-```
-
-**Ejecutar:**
-```bash
-chmod +x scripts/pre_deploy.sh
-./scripts/pre_deploy.sh
-```
-
-#### 2. Despliegue manual (Local/Servidor)
-
-**Opción A: Despliegue directo en servidor**
-
-```bash
-# 1. Conectar a servidor
-ssh user@server.com
-
-# 2. Navegar a carpeta del proyecto
-cd /opt/casa_monarca
-
-# 3. Descargar cambios
-git pull origin main
-
-# 4. Instalar dependencias
-pip install -r requirements.txt
-
-# 5. Ejecutar migraciones BD (si aplica)
-python -c "from database import create_tables; create_tables()"
-
-# 6. Recopilar archivos estáticos (si aplica)
-# flask collect-static
-
-# 7. Detener servicio antiguo
-systemctl stop casa_monarca
-
-# 8. Iniciar servicio nuevo
-systemctl start casa_monarca
-
-# 9. Verificar estado
-systemctl status casa_monarca
-
-# 10. Ver logs
-journalctl -u casa_monarca -f
-```
-
-**Opción B: Despliegue con zero-downtime (Blue-Green)**
-
-```bash
-#!/bin/bash
-# scripts/deploy_blue_green.sh
-
-set -e
-
-BLUE_PORT=5000
-GREEN_PORT=5001
-NGINX_CONF="/etc/nginx/sites-available/casa_monarca"
-
-echo "🚀 Blue-Green Deployment"
-
-# 1. Detectar versión actual (BLUE o GREEN)
-CURRENT_PORT=$(grep "proxy_pass" $NGINX_CONF | grep -oP 'localhost:\K\d+')
-if [ "$CURRENT_PORT" = "$BLUE_PORT" ]; then
-    DEPLOY_PORT=$GREEN_PORT
-    NEXT_ENV="GREEN"
-else
-    DEPLOY_PORT=$BLUE_PORT
-    NEXT_ENV="BLUE"
-fi
-
-echo "▶️  Versión actual: puerto $CURRENT_PORT"
-echo "▶️  Desplegando en $NEXT_ENV (puerto $DEPLOY_PORT)"
-
-# 2. Preparar entorno en puerto nuevo
-cd /opt/casa_monarca
-
-# 3. Actualizar código
-git pull origin main
-
-# 4. Instalar dependencias
-pip install -r requirements.txt
-
-# 5. Ejecutar tests en nuevo entorno
-PYTHONPATH=. pytest -q
-
-# 6. Iniciar aplicación en puerto nuevo
-PORT=$DEPLOY_PORT python app.py &
-DEPLOY_PID=$!
-
-sleep 2
-
-# 7. Verificar que nueva versión está online
-if ! curl -f http://localhost:$DEPLOY_PORT/health; then
-    echo "❌ Nueva versión no respondió"
-    kill $DEPLOY_PID
-    exit 1
-fi
-
-# 8. Cambiar nginx a nuevo puerto
-sed -i "s/proxy_pass http:\/\/localhost:\d\+/proxy_pass http:\/\/localhost:$DEPLOY_PORT/" $NGINX_CONF
-nginx -s reload
-
-echo "✅ Tráfico movido a $NEXT_ENV (puerto $DEPLOY_PORT)"
-
-# 9. Mantener versión antigua como rollback
-echo "▶️  Versión anterior en puerto $CURRENT_PORT (disponible para rollback)"
-```
-
-**Ejecutar:**
-```bash
-chmod +x scripts/deploy_blue_green.sh
-./scripts/deploy_blue_green.sh
-```
-
-#### 3. Despliegue con Docker
-
-```bash
-# 1. Construir imagen
-docker build -t casa_monarca:latest .
-
-# 2. Etiquetar para registro
-docker tag casa_monarca:latest registry.example.com/casa_monarca:latest
-
-# 3. Subir a registro
-docker push registry.example.com/casa_monarca:latest
-
-# 4. En servidor de despliegue, actualizar compose
-docker compose pull
-docker compose up -d
-
-# 5. Ejecutar migraciones si aplica
-docker compose exec web python -c "from database import create_tables; create_tables()"
-
-# 6. Ver logs
-docker compose logs -f web
-```
-
-**Dockerfile:**
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Instalar dependencias del sistema
-RUN apt-get update && apt-get install -y \
-    openssl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copiar requirements
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copiar código
-COPY . .
-
-# Crear carpetas necesarias
-RUN mkdir -p logs backups certs
-
-# Usuario no-root por seguridad
-RUN useradd -m -u 1000 casa_user
-RUN chown -R casa_user:casa_user /app
-USER casa_user
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/health')"
-
-# Comando de inicio
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--worker-class", "sync", "--timeout", "30", "app:app"]
-```
-
-**docker-compose.yml:**
-```yaml
-version: '3.8'
-
-services:
-  web:
-    image: casa_monarca:latest
-    container_name: casa_monarca_web
-    ports:
-      - "5000:5000"
-    environment:
-      - FLASK_ENV=production
-      - SECRET_KEY=${SECRET_KEY}
-      - DATABASE_URL=sqlite:////app/data/database.db
-      - LOG_LEVEL=INFO
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./certs:/app/certs
-      - ./backups:/app/backups
-    networks:
-      - casa_monarca
-    restart: unless-stopped
-    depends_on:
-      - db_backup
-
-  nginx:
-    image: nginx:alpine
-    container_name: casa_monarca_nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs/ssl:/etc/nginx/certs:ro
-    networks:
-      - casa_monarca
-    depends_on:
-      - web
-    restart: unless-stopped
-
-  db_backup:
-    image: casa_monarca:latest
-    container_name: casa_monarca_backup
-    command: python -c "from tools.backup_db import backup_database; backup_database()"
-    environment:
-      - DATABASE_URL=sqlite:////app/data/database.db
-      - AES_KEY=${AES_KEY}
-    volumes:
-      - ./data:/app/data
-      - ./backups:/app/backups
-    networks:
-      - casa_monarca
-    restart: unless-stopped
-
-networks:
-  casa_monarca:
-    driver: bridge
-```
-
-### Entornos
-
-#### Desarrollo (Local)
-
-**Archivo: `.env.development`**
-```bash
-FLASK_ENV=development
-FLASK_DEBUG=1
-SECRET_KEY=dev-key-1234567890abcdefghijklmnopqrstuv
-DATABASE_URL=sqlite:///database.db
-LOG_LEVEL=DEBUG
-TESTING=False
-
-# Certificados (auto-generados)
-CA_KEY=ca_dev.key
-CA_CRT=ca_dev.crt
-CA_PASSPHRASE=DevPass123!
-
-# Encriptación
-AES_KEY=dev-key-32-bytes-for-aes256enc
-```
-
-**Setup:**
-```bash
-# 1. Crear venv
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 2. Instalar dependencias
-pip install -r requirements.txt
-
-# 3. Generar certificados
-python scripts/generate_certs.py --env dev
-
-# 4. Generar clave AES
-python generate_key.py
-
-# 5. Inicializar BD
-python -c "from database import create_tables; create_tables()"
-
-# 6. Crear usuario admin
-python -c "
-from database import add_user
-add_user('admin', 'AdminDev123!', 'admin')
-print('Usuario admin creado')
-"
-
-# 7. Ejecutar aplicación
-python app.py
-```
-
-**URL:** `http://localhost:5000`
-
-**Credenciales de prueba:**
-- Usuario: `admin`
-- Contraseña: `AdminDev123!`
-
-#### Staging (Pre-producción)
-
-**Archivo: `.env.staging`**
-```bash
-FLASK_ENV=production
-FLASK_DEBUG=0
-SECRET_KEY=staging-key-${RANDOM_256_BITS}
-DATABASE_URL=sqlite:///data/database.db
-LOG_LEVEL=INFO
-TESTING=False
-
-# Certificados (certificados reales o auto-firmados con validez extendida)
-CA_KEY=ca_staging.key
-CA_CRT=ca_staging.crt
-CA_PASSPHRASE=${STAGING_CA_PASSPHRASE}
-
-# Encriptación
-AES_KEY=${STAGING_AES_KEY}
-
-# HTTPS
-HTTPS=True
-SSL_CERT=/etc/ssl/certs/staging.crt
-SSL_KEY=/etc/ssl/private/staging.key
-```
-
-**Servidor: staging.casa_monarca.local**
-
-**Verificación:**
-```bash
-# Health check
-curl -k https://staging.casa_monarca.local/health
-
-# Acceso a login
-curl -k https://staging.casa_monarca.local/login
-
-# Tests contra staging
-PYTHONPATH=. pytest tests/test_integration.py \
-  --base-url=https://staging.casa_monarca.local \
-  -v
-```
-
-#### Producción (Operacional)
-
-**Archivo: `.env.production`** (NO commitear a git)
-```bash
-FLASK_ENV=production
-FLASK_DEBUG=0
-SECRET_KEY=${PROD_SECRET_KEY}  # 256 bits random, mínimo
-DATABASE_URL=sqlite:///data/database.db
-LOG_LEVEL=WARNING
-TESTING=False
-
-# Certificados (certificados válidos emitidos por CA)
-CA_KEY=${PROD_CA_KEY}
-CA_CRT=${PROD_CA_CRT}
-CA_PASSPHRASE=${PROD_CA_PASSPHRASE}
-
-# Encriptación (debe ser igual al usado en backups anteriores)
-AES_KEY=${PROD_AES_KEY}
-
-# HTTPS obligatorio
-HTTPS=True
-SSL_CERT=/etc/ssl/certs/casa_monarca.crt
-SSL_KEY=/etc/ssl/private/casa_monarca.key
-HSTS_MAX_AGE=31536000  # 1 año
-
-# Rate-limiting más estricto
-MAX_LOGIN_ATTEMPTS=5
-LOCKOUT_DURATION=900  # 15 minutos
-```
-
-**Servidor: casa_monarca.institucion.mx**
-
-**Requisitos:**
-- ✅ HTTPS obligatorio (certificado válido de CA)
-- ✅ Firewall restrictivo (solo puertos 80, 443)
-- ✅ Servidor actualizado con parches de seguridad
-- ✅ Contraseñas fuertes para .env (almacenar en secrets manager)
-- ✅ Backups diarios encriptados
-- ✅ Monitoreo 24/7
-
-### Consideraciones
-
-#### Seguridad
-
-**1. Certificados HTTPS**
-```bash
-# Generar certificado auto-firmado (solo para testing)
-openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365
-
-# Usar Let's Encrypt en producción
-certbot certonly --standalone -d casa_monarca.institucion.mx
-```
-
-**2. Credenciales y secretos**
-```bash
-# NUNCA commitear .env a git
-echo ".env*" >> .gitignore
-echo "*.key" >> .gitignore
-echo "*.pem" >> .gitignore
-
-# Usar secrets manager
-# AWS Secrets Manager, HashiCorp Vault, Azure Key Vault
-
-# En GitHub Actions:
-- name: Deploy
-  env:
-    SECRET_KEY: ${{ secrets.SECRET_KEY }}
-    AES_KEY: ${{ secrets.AES_KEY }}
-```
-
-**3. Permisos de archivos**
-```bash
-# Proteger archivos sensibles en servidor
-chmod 600 .env
-chmod 600 ca.key
-chmod 600 key.key
-chown app:app .env ca.key key.key
-```
-
-**4. HTTPS + HSTS + Redirección**
-```python
-# app.py
-from flask_talisman import Talisman
-
-Talisman(app, 
-    force_https=True,
-    strict_transport_security=True,
-    strict_transport_security_max_age=31536000)  # 1 año
-```
-
-#### Escalabilidad
-
-**1. Base de datos SQLite (Limitación)**
-- SQLite es single-writer (una transacción a la vez)
-- Máx ~100-1000 conexiones simultáneas
-- Ideal para: equipos pequeños, <50 usuarios concurrentes
-
-**Plan para Etapa 2 (PostgreSQL):**
-```bash
-# Cambiar DATABASE_URL en producción
-DATABASE_URL=postgresql://user:pass@db.server/casa_monarca
-
-# Instalar adaptador
-pip install psycopg2-binary
-
-# Migrar datos
-python scripts/migrate_sqlite_to_postgres.py
-```
-
-**2. Aplicación multi-worker**
-```bash
-# Usar Gunicorn con múltiples workers
-gunicorn --bind 0.0.0.0:5000 --workers 4 --worker-class sync app:app
-
-# En docker-compose:
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4"]
-```
-
-**3. Caché (Redis)**
-```bash
-# Opcional para Etapa 2
-# Cachear sesiones, certificados, expedientes
-
-pip install flask-caching redis
-
-CACHE_TYPE=redis
-CACHE_REDIS_URL=redis://localhost:6379/0
-```
-
-#### Disponibilidad
-
-**1. Health check**
-```python
-# app.py
-@app.route('/health')
-def health():
-    return {
-        'status': 'ok',
-        'version': '1.0.0',
-        'timestamp': datetime.utcnow().isoformat()
-    }, 200
-```
-
-**Verificación:**
-```bash
-curl http://localhost:5000/health
-```
-
-**2. Alertas y monitoreo**
-```bash
-# Monitorear logs en tiempo real
-tail -f logs/error.log | grep -E "ERROR|CRITICAL"
-
-# Contar errores por hora
-grep "ERROR" logs/error.log | cut -d' ' -f1-2 | sort | uniq -c
-
-# Alertar si >10 errores en 5 minutos
-watch -n 60 'tail -300 logs/error.log | grep "ERROR" | wc -l'
-```
-
-**3. Rollback rápido**
-```bash
-# Mantener versión anterior
-git tag -a v1.0.0-prod -m "Versión 1.0.0 en producción"
-git push origin v1.0.0-prod
-
-# Si hay problema, volver a versión anterior
-git checkout v1.0.0-prod
-python app.py  # Reiniciar
-```
-
-#### Mantenimiento
-
-**1. Backups diarios**
-```bash
-# Programar con cron
-0 2 * * * cd /opt/casa_monarca && python tools/backup_db.py
-
-# Verificar que backup se crea
-ls -lh backups/ | tail -1
-
-# Listar backups
-ls -1 backups/ | head -10
-```
-
-**2. Rotación de logs**
-```bash
-# Configurar en app.py (ya incluido)
-# Logs rotan cada 10MB, máx 5 archivos
-
-# Limpiar logs viejos (>30 días)
-find logs/ -name "*.log.*" -mtime +30 -delete
-```
-
-**3. Verificación de integridad**
-```bash
-# Verificar que BD está OK
-python -c "
-import sqlite3
-conn = sqlite3.connect('database.db')
-conn.integrity_check()
-print('✅ BD OK')
-"
-
-# Ejecutar tests en producción
-PYTHONPATH=. pytest tests/test_security.py -v --tb=short
-```
-
-**4. Actualización de dependencias**
-```bash
-# Revisar si hay vulnerabilidades
-pip install safety
-safety check
-
-# Actualizar dependencias menores
-pip install --upgrade -r requirements.txt
-
-# Generar nuevo requirements.txt
-pip freeze > requirements.txt
-```
-
-#### Monitoreo y logging
-
-**1. Agregar monitoreo en producción**
-```python
-# app.py - Agregar antes de run()
-
-import logging
-from logging.handlers import RotatingFileHandler
-
-if not app.debug:
-    if not os.path.exists('logs'):
-        os.mkdir('logs')
-    
-    file_handler = RotatingFileHandler(
-        'logs/casa_monarca.log',
-        maxBytes=10240000,  # 10MB
-        backupCount=10
-    )
-    file_handler.setFormatter(logging.Formatter(
-        '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
-    ))
-    file_handler.setLevel(logging.INFO)
-    app.logger.addHandler(file_handler)
-    
-    app.logger.setLevel(logging.INFO)
-    app.logger.info('Casa Monarca iniciado')
-```
-
-**2. Alertas automáticas**
-```bash
-# Enviar alerta si error rate > 5%
-# Implementar en Etapa 2 con Datadog, New Relic, etc.
-
-# Por ahora, revisar logs manualmente
-tail -100 logs/error.log | grep -c ERROR
-```
-
-**3. Métricas clave**
-- Tiempo de respuesta promedio
-- Errores por hora
-- Usuarios activos
-- Expedientes procesados por día
-- Certificados próximos a expirar
-
-#### Desastre y recuperación
-
-**1. Backup y restore**
-```bash
-# Crear backup manual
-python tools/backup_db.py
-
-# Restaurar desde backup
-python tools/restore_db.py backups/db_backup_20260517T143022Z.enc
-
-# Verificar restauración
-python -c "
-from database import get_all_users
-users = get_all_users()
-print(f'✅ Restaurados {len(users)} usuarios')
-"
-```
-
-**2. Plan de recuperación ante desastre (DRP)**
-
-| Escenario | RTO* | RPO** | Acción |
-|-----------|------|-------|--------|
-| BD corrupta | 1 hora | 24 horas | Restaurar último backup |
-| Servidor caído | 30 min | 5 min | Failover a réplica (Etapa 2) |
-| Ataque de seguridad | 2 horas | 1 hora | Restore + cambiar credenciales |
-| Pérdida total de datos | 24 horas | 7 días | Restaurar de backup en cloud |
-
-*RTO = Recovery Time Objective (tiempo para recuperar)
-**RPO = Recovery Point Objective (datos máx que se pierden)
+## Despliegue y Mantenimiento
+
+Esta es una aplicación **single-file** sobre **SQLite**, pensada para una instalación sencilla
+(no para una infraestructura distribuida). El despliegue real consiste en:
+
+1. Ejecutar `setup.sh` en el servidor de destino (crea entorno virtual, instala dependencias,
+   genera `.env` y `key.key`, crea `certs/`, `backups/`, `logs/`).
+2. Ajustar `.env` para producción: `FLASK_ENV=production`, `SECRET_KEY` fuerte y única,
+   `ENABLE_SESSION_COOKIE_SECURE=1` (fuerza cookies `Secure`/`Strict`), tiempos de bloqueo y
+   política de contraseñas según las políticas de la organización.
+3. Ejecutar la app (`python app.py`) detrás de un proxy reverso/terminador TLS si se expone a
+   Internet — el código no incluye servidor WSGI de producción (Gunicorn/uWSGI) ni *reverse
+   proxy* propios; eso queda fuera del alcance del repositorio.
+4. Resguardar `key.key`, `certs/*.pem` y `database.db` con permisos restrictivos (todos están
+   excluidos de git vía `.gitignore` precisamente porque son material sensible que nunca debe
+   versionarse).
+5. Programar respaldos periódicos cifrados con `tools/backup_db.py` (Fernet sobre el archivo
+   completo de la base de datos) y validar la restauración con `tools/restore_db.py`.
+6. Si se rota la llave de cifrado de datos, seguir el flujo `/admin/keys/configure` →
+   `/admin/keys/<fp>/activate` y monitorear `/admin/cifrado/jobs` hasta que
+   `tools/reencrypt_worker.py` complete el re-cifrado de todos los expedientes.
+
+No existen Dockerfiles, *pipelines* de CI/CD, balanceadores ni colas externas (Redis/RabbitMQ):
+la única "cola" es la tabla `reencrypt_jobs`, consumida por un *worker* de Python ejecutado
+manualmente o vía *cron*. La política de ciclo de vida de llaves (basada en NIST SP 800-57) está
+documentada al inicio de `Changelog-Backend.txt`, y el plan de migración de firma por certificado
+hacia verificación de acciones basada en passkeys se describe también ahí.
 
 ---
 
-## Seguridad
-
-### Autenticación
-
-#### 1. Flujo de autenticación básica (Usuario + Contraseña)
-
-**Paso a paso:**
-```
-Usuario                    Servidor
-   |                            |
-   |--- POST /login ---------->|
-   |    {username, password}    |
-   |                            |
-   |                    [Validate password]
-   |                    [Check rate-limit]
-   |                    [Create session]
-   |<--- 200 + Set-Cookie ------|
-   |    (HttpOnly, SameSite, Secure)
-   |                            |
-   |--- GET /dashboard ------->|
-   |    (Cookie enviada)        |
-   |                    [Verify session]
-   |<--- 200 + HTML ------------|
-```
-
-**Código en app.py:**
-```python
-@app.route('/login', methods=['POST'])
-def login():
-    """Autenticación básica: usuario + contraseña"""
-    username = request.form.get('username')
-    password = request.form.get('password')
-    
-    # 1. Validar entrada
-    if not username or not password:
-        return {'error': 'Usuario y contraseña requeridos'}, 400
-    
-    # 2. Verificar rate-limiting
-    if check_login_attempts(username):
-        return {'error': 'Usuario bloqueado por 15 minutos'}, 423
-    
-    # 3. Obtener usuario
-    user = get_user(username)
-    if not user:
-        record_failed_attempt(username)
-        return {'error': 'Usuario o contraseña incorrectos'}, 401
-    
-    # 4. Verificar contraseña (Argon2id)
-    if not check_password_hash(user['password_hash'], password):
-        record_failed_attempt(username)
-        return {'error': 'Usuario o contraseña incorrectos'}, 401
-    
-    # 5. Limpiar intentos fallidos
-    reset_login_attempts(username)
-    
-    # 6. Crear sesión
-    session['user_id'] = user['id']
-    session['username'] = username
-    session['role'] = user['role']
-    session['login_time'] = datetime.utcnow()
-    
-    # 7. Registrar en auditoría
-    log_event('LOGIN', username, 'success')
-    
-    return {
-        'status': 'success',
-        'message': f'Bienvenido {username}',
-        'role': user['role']
-    }, 200
-```
-
-**Configuración de cookies (segura):**
-```python
-# app.py
-app.config.update(
-    SESSION_COOKIE_SECURE=True,        # Solo HTTPS
-    SESSION_COOKIE_HTTPONLY=True,      # No accesible desde JS
-    SESSION_COOKIE_SAMESITE='Strict',  # Previene CSRF
-    PERMANENT_SESSION_LIFETIME=3600,   # 1 hora
-)
-
-@app.before_request
-def make_session_permanent():
-    """Hacer sesión permanente con tiempo de vida limitado"""
-    session.permanent = True
-```
-
-#### 2. Flujo de autenticación reforzada (Challenge-Response con Certificados)
-
-**Paso a paso:**
-```
-Usuario (con certificado)    Servidor
-           |                     |
-           |--- GET /challenge ->|
-           |                     |
-           |<-- challenge_uuid --|
-           |                     |
-           |[Sign con private key]
-           |--- POST /login-cert --->|
-           |    {username, cert_pem,  |
-           |     challenge_uuid,      |
-           |     signature}           |
-           |                     |
-           |            [Validate cert]
-           |            [Verify signature]
-           |            [Check expiration]
-           |            [Verify challenge]
-           |<--- 200 + session ---|
-           |    (Certificado registrado)
-```
-
-**Código en app.py:**
-```python
-import uuid
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
-
-# 1. Generar desafío
-@app.route('/challenge', methods=['GET'])
-def get_challenge():
-    """Generar desafío UUID para login reforzado"""
-    challenge = str(uuid.uuid4())
-    session['challenge'] = challenge
-    session['challenge_time'] = datetime.utcnow()
-    
-    log_event('CHALLENGE_REQUESTED', session.get('username', 'unknown'), 'generated')
-    
-    return {
-        'challenge': challenge,
-        'purpose': 'login',
-        'ttl': 300  # 5 minutos
-    }, 200
-
-# 2. Verificar certificado y firma
-@app.route('/login-cert', methods=['POST'])
-def login_certificate():
-    """Autenticación reforzada con certificado y firma"""
-    data = request.json
-    username = data.get('username')
-    cert_pem = data.get('certificate_pem')
-    signature_b64 = data.get('signature')
-    challenge = data.get('challenge')
-    
-    # 1. Validar desafío
-    stored_challenge = session.get('challenge')
-    challenge_time = session.get('challenge_time')
-    
-    if not stored_challenge or stored_challenge != challenge:
-        return {'error': 'Desafío inválido'}, 401
-    
-    # 2. Validar TTL del desafío (5 minutos)
-    if (datetime.utcnow() - challenge_time).seconds > 300:
-        return {'error': 'Desafío expirado'}, 401
-    
-    # 3. Cargar certificado
-    try:
-        cert = x509.load_pem_x509_certificate(cert_pem.encode())
-    except Exception as e:
-        log_event('LOGIN_CERT', username, f'invalid_cert: {str(e)}')
-        return {'error': 'Certificado inválido'}, 401
-    
-    # 4. Validar que certificado pertenece al usuario
-    cert_subject = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
-    if not cert_subject or cert_subject[0].value != username:
-        log_event('LOGIN_CERT', username, 'cert_subject_mismatch')
-        return {'error': 'Certificado no pertenece al usuario'}, 401
-    
-    # 5. Validar que certificado no está expirado
-    if datetime.utcnow() > cert.not_valid_after_utc:
-        log_event('LOGIN_CERT', username, 'cert_expired')
-        return {'error': 'Certificado expirado'}, 401
-    
-    # 6. Validar que certificado está firmado por CA
-    if not verify_ca_signature(cert):
-        log_event('LOGIN_CERT', username, 'invalid_ca_signature')
-        return {'error': 'Certificado no firmado por CA válida'}, 401
-    
-    # 7. Verificar firma del desafío
-    payload = f"CasaMonarca|login|{username}|{challenge}".encode()
-    signature = base64.b64decode(signature_b64)
-    
-    try:
-        public_key = cert.public_key()
-        public_key.verify(
-            signature,
-            payload,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-    except InvalidSignature:
-        log_event('LOGIN_CERT', username, 'invalid_signature')
-        return {'error': 'Firma inválida'}, 401
-    
-    # 8. Crear sesión
-    user = get_user(username)
-    session['user_id'] = user['id']
-    session['username'] = username
-    session['role'] = user['role']
-    session['auth_method'] = 'certificate'
-    session['cert_fingerprint'] = cert.fingerprint(hashes.SHA256()).hex()
-    
-    log_event('LOGIN_CERT', username, 'success')
-    
-    return {
-        'status': 'success',
-        'message': f'Autenticado con certificado: {username}',
-        'role': user['role'],
-        'cert_expiry': cert.not_valid_after_utc.isoformat()
-    }, 200
-```
-
-#### 3. Rate-limiting y bloqueo de cuenta
-
-**Implementación:**
-```python
-# database.py
-def check_login_attempts(username, max_attempts=5, lockout_minutes=15):
-    """
-    Verificar si usuario está bloqueado por demasiados intentos fallidos.
-    
-    Args:
-        username: Nombre de usuario
-        max_attempts: Máximo de intentos permitidos (default: 5)
-        lockout_minutes: Minutos de bloqueo (default: 15)
-    
-    Returns:
-        bool: True si usuario está bloqueado, False si puede intentar
-    """
-    record = db.session.query(LoginAttempts).filter_by(username=username).first()
-    
-    if not record:
-        return False
-    
-    # Si hay bloqueo y no ha expirado
-    if record.locked_until:
-        if datetime.utcnow() < record.locked_until:
-            return True
-        else:
-            # Bloqueo expiró, resetear
-            record.locked_until = None
-            record.intentos = 0
-            db.session.commit()
-            return False
-    
-    # Si intentos >= max_attempts, bloquear
-    if record.intentos >= max_attempts:
-        record.locked_until = datetime.utcnow() + timedelta(minutes=lockout_minutes)
-        db.session.commit()
-        return True
-    
-    return False
-
-def record_failed_attempt(username):
-    """Registrar intento fallido de login"""
-    record = db.session.query(LoginAttempts).filter_by(username=username).first()
-    
-    if not record:
-        record = LoginAttempts(username=username, intentos=1)
-    else:
-        record.intentos += 1
-    
-    record.last_attempt = datetime.utcnow()
-    db.session.add(record)
-    db.session.commit()
-    
-    log_event('LOGIN_ATTEMPT_FAILED', username, f'intento {record.intentos}')
-
-def reset_login_attempts(username):
-    """Resetear intentos fallidos (login exitoso)"""
-    record = db.session.query(LoginAttempts).filter_by(username=username).first()
-    
-    if record:
-        record.intentos = 0
-        record.locked_until = None
-        db.session.commit()
-```
-
-### Manejo de datos sensibles
-
-#### 1. Hashing de contraseñas (Argon2id)
-
-**Configuración en app.py:**
-```python
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHash, VerifyMismatchError
-
-# Configuración recomendada para Casa Monarca
-ph = PasswordHasher(
-    time_cost=3,           # Iteraciones
-    memory_cost=65536,     # 64 MB
-    parallelism=2,         # Threads
-    hash_len=32,           # Bytes
-    salt_len=16,           # Bytes
-    type=Type.ID           # Argon2id (hybrid)
-)
-
-def hash_password(password):
-    """
-    Hashear contraseña con Argon2id.
-    
-    Argon2id es resistente a:
-    - GPU attacks (memory-hard)
-    - Side-channel attacks (Argon2id hybrid)
-    - Rainbow tables (salt aleatorio)
-    """
-    if not password or len(password) < 8:
-        raise ValueError("Contraseña debe tener mínimo 8 caracteres")
-    
-    return ph.hash(password)
-
-def verify_password(hashed, password):
-    """Verificar contraseña contra hash"""
-    try:
-        ph.verify(hashed, password)
-        return True
-    except (InvalidHash, VerifyMismatchError):
-        return False
-```
-
-**Ejemplo de hash generado:**
-```
-$argon2id$v=19$m=65536,t=3,p=2$AbCdEfGhIjKlMnOp$1234567890abcdefghijklmnopqrstuv
- ^^^^^^    ^^^^^^    ^^^^ hash params         ^^^ salt (base64)    ^^ hash (base64)
-```
-
-#### 2. Encriptación de datos en tránsito (HTTPS + TLS 1.3)
-
-**Configuración en app.py:**
-```python
-from flask_talisman import Talisman
-
-# Forzar HTTPS en producción
-Talisman(
-    app,
-    force_https=True,
-    strict_transport_security=True,
-    strict_transport_security_max_age=31536000,  # 1 año
-    strict_transport_security_include_subdomains=True,
-    content_security_policy={
-        'default-src': "'self'",
-        'script-src': "'self' 'unsafe-inline'",  # Revisar en producción
-        'style-src': "'self' 'unsafe-inline'",
-    }
-)
-
-# Redireccionar HTTP → HTTPS
-@app.before_request
-def redirect_to_https():
-    if not request.is_secure and os.getenv('FLASK_ENV') == 'production':
-        url = request.url.replace('http://', 'https://', 1)
-        return redirect(url, code=301)
-```
-
-**Verificar TLS en cliente:**
-```bash
-# Verificar que servidor usa TLS 1.2+
-openssl s_client -connect localhost:443 -tls1_2 << EOF
-Q
-EOF
-
-# Verificar certificado
-openssl x509 -in cert.pem -text -noout
-
-# Verificar que es auto-firmado o de CA
-openssl verify -CAfile ca.crt cert.pem
-```
-
-#### 3. Encriptación en reposo (AES-256-CBC)
-
-**Para backups:**
-```python
-# tools/backup_db.py
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-import os
-
-def backup_database_encrypted():
-    """Crear backup encriptado de la base de datos"""
-    
-    # 1. Leer BD
-    with open('database.db', 'rb') as f:
-        db_data = f.read()
-    
-    # 2. Cargar clave AES-256
-    with open('key.key', 'rb') as f:
-        key = f.read()  # 32 bytes para AES-256
-    
-    # 3. Generar IV aleatorio
-    iv = os.urandom(16)
-    
-    # 4. Encriptar con AES-256-CBC
-    cipher = Cipher(
-        algorithms.AES(key),
-        modes.CBC(iv),
-        backend=default_backend()
-    )
-    encryptor = cipher.encryptor()
-    
-    # Padding PKCS7
-    from cryptography.hazmat.primitives import padding as crypto_padding
-    padder = crypto_padding.PKCS7(128).padder()
-    padded_data = padder.update(db_data) + padder.finalize()
-    
-    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-    
-    # 5. Guardar: IV (16 bytes) + datos encriptados
-    timestamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
-    backup_file = f'backups/db_backup_{timestamp}.enc'
-    
-    with open(backup_file, 'wb') as f:
-        f.write(iv)
-        f.write(encrypted_data)
-    
-    print(f"✅ Backup encriptado: {backup_file}")
-    return backup_file
-
-def restore_database_encrypted(backup_file):
-    """Restaurar BD desde backup encriptado"""
-    
-    # 1. Cargar clave
-    with open('key.key', 'rb') as f:
-        key = f.read()
-    
-    # 2. Leer backup: IV + datos encriptados
-    with open(backup_file, 'rb') as f:
-        iv = f.read(16)
-        encrypted_data = f.read()
-    
-    # 3. Desencriptar
-    cipher = Cipher(
-        algorithms.AES(key),
-        modes.CBC(iv),
-        backend=default_backend()
-    )
-    decryptor = cipher.decryptor()
-    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
-    
-    # Remover padding PKCS7
-    unpadder = crypto_padding.PKCS7(128).unpadder()
-    db_data = unpadder.update(padded_data) + unpadder.finalize()
-    
-    # 4. Restaurar BD
-    with open('database.db', 'wb') as f:
-        f.write(db_data)
-    
-    print(f"✅ BD restaurada desde {backup_file}")
-```
-
-#### 4. Gestión de claves y certificados
-
-**Generar clave AES-256:**
-```bash
-# generate_key.py
-python generate_key.py
-# Genera key.key (32 bytes aleatorios en base64)
-```
-
-**Almacenamiento seguro:**
-```bash
-# Proteger archivos de claves
-chmod 600 key.key
-chmod 600 ca.key
-chown app:app key.key ca.key
-
-# Usar variables de entorno en producción
-export AES_KEY=$(cat key.key)
-export CA_PASSPHRASE="contraseña-fuerte"
-```
-
-**Rotación de claves (Etapa 2):**
-```python
-# scripts/rotate_aes_key.py
-"""
-Rotación de claves AES:
-1. Generar nueva clave
-2. Re-encriptar todos los backups con nueva clave
-3. Actualizar clave en producción
-4. Archivar clave anterior por 30 días
-"""
-```
-
-#### 5. Certificados X.509
-
-**Generación de CA:**
-```bash
-# scripts/generate_ca.py
-openssl req -new -x509 -days 3650 -nodes \
-  -out ca.crt -keyout ca.key \
-  -subj "/CN=Casa Monarca CA/O=Institution/C=MX"
-
-chmod 600 ca.key
-```
-
-**Generación de certificado de usuario:**
-```bash
-# scripts/generate_user_cert.py
-openssl req -new -key user.key -out user.csr \
-  -subj "/CN=username/O=Institution/C=MX"
-
-openssl x509 -req -days 365 -in user.csr \
-  -CA ca.crt -CAkey ca.key \
-  -CAcreateserial -out user.crt \
-  -sha256
-
-# Combinar en PEM
-cat user.key user.crt > user.pem
-```
-
-### Buenas prácticas
-
-#### 1. OWASP Top 10 - Mitigaciones
-
-| Vulnerabilidad | Mitigación en Casa Monarca |
-|----------------|---------------------------|
-| **1. Injection** | Prepared statements (SQLAlchemy ORM), validación entrada |
-| **2. Broken Authentication** | Argon2id, 2FA (certificados), rate-limiting |
-| **3. Sensitive Data Exposure** | HTTPS + TLS 1.3, AES-256 en reposo, logs sin PII |
-| **4. XML External Entities** | No procesar XML, usar JSON |
-| **5. Broken Access Control** | RBAC decorators (@require_role), validación en cada endpoint |
-| **6. Security Misconfiguration** | .env por ambiente, headers seguridad, logging centralizador |
-| **7. XSS** | Jinja2 escapa HTML por defecto, CSP headers, sanitización input |
-| **8. Insecure Deserialization** | No usar pickle, usar JSON, validar esquemas |
-| **9. Using Components with Known Vulnerabilities** | Auditar requirements.txt, `pip audit`, updates |
-| **10. Insufficient Logging** | Audit log para eventos críticos, alertas en errores |
-
-#### 2. Inyección SQL - Prevención
-
-**❌ VULNERABLE:**
-```python
-# NO HACER ESTO
-query = f"SELECT * FROM usuarios WHERE username = '{username}'"
-conn.execute(query)  # ¡SQL Injection!
-```
-
-**✅ SEGURO:**
-```python
-# HACER ESTO (SQLAlchemy ORM)
-from database import Usuario
-
-user = Usuario.query.filter_by(username=username).first()
-
-# O con prepared statements
-query = "SELECT * FROM usuarios WHERE username = ?"
-user = conn.execute(query, (username,)).fetchone()
-```
-
-#### 3. CSRF Protection
-
-**Implementación en Flask:**
-```python
-from flask_wtf.csrf import CSRFProtect
-
-csrf = CSRFProtect(app)
-
-# En template HTML
-<form method="POST" action="/expediente/crear">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="text" name="titulo">
-    <button type="submit">Crear</button>
-</form>
-
-# En Python (AJAX)
-headers = {
-    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
-}
-```
-
-#### 4. XSS Prevention
-
-**Jinja2 escapa por defecto:**
-```html
-<!-- Template: template.html -->
-<h1>Usuario: {{ username }}</h1>  <!-- Automáticamente escapado -->
-
-<!-- Si username = "<script>alert('XSS')</script>" -->
-<!-- Se renderiza como: <h1>Usuario: &lt;script&gt;alert(&#39;XSS&#39;)&lt;/script&gt;</h1> -->
-```
-
-**CSP Headers:**
-```python
-@app.after_request
-def set_security_headers(response):
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'"
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    return response
-```
-
-#### 5. Validación de entrada
-
-```python
-from wtforms import StringField, PasswordField
-from wtforms.validators import Length, Email, Regexp
-
-# Definir validadores
-class CreateUserForm(FlaskForm):
-    username = StringField('Username', [
-        Length(min=3, max=20),
-        Regexp(r'^[a-zA-Z0-9_]+$', message='Solo letras, números y _')
-    ])
-    
-    email = StringField('Email', [
-        Email()
-    ])
-    
-    password = PasswordField('Password', [
-        Length(min=8, max=128),
-        Regexp(r'^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$!%*?&]).*$',
-               message='Debe incluir mayúscula, minúscula, número y símbolo')
-    ])
-
-# En route
-@app.route('/admin/crear-usuario', methods=['POST'])
-@require_role('admin')
-def crear_usuario():
-    form = CreateUserForm()
-    if not form.validate():
-        return {'errors': form.errors}, 400
-    
-    # ... crear usuario ...
-```
-
-#### 6. Auditoría y logging
-
-**Función de auditoría (app.py):**
-```python
-def log_event(event_type, username, details, severity='INFO'):
-    """
-    Registrar evento de seguridad para auditoría.
-    
-    Args:
-        event_type: LOGIN, LOGIN_CERT, CREATE_USER, CERT_REVOKED, etc.
-        username: Usuario que realizó la acción
-        details: Detalles adicionales
-        severity: INFO, WARNING, CRITICAL
-    """
-    
-    timestamp = datetime.utcnow().isoformat()
-    
-    # Registrar en BD (tabla bitacora)
-    event = AuditLog(
-        timestamp=timestamp,
-        event_type=event_type,
-        username=username,
-        details=details,
-        ip_address=request.remote_addr,
-        user_agent=request.user_agent.string,
-        severity=severity
-    )
-    db.session.add(event)
-    db.session.commit()
-    
-    # Registrar en archivo (rotated)
-    logger.log(
-        getattr(logging, severity),
-        f"[{timestamp}] {event_type} | {username} | {details}"
-    )
-    
-    # Alerta si CRITICAL
-    if severity == 'CRITICAL':
-        send_alert_email(
-            subject=f"ALERTA SEGURIDAD: {event_type}",
-            message=f"{username}: {details}"
-        )
-```
-
-**Eventos críticos a auditar:**
-```python
-log_event('LOGIN', username, 'success')
-log_event('LOGIN_FAILED', username, f'intento {count}', 'WARNING')
-log_event('LOGIN_BLOCKED', username, f'bloqueado 15min', 'WARNING')
-
-log_event('USER_CREATED', admin, f'creó usuario: {new_user}', 'INFO')
-log_event('ROLE_CHANGED', admin, f'{user}: {old_role} → {new_role}', 'INFO')
-
-log_event('CERT_ISSUED', username, f'CN={username}, exp={expiry}', 'INFO')
-log_event('CERT_REVOKED', admin, f'revocó certificado de {username}', 'INFO')
-
-log_event('EXPEDIENTE_CREATED', username, f'id={exp_id}', 'INFO')
-log_event('EXPEDIENTE_SIGNED', admin, f'firmó id={exp_id}', 'INFO')
-
-log_event('DB_BACKUP', 'system', f'archivo={backup_file}', 'INFO')
-log_event('UNAUTHORIZED_ACCESS', username, f'intentó acceder a {endpoint}', 'CRITICAL')
-```
-
-#### 7. Secretos en variables de entorno
-
-**❌ VULNERABLE (NO HACER):**
-```python
-SECRET_KEY = "my-super-secret-key-12345"  # En código fuente
-AES_KEY = "abcdef123456789..."            # En código fuente
-```
-
-**✅ SEGURO:**
-```bash
-# .env (no commitear a git)
-SECRET_KEY=<generar con 256 bits aleatorios>
-AES_KEY=<cargar desde key.key>
-CA_PASSPHRASE=<contraseña fuerte>
-DATABASE_URL=sqlite:///data/database.db
-
-# En .gitignore
-.env
-.env.*
-*.key
-*.pem
-key.key
-```
-
-**Cargar en app.py:**
-```python
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
-AES_KEY = os.getenv('AES_KEY')
-CA_PASSPHRASE = os.getenv('CA_PASSPHRASE')
-
-# Validar que existen
-for var in ['SECRET_KEY', 'AES_KEY', 'CA_PASSPHRASE']:
-    if not os.getenv(var):
-        raise ValueError(f"Variable de entorno {var} no configurada")
-```
-
-#### 8. Testing de seguridad
-
-```bash
-# Instalar herramientas
-pip install bandit safety semgrep
-
-# Análisis estático con Bandit
-bandit -r . -ll  # Low level issues
-
-# Chequear dependencias vulnerables
-safety check
-
-# Análisis de código con Semgrep
-semgrep --config=p/security-audit .
-
-# Test específico: verificar no hay secrets en código
-git log -p | grep -i "secret\|password\|key" | head -5
-```
-
-**Test de penetración manual:**
-```bash
-#!/bin/bash
-# tests/security_test.sh
-
-echo "🔐 Security Test Suite"
-
-# 1. Verificar HTTPS
-echo "▶️  HTTPS enforcement..."
-curl -I http://localhost:5000/dashboard | grep -q "301\|403" && echo "✅ HTTPS OK" || echo "❌ FAIL"
-
-# 2. Verificar HSTS
-echo "▶️  HSTS headers..."
-curl -I https://localhost:5000/dashboard | grep -q "Strict-Transport-Security" && echo "✅ HSTS OK" || echo "❌ FAIL"
-
-# 3. Verificar CSP
-echo "▶️  CSP headers..."
-curl -I https://localhost:5000/dashboard | grep -q "Content-Security-Policy" && echo "✅ CSP OK" || echo "❌ FAIL"
-
-# 4. Verificar no hay información sensible en respuestas
-echo "▶️  No version disclosure..."
-curl -I https://localhost:5000/dashboard | grep -q "Server:" && echo "❌ Server header visible" || echo "✅ OK"
-
-# 5. Verificar rate-limiting
-echo "▶️  Rate-limiting on /login..."
-for i in {1..6}; do
-    curl -X POST https://localhost:5000/login \
-        -d "username=test&password=wrong" -s -o /dev/null -w "%{http_code}\n"
-done
-```
-
-#### 9. Deshabilitar features inseguras
-
-```python
-# app.py
-app.config.update(
-    DEBUG=False,                          # No debug en producción
-    TESTING=False,                        # No modo testing
-    PROPAGATE_EXCEPTIONS=False,           # No exponer stack traces
-    PRESERVE_CONTEXT_ON_EXCEPTION=False,  # No logs detallados de excepciones
-    JSON_SORT_KEYS=False,                 # No ordenar claves (timing attack)
-)
-
-# Deshabilitar endpoint de debug
-@app.route('/debug')
-def debug_info():
-    if not app.debug:
-        abort(404)
-    return {...}
-```
-
-#### 10. Validación de certificados en cliente
-
-```python
-# tests/test_certificate_validation.py
-import pytest
-from datetime import datetime, timedelta
-from cryptography import x509
-
-def test_expired_certificate_rejected():
-    """Test que certificado expirado es rechazado"""
-    # Crear certificado con expiración pasada
-    old_cert = create_cert_with_expiry(
-        datetime.utcnow() - timedelta(days=1)
-    )
-    
-    response = client.post('/login-cert', json={
-        'username': 'user',
-        'certificate_pem': old_cert,
-        'challenge': 'test-challenge',
-        'signature': 'fake-signature'
-    })
-    
-    assert response.status_code == 401
-    assert 'expirado' in response.json['error'].lower()
-
-def test_certificate_wrong_ca_rejected():
-    """Test que certificado de CA diferente es rechazado"""
-    # Crear certificado firmado por CA diferente
-    wrong_ca_cert = create_cert_from_different_ca('user')
-    
-    response = client.post('/login-cert', json={
-        'username': 'user',
-        'certificate_pem': wrong_ca_cert,
-        'challenge': 'test-challenge',
-        'signature': 'fake-signature'
-    })
-    
-    assert response.status_code == 401
-    assert 'CA' in response.json['error']
-
-def test_signature_tampered_rejected():
-    """Test que firma tamper es rechazada"""
-    response = client.post('/login-cert', json={
-        'username': 'user',
-        'certificate_pem': valid_cert_pem,
-        'challenge': 'valid-challenge',
-        'signature': 'TAMPERED_SIGNATURE_BASE64'
-    })
-    
-    assert response.status_code == 401
-    assert 'Firma inválida' in response.json['error']
-```
+## Preguntas Frecuentes (FAQ)
+
+**P1. ¿Por qué la app usa SQLite y no PostgreSQL/MySQL?**
+Por simplicidad de despliegue: es un sistema de un solo proceso, sin necesidad de un servidor de
+base de datos separado. `get_conn()`/`init_db()`/`ensure_column()` encapsulan el acceso de modo
+que una futura migración sería localizada, pero no existe planeada ni implementada.
+
+**P2. ¿Dónde están las rutas de la API?**
+No hay una "API" en el sentido JSON/REST; toda la interacción ocurre vía formularios HTML
+renderizados con Jinja2 y *redirects*. Las únicas excepciones JSON son los *endpoints* WebAuthn
+(`/auth/passkey/*`, `/action/passkey/*`) que siguen el protocolo del navegador, y algunos
+*endpoints* de panel de administración consumidos por `fetch()`.
+
+**P3. `python app.py` falla con `ModuleNotFoundError`.**
+Asegúrate de activar el entorno virtual (`source .venv/bin/activate` o invocar
+`.venv/bin/python`) y de haber corrido `pip install -r requirements.txt` (vía `setup.sh`).
+
+**P4. Olvidé cómo regenerar la llave de cifrado.**
+`generate_key.py` crea una nueva `key.key`. **Cuidado**: sustituir la llave activa sin pasar por
+el flujo de rotación (`/admin/keys/configure` + `/admin/keys/<fp>/activate` +
+`reencrypt_worker.py`) deja ilegibles los datos cifrados con la llave anterior.
+
+**P5. Mi cuenta quedó bloqueada tras varios intentos fallidos.**
+Espera `LOGIN_LOCKOUT_SECONDS` (15 minutos por defecto) o pide a un `admin` que reinicie el
+registro en `login_lockouts`/`failed_login_store` desde el panel correspondiente.
+
+**P6. ¿Cómo prueba el sistema que una acción crítica la autorizó realmente el titular de la
+cuenta?**
+Mediante reto-respuesta firmado: ya sea con la llave privada del certificado X.509
+(`verify_certificate_challenge_response`, PKCS1v15+SHA-256) o con una passkey WebAuthn
+(`check_and_consume_passkey_action`). Ambos mecanismos producen una firma criptográfica
+verificable y quedan registrados en `logs`, dando trazabilidad y no repudio.
+
+**P7. ¿Qué pasa si mi certificado expira?**
+`check_certificate_expiration` lo detecta y desactiva automáticamente las passkeys que dependían
+de él (vínculo N:1 passkey↔certificado); deberás re-emitir el certificado desde
+`/certificado/setup`.
+
+**P8. ¿Por qué Argon2id y no bcrypt o PBKDF2?**
+Argon2id ganó la *Password Hashing Competition* y combina resistencia a ataques por GPU/ASIC
+(función de derivación con costo de memoria configurable, `memory_cost=65536` ≈ 64 MiB) con
+resistencia a ataques de canal lateral (variante híbrida `id`, a diferencia de `Argon2d`/`Argon2i`
+puros). Ver más en la sección de Q&A.
 
 ---
 
-## Guía de Contribución
+## Q&A de Estudio — Criptografía y Ciberseguridad
 
-### Convenciones de código
+> Guía de preguntas y respuestas tipo examen, **basada en la implementación real de este
+> repositorio** (nombres de funciones, constantes y algoritmos verificables en `app.py` y
+> `config.py`). Pensada para un curso de criptografía/ciberseguridad: cada respuesta enlaza el
+> concepto teórico con la decisión concreta de diseño tomada en el código.
 
-**Python (PEP 8)**
-```python
-# ✅ Nombres descriptivos
-def verify_certificate_signature(cert_pem, signature):
-    """Verificar que firma de certificado es válida."""
-    pass
+### Bloque A — Hashing de contraseñas (Argon2id)
 
-# ✅ Máximo 79 caracteres por línea
-long_variable_name = some_function(
-    parameter1, parameter2, parameter3
-)
+**A1. ¿Por qué se usa Argon2id en lugar de un hash rápido como SHA-256 o MD5 para
+contraseñas?**
+Porque SHA-256/MD5 son funciones de hash *rápidas*, diseñadas para integridad de datos, no para
+contraseñas: un atacante con hardware especializado (GPU/ASIC) puede probar miles de millones de
+combinaciones por segundo. Argon2id es una **función de derivación de llaves con costo
+configurable de memoria, tiempo y paralelismo** (`ARGON2_MEMORY_COST=65536` → 64 MiB,
+`ARGON2_TIME_COST=3`, `ARGON2_PARALLELISM=2` en `app.py:60-63`), deliberadamente costosa de
+calcular y, sobre todo, costosa de paralelizar en hardware dedicado por su requerimiento de
+memoria ("memory-hard"). Esto hace que un ataque de fuerza bruta o de diccionario fuera de línea
+sea órdenes de magnitud más lento y costoso.
 
-# ✅ Docstrings en todas las funciones
-def add_user(username, password, role):
-    """
-    Crear nuevo usuario en la BD.
-    
-    Args:
-        username: Nombre único de usuario (3-20 caracteres)
-        password: Contraseña sin hashear (mínimo 8 caracteres)
-        role: usuario, operativo, coordinador, admin
-    
-    Returns:
-        dict: {'id': int, 'username': str, 'created_at': str}
-    
-    Raises:
-        ValueError: Si usuario ya existe o parámetros inválidos
-        DatabaseError: Si falla inserción en BD
-    """
-    pass
+**A2. ¿Cuál es la diferencia entre Argon2d, Argon2i y Argon2id, y por qué el código usa
+`Type.ID`?**
+- **Argon2d** maximiza la resistencia a ataques con GPU dependiendo de los datos de entrada para
+  el acceso a memoria, pero es vulnerable a ataques de canal lateral (*side-channel*, p. ej.
+  *cache-timing*).
+- **Argon2i** usa accesos a memoria independientes de los datos (resistente a canal lateral) pero
+  algo más débil contra ataques de fuerza bruta optimizados con GPU.
+- **Argon2id** es un **híbrido**: combina ambos enfoques (usa Argon2i en las primeras
+  iteraciones y Argon2d después), ofreciendo buena resistencia tanto a ataques de canal lateral
+  como a ataques de fuerza bruta paralelizados — por eso es la variante recomendada por la RFC
+  9106 para hashing de contraseñas, y la que `hash_password_argon2id` selecciona explícitamente
+  (`Type.ID`).
 
-# ✅ Type hints (Python 3.10+)
-def get_user(user_id: int) -> dict | None:
-    """Obtener usuario por ID"""
-    pass
+**A3. ¿Para qué sirve la sal (`salt`) y por qué se genera con `os.urandom`?**
+La sal es un valor aleatorio único por contraseña que se concatena/incorpora antes del hashing.
+Su propósito es **evitar el uso de tablas precomputadas (rainbow tables)** y asegurar que dos
+usuarios con la misma contraseña obtengan hashes distintos, de modo que comprometer una base de
+datos no permita comparar hashes entre cuentas ni reutilizar trabajo de cómputo previo.
+`generate_password_salt()` usa `os.urandom(ARGON2_SALT_LEN)` — un generador **criptográficamente
+seguro** (CSPRNG basado en las primitivas del sistema operativo), produciendo 16 bytes (128 bits)
+de entropía por sal, muy por encima del mínimo recomendado de 16 bytes para evitar colisiones.
 
-# ❌ Evitar
-x = some_func(a, b)  # Nombres no descriptivos
-def f():  # Sin docstring
-    return 1
-```
+**A4. ¿Qué aporta `parallelism=2` y por qué no se eligió un valor mucho mayor?**
+El parámetro de paralelismo determina cuántos *lanes* (carriles) de cómputo independientes se
+ejecutan al derivar el hash, lo que afecta tanto el tiempo de cálculo como la resistencia a
+ataques con hardware masivamente paralelo. Un valor mayor incrementaría la resistencia contra
+atacantes con GPU, pero también el costo de CPU/latencia en el servidor en cada login — el valor
+`2` es un balance pragmático entre seguridad y experiencia/costo operativo del servidor (un
+servidor que atiende muchos logins concurrentes no puede dedicar recursos ilimitados a cada uno).
 
-**JavaScript/HTML**
-```html
-<!-- ✅ IDs descriptivos, clases en snake_case -->
-<input id="login_username" class="form_field" type="text">
+**A5. ¿Qué información incluye el formato `$argon2id$...` almacenado en `password_hash`, y
+por qué eso es relevante para la verificación?**
+El formato PHC (*Password Hashing Competition string format*) embebe el algoritmo, la versión,
+los parámetros (`m`, `t`, `p`), la sal y el hash resultante en una sola cadena autocontenida.
+Esto permite que `verify_password_argon2id` reconstruya exactamente los mismos parámetros usados
+al crear el hash (incluso si las constantes globales cambiaron después), garantizando
+verificación correcta y facilitando una futura migración de parámetros sin invalidar hashes
+existentes (se puede detectar un hash con parámetros "viejos" y forzar su renovación — ver
+`password_is_legacy_or_weak`).
 
-<!-- ✅ Comentarios en secciones importantes -->
-<!-- Formulario de autenticación reforzada -->
-<form id="login_cert_form">
-    <input type="text" name="username">
-</form>
-```
+### Bloque B — Cifrado simétrico de datos (Fernet)
 
-**SQL**
-```sql
--- ✅ Keywords en MAYÚSCULA, tablas/columnas en snake_case
-SELECT id, username, created_at 
-FROM usuarios 
-WHERE role = 'admin' AND is_active = true
-ORDER BY created_at DESC;
+**B1. ¿Qué construcción criptográfica hay detrás de Fernet, y por qué se considera
+"cifrado autenticado"?**
+Fernet (de la librería `cryptography`) combina **AES-128 en modo CBC** para confidencialidad con
+**HMAC-SHA256** para integridad/autenticidad, sobre un *token* versionado que incluye un IV
+aleatorio y una marca de tiempo. Es "autenticado" porque, al descifrar, se verifica primero el
+HMAC: si el *token* fue modificado (o la llave es incorrecta), la verificación falla **antes** de
+intentar el descifrado, evitando ataques de oráculo de relleno (*padding oracle*) y garantizando
+que el receptor detecta cualquier alteración del texto cifrado.
 
--- ❌ Evitar
-select * from usuarios where username='test'
-```
+**B2. ¿Por qué el sistema cifra el campo `datos` de cada expediente en lugar de cifrar toda la
+base de datos o el disco?**
+Es **cifrado a nivel de campo** (*field-level encryption*): protege específicamente la
+información sensible de cada expediente incluso si un atacante obtiene acceso de lectura a la
+base de datos (p. ej. mediante una vulnerabilidad de inyección SQL u otra fuga), sin afectar
+columnas no sensibles que se necesitan para indexar/filtrar (`estado`, `usuario_id`, etc.). Es
+un control complementario, no sustituto, de otros (permisos del sistema de archivos, cifrado de
+disco, respaldos cifrados).
 
-### Flujo de trabajo (Git)
+**B3. ¿Qué es la "huella" (`fingerprint`) que precede a cada blob cifrado (`fp:<huella>\n...`),
+y qué problema resuelve?**
+Es el **SHA-256 de la llave Fernet** usada para cifrar ese registro en particular
+(`hashlib.sha256(key_bytes).hexdigest()`, ver `_build_keyring`). Resuelve el problema de
+**identificar, sin necesidad de probar varias llaves por fuerza bruta, con qué llave se cifró
+cada dato** — esencial cuando conviven una llave activa y llaves "legadas" durante una rotación:
+`decrypt_data` lee la huella, localiza la llave correspondiente en el *keyring*
+(`get_cipher_for_fingerprint`) y descifra directamente con ella.
 
-**1. Crear rama para feature**
-```bash
-git checkout -b feature/agregar-2fa
-# O bugfix
-git checkout -b bugfix/corregir-rate-limiting
-```
+**B4. Explica el proceso de "rotación de llaves" implementado y por qué es necesario.**
+La rotación reemplaza periódicamente la llave de cifrado activa (buena práctica recomendada por
+NIST SP 800-57 para limitar la cantidad de datos expuestos si una llave se compromete, y para
+cumplir políticas de criptoperiodo). En este sistema: (1) el administrador configura una nueva
+llave candidata vía `/admin/keys/configure` (acción que exige firma con passkey); (2) al
+activarla (`/admin/keys/<fp>/activate`), la llave anterior pasa a estado `legada` y se encola un
+trabajo en `reencrypt_jobs`; (3) `tools/reencrypt_worker.py` recorre los expedientes en lotes,
+**descifra con la llave legada y vuelve a cifrar con la llave nueva** (`reencrypt_all_surveys`),
+de modo que con el tiempo todos los registros quedan bajo la llave activa y la legada puede
+retirarse (`retiring`) sin perder acceso a datos antiguos durante la transición.
 
-**2. Hacer cambios y commits atómicos**
-```bash
-# Cambio 1: agregar función de verificación
-git add app.py
-git commit -m "feat: add 2fa verification function"
+**B5. ¿Cómo se diferencia el cifrado simétrico (Fernet) usado aquí del cifrado asimétrico
+(RSA) usado en la PKI, y por qué cada uno se aplica donde se aplica?**
+El cifrado simétrico usa la **misma llave** para cifrar y descifrar — es mucho más eficiente
+para grandes volúmenes de datos (como los campos de cada expediente), pero requiere que el
+servidor posea la llave para ambas operaciones. El cifrado/firma asimétrico (RSA) usa un **par de
+llaves** (privada/pública): la llave privada nunca debe salir del lado del usuario, y la pública
+puede distribuirse libremente. Por eso la PKI no se usa para cifrar los datos del expediente
+(sería costoso e innecesario), sino para **autenticar al usuario y verificar la autoría de
+acciones críticas** mediante firmas digitales que sólo el titular de la llave privada puede
+producir.
 
-# Cambio 2: agregar tests
-git add tests/
-git commit -m "test: add tests for 2fa verification"
+### Bloque C — PKI / Certificados X.509
 
-# Formato de commit: type(scope): short description
-# Types: feat, fix, test, docs, refactor, security
-# Scope: app, database, auth, api, etc.
-```
+**C1. ¿Qué función cumple la Autoridad Certificadora (CA) local, y por qué su llave es de
+3072 bits mientras que los certificados de usuario usan 2048 bits?**
+La CA es la raíz de confianza del sistema: emite y firma los certificados de usuario, de modo
+que verificar la firma de la CA sobre un certificado equivale a confiar en la identidad que
+declara. `_load_or_create_certificate_authority` genera una llave RSA de **3072 bits** —
+mayor tamaño que los certificados de usuario (2048 bits) — porque la **seguridad de toda la
+cadena de confianza depende de la robustez de la llave raíz**: comprometer la CA permitiría
+forjar certificados para cualquier identidad, mientras que comprometer un certificado de usuario
+sólo afecta a esa cuenta. Es una práctica estándar dimensionar la llave raíz con mayor margen de
+seguridad (y, normalmente, mayor vida útil — aquí 10 años frente a 30 días).
 
-**3. Push y crear Pull Request**
-```bash
-git push origin feature/agregar-2fa
+**C2. ¿Por qué los certificados de usuario tienen una validez corta (720 horas = 30 días)
+mientras que la CA dura 10 años?**
+Una validez corta limita la ventana de exposición si una llave privada de usuario se compromete
+sin que el usuario lo note: el certificado expira y deja de ser utilizable, forzando una
+renovación periódica (que, de paso, revalida que el usuario sigue teniendo control de su llave
+privada). La CA, en cambio, al ser la raíz de confianza, cambia con mucha menor frecuencia
+porque rotarla implica reemitir *todos* los certificados subordinados — de ahí su vida útil
+mucho más larga.
 
-# En GitHub: crear PR con descripción:
-# - Qué se agregó
-# - Por qué
-# - Testing realizado
-```
+**C3. Describe el protocolo de reto-respuesta (`challenge-response`) implementado y qué
+ataque previene frente a, por ejemplo, simplemente "enviar la contraseña otra vez".**
+El servidor genera un reto aleatorio único (`issue_signature_challenge`) y construye un *payload*
+determinista `f"CasaMonarca|{purpose}|{username}|{challenge}"`
+(`build_signature_payload`). El cliente firma ese *payload* con su **llave privada** (RSA,
+`PKCS1v15` + `SHA-256`) y el servidor verifica la firma con la **llave pública** del certificado
+activo (`verify_certificate_challenge_response`). Como el reto es aleatorio, de un solo uso y
+con un TTL (`SIGNATURE_CHALLENGE_TTL=300 s`), un atacante que intercepte una respuesta firmada
+**no puede reutilizarla** (a diferencia de un secreto estático como una contraseña, cuya
+intercepción permite reproducir la autenticación indefinidamente). Esto es la base de la
+**autenticación por posesión de la llave privada**, sin que ésta viaje nunca por la red.
 
-**4. Code Review y merge**
-```bash
-# Después de aprobación:
-git checkout main
-git pull origin main
-git merge --no-ff feature/agregar-2fa
-git push origin main
+**C4. ¿Qué esquema de relleno (`padding`) y de hash se usan para firmar/verificar, y qué
+garantizan?**
+`padding.PKCS1v15()` junto con `hashes.SHA256()`. El esquema PKCS#1 v1.5 define cómo se da
+formato al hash del mensaje antes de aplicar la operación RSA de firma, de forma estandarizada e
+interoperable; SHA-256 produce un resumen criptográfico de 256 bits resistente a colisiones. En
+conjunto garantizan que (a) cualquier alteración del mensaje firmado invalida la verificación
+(integridad), y (b) sólo quien posea la llave privada correspondiente pudo producir esa firma
+(autenticidad/no repudio), siempre que la llave privada permanezca secreta.
 
-# Eliminar rama
-git branch -d feature/agregar-2fa
-git push origin -d feature/agregar-2fa
-```
+**C5. ¿Qué significa "revocar" un certificado en este sistema y por qué no basta con dejar
+que expire?**
+Revocar (`revoke_certificate` / `revoke_certificate_and_passkeys`) marca el certificado como
+`revocado` de inmediato, registra el motivo en `logs` y desactiva las passkeys vinculadas — a
+diferencia de la expiración natural, que ocurre en una fecha futura predefinida. La revocación es
+necesaria cuando se sospecha que una llave privada fue comprometida, un usuario fue dado de baja,
+o cambió de rol: **no se puede esperar a que el certificado expire por sí solo**, porque durante
+ese tiempo seguiría siendo criptográficamente válido y utilizable por un atacante.
 
-**Convenciones de commit:**
-```
-feat: agregar soporte para 2FA
-fix: corregir bug en rate-limiting
-test: agregar tests para login
-docs: actualizar README
-refactor: simplificar lógica de autenticación
-security: mejorar validación de entrada
-chore: actualizar dependencias
-```
+**C6. ¿Qué papel juega un CSR (Certificate Signing Request) en el flujo
+`_build_signed_certificate_from_csr`, y qué garantiza sobre la llave privada del usuario?**
+Un CSR permite que el **usuario genere su propio par de llaves localmente** y envíe al servidor
+sólo la llave **pública** (junto con los datos de identidad), pidiendo que la CA la firme. Esto
+garantiza que la **llave privada nunca sale del dispositivo del usuario ni transita por la red**
+— el servidor jamás llega a conocerla — lo que reduce la superficie de exposición frente al
+modelo alternativo (generación en servidor), donde el servidor genera el par y debe transmitir
+o custodiar la llave privada de forma segura.
 
-### Cómo agregar funcionalidades
+### Bloque D — WebAuthn / Passkeys (criptografía de llave pública aplicada)
 
-**Ejemplo: Agregar endpoint para cambiar contraseña**
+**D1. ¿Por qué se considera que las passkeys son resistentes al *phishing*, a diferencia de
+una contraseña o incluso de un código OTP por SMS/correo?**
+Porque el protocolo WebAuthn ata cada credencial al **origen** (`PASSKEY_ORIGIN`/`PASSKEY_RP_ID`)
+durante la ceremonia: el navegador firma el reto incluyendo el origen de la página que lo
+solicitó, y el autenticador **se niega a operar para un origen distinto** al registrado. Un sitio
+de *phishing* que imite la apariencia de Casa Monarca tendría un origen distinto, por lo que el
+navegador/autenticador simplemente no completaría la ceremonia — a diferencia de una contraseña
+u OTP, que un usuario engañado puede tipear manualmente en cualquier sitio.
 
-**Paso 1: Planificar**
-```
-Requirement:
-- Endpoint: POST /profile/change-password
-- Input: usuario + contraseña actual + contraseña nueva
-- Output: 200 OK o 401/400 error
-- Seguridad: HTTPS, validar sesión, rate-limiting
-- Testing: test login antiguo falla, test login nuevo funciona
-```
+**D2. ¿Qué es `sign_count` y qué ataque concreto mitiga su verificación en cada login?**
+Es un contador que el autenticador incrementa con cada operación de firma y que se almacena en
+`passkey_credentials.sign_count`. En cada autenticación (`verify_authentication_response`), el
+servidor comprueba que el nuevo valor sea **mayor** que el almacenado. Esto mitiga la
+**clonación de autenticadores**: si alguien copiara el material de una *passkey* (en
+autenticadores que no son resistentes a la exportación) y lo usara en paralelo, los contadores
+divergirían y una de las dos copias produciría un valor de `sign_count` menor o repetido,
+delatando el uso de una credencial duplicada.
 
-**Paso 2: Implementar BD**
-```python
-# database.py - agregar función
-def update_user_password(user_id: int, new_password: str) -> bool:
-    """Actualizar contraseña del usuario"""
-    from argon2 import PasswordHasher
-    
-    user = Usuario.query.get(user_id)
-    if not user:
-        raise ValueError(f"Usuario {user_id} no existe")
-    
-    # Hash nueva contraseña
-    ph = PasswordHasher()
-    user.password_hash = ph.hash(new_password)
-    user.password_updated = datetime.utcnow()
-    
-    db.session.commit()
-    log_event('PASSWORD_CHANGED', user.username, 'success')
-    
-    return True
-```
+**D3. Compara la verificación de una passkey con la verificación de un certificado X.509 en
+este sistema: ¿en qué se parecen y en qué difieren criptográficamente?**
+Ambos son, en esencia, **pruebas de posesión de una llave privada mediante firma de un reto**:
+el servidor envía un desafío, el cliente firma con su llave privada y el servidor verifica con
+la llave pública correspondiente. La diferencia central es la **gestión de confianza**: un
+certificado X.509 requiere una cadena de confianza hacia una CA (el servidor verifica que la
+llave pública está avalada por una autoridad), mientras que una *passkey* WebAuthn se basa en un
+**registro directo** (TOFU — *trust on first use* — de la llave pública asociada a la cuenta,
+sin cadena de certificación), reforzado por las garantías del propio protocolo del navegador
+(verificación de origen, posible verificación biométrica/PIN local).
 
-**Paso 3: Implementar endpoint**
-```python
-# app.py
-@app.route('/profile/change-password', methods=['POST'])
-@require_login
-def change_password():
-    """Cambiar contraseña del usuario autenticado"""
-    data = request.json
-    
-    old_password = data.get('old_password')
-    new_password = data.get('new_password')
-    
-    # Validar entrada
-    if not old_password or not new_password:
-        return {'error': 'Contraseña actual y nueva requeridas'}, 400
-    
-    if len(new_password) < 8:
-        return {'error': 'Contraseña debe tener mínimo 8 caracteres'}, 400
-    
-    # Obtener usuario
-    user = get_user(session['username'])
-    
-    # Verificar contraseña actual
-    if not verify_password(user['password_hash'], old_password):
-        log_event('PASSWORD_CHANGE_FAILED', session['username'], 'wrong_old_password')
-        return {'error': 'Contraseña actual incorrecta'}, 401
-    
-    # Actualizar contraseña
-    try:
-        update_user_password(user['id'], new_password)
-        return {'status': 'success', 'message': 'Contraseña actualizada'}, 200
-    except Exception as e:
-        log_event('PASSWORD_CHANGE_ERROR', session['username'], str(e), 'CRITICAL')
-        return {'error': 'Error al actualizar contraseña'}, 500
-```
+**D4. ¿Por qué la primera *passkey* registrada deriva automáticamente un certificado X.509
+(`derive_certificate_from_first_passkey`), y qué propiedad arquitectónica describe la
+relación "N:1" entre passkeys y certificados?**
+El sistema mantiene **dos mecanismos paralelos** de identidad reforzada (X.509 y WebAuthn) para
+roles críticos; derivar el certificado automáticamente evita que el usuario tenga que pasar por
+dos configuraciones independientes y asegura que ambos mecanismos queden **enlazados desde el
+origen**. La relación "N:1" significa que **varias** credenciales *passkey* de un mismo usuario
+(p. ej. registradas en distintos dispositivos) pueden enlazarse a **un mismo** certificado
+(`link_passkey_to_certificate`), de modo que revocar el certificado revoca/desactiva todas las
+passkeys asociadas (y viceversa, según el caso) — manteniendo una única fuente de verdad sobre
+la identidad reforzada del usuario, sin importar cuántos dispositivos use.
 
-**Paso 4: Agregar tests**
-```python
-# tests/test_change_password.py
-import pytest
+**D5. ¿Qué se firma exactamente cuando un *admin* "autoriza una acción crítica" con su
+*passkey* (`/action/passkey/verify`), y por qué eso aporta *no repudio*?**
+Se firma un reto específico para esa acción (`expected_action_label`, validado con un margen de
+antigüedad `max_age_seconds=60` en `check_and_consume_passkey_action`), atado a la sesión y al
+propósito declarado (p. ej. "activar nueva llave de cifrado"). Como la firma sólo puede
+producirla quien posee la llave privada del autenticador (protegida por hardware/biometría local
+del dispositivo), el sistema obtiene una **prueba criptográfica verificable** de que *esa*
+persona autorizó *esa* acción en *ese* momento — quedando además registrada en `logs`. Esto es
+no repudio: el usuario no puede negar de forma creíble haber autorizado la acción, porque sólo su
+credencial podía producir esa firma.
 
-def test_change_password_success(client, auth_session):
-    """Test cambio de contraseña exitoso"""
-    response = client.post('/profile/change-password', json={
-        'old_password': 'OldPass123!',
-        'new_password': 'NewPass456!'
-    })
-    
-    assert response.status_code == 200
-    assert response.json['status'] == 'success'
-    
-    # Verificar que login antiguo ya no funciona
-    logout_response = client.get('/logout')
-    assert logout_response.status_code == 200
-    
-    login_old = client.post('/login', data={
-        'username': 'testuser',
-        'password': 'OldPass123!'
-    })
-    assert login_old.status_code == 401
-    
-    # Verificar que login nuevo funciona
-    login_new = client.post('/login', data={
-        'username': 'testuser',
-        'password': 'NewPass456!'
-    })
-    assert login_new.status_code == 200
+### Bloque E — Protecciones de aplicación web (CSRF, sesiones, cookies)
 
-def test_change_password_wrong_old(client, auth_session):
-    """Test cambio con contraseña anterior incorrecta"""
-    response = client.post('/profile/change-password', json={
-        'old_password': 'WrongPass123!',
-        'new_password': 'NewPass456!'
-    })
-    
-    assert response.status_code == 401
-    assert 'incorrecta' in response.json['error'].lower()
+**E1. ¿Qué tipo de ataque previene la protección CSRF, y cómo está implementada aquí?**
+CSRF (*Cross-Site Request Forgery*) consiste en inducir al navegador de una víctima ya
+autenticada a enviar, sin su consentimiento, una solicitud que modifica estado en un sitio (p.
+ej. cambiar su contraseña o aprobar una solicitud) aprovechando que el navegador adjunta
+automáticamente las cookies de sesión. La mitigación aquí es el **patrón de token sincronizado**:
+`ensure_csrf_token()` genera un token impredecible y lo guarda en la sesión del servidor; cada
+formulario debe incluirlo, y `validate_csrf()`/`csrf_protect()` (hook `before_request`) rechazan
+cualquier solicitud que modifique estado (POST/etc.) si el token no coincide — un sitio externo
+no puede conocer ese token porque no tiene acceso a la sesión de la víctima.
 
-def test_change_password_weak_new(client, auth_session):
-    """Test rechazo de contraseña nueva débil"""
-    response = client.post('/profile/change-password', json={
-        'old_password': 'OldPass123!',
-        'new_password': '123456'
-    })
-    
-    assert response.status_code == 400
-    assert 'mínimo' in response.json['error'].lower()
+**E2. ¿Para qué sirven los atributos `HttpOnly`, `Secure` y `SameSite` en las cookies de
+sesión (`enforce_cookie_flags`), y qué amenaza mitiga cada uno?**
+- **`HttpOnly`**: impide que JavaScript del lado del cliente lea la cookie — mitiga el robo de
+  sesión mediante **XSS** (un script inyectado no podría exfiltrar la cookie).
+- **`Secure`**: la cookie sólo se envía sobre **HTTPS** — mitiga la intercepción en tránsito
+  (*sniffing*) sobre redes no cifradas.
+- **`SameSite`** (`Lax` en desarrollo, `Strict` forzado en producción): controla si la cookie se
+  envía en solicitudes iniciadas desde otros sitios — mitiga **CSRF** y fugas de sesión mediante
+  navegación cruzada (en `Strict`, la cookie no se envía ni siquiera en navegaciones de nivel
+  superior provenientes de otro sitio).
 
-def test_change_password_unauthenticated(client):
-    """Test que usuario no autenticado no puede cambiar"""
-    response = client.post('/profile/change-password', json={
-        'old_password': 'Pass123!',
-        'new_password': 'NewPass456!'
-    })
-    
-    assert response.status_code == 401
-```
+**E3. ¿Por qué `SECRET_KEY` tiene un valor por defecto inseguro (`"secreto_demo"`) en
+`config.py`, y qué riesgo implica no sobreescribirlo en producción?**
+Sirve como conveniencia para desarrollo local (la app debe poder arrancar sin configuración
+adicional). El riesgo de no sobreescribirlo en producción es severo: `SECRET_KEY` es la llave con
+la que Flask **firma criptográficamente las cookies de sesión**; si un atacante la conoce, puede
+**forjar cookies de sesión válidas** para cualquier usuario (incluyendo administradores) sin
+necesidad de conocer su contraseña — comprometiendo por completo el control de acceso del
+sistema. Por eso `ProductionConfig` exige obtenerla de una variable de entorno.
 
-**Paso 5: Agregar en frontend (si aplica)**
-```html
-<!-- templates/profile.html -->
-<h2>Cambiar Contraseña</h2>
-<form id="change_password_form">
-    <input type="password" name="old_password" placeholder="Contraseña actual" required>
-    <input type="password" name="new_password" placeholder="Contraseña nueva" required>
-    <button type="submit">Cambiar</button>
-</form>
+### Bloque F — Mitigación de fuerza bruta y control de acceso
 
-<script>
-document.getElementById('change_password_form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const data = {
-        old_password: e.target.old_password.value,
-        new_password: e.target.new_password.value
-    };
-    
-    const response = await fetch('/profile/change-password', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-    });
-    
-    const result = await response.json();
-    
-    if (response.ok) {
-        alert(result.message);
-        e.target.reset();
-    } else {
-        alert('Error: ' + result.error);
-    }
-});
-</script>
-```
+**F1. Describe el mecanismo de bloqueo de cuentas (`login_lockouts`) y explica por qué
+combina una "ventana" y un "bloqueo" en lugar de bloquear permanentemente al primer error.**
+Tras `LOGIN_MAX_ATTEMPTS` (5) intentos fallidos dentro de una **ventana** de
+`LOGIN_WINDOW_SECONDS` (300 s = 5 min), la cuenta/IP queda **bloqueada** durante
+`LOGIN_LOCKOUT_SECONDS` (900 s = 15 min) — `_is_locked`/`_record_failed`/`_clear_failed`. Este
+diseño de **ventana deslizante + bloqueo temporal** equilibra dos riesgos: bloquear
+permanentemente al primer error facilitaría un **ataque de denegación de servicio dirigido**
+(un atacante podría bloquear cuentas legítimas a propósito sólo con teclear mal la contraseña),
+mientras que no bloquear nunca permitiría ataques de fuerza bruta/diccionario en línea sin
+fricción. Reiniciar el contador tras la ventana evita penalizar a usuarios que simplemente
+cometen errores esporádicos de tecleo.
 
-**Paso 6: Commit y PR**
-```bash
-git checkout -b feature/change-password
+**F2. ¿Por qué `_is_locked` se evalúa *antes* de verificar la contraseña, y qué principio de
+seguridad refleja eso?**
+Porque revelar a través del tiempo de respuesta o del mensaje de error si una cuenta existe o
+está bloqueada filtra información útil para un atacante (enumeración de usuarios). Evaluar el
+bloqueo primero, con una respuesta uniforme, refleja el principio de **minimizar la superficie
+de información expuesta** ante intentos de autenticación — el sistema no debería comportarse de
+forma observablemente distinta según si el nombre de usuario existe o no.
 
-git add database.py app.py tests/test_change_password.py templates/profile.html
-git commit -m "feat: add endpoint to change user password"
+**F3. Explica el modelo RBAC (`PERMISSIONS`/`has_permission`/`require_role`) y cómo aplica el
+principio de mínimo privilegio en el flujo de expedientes.**
+Cada rol tiene un conjunto fijo de permisos CRUD (`usuario`: sólo `create`; `operativo`:
+`create`+`read`; `coordinador`: + `update`; `admin`: + `delete`). Además,
+`next_status_for_role()` ata cada **transición de estado** del expediente a un rol específico, de
+modo que ningún actor puede saltarse pasos del flujo de revisión (p. ej. un `usuario` no puede
+"validar" su propio expediente). Esto encarna **mínimo privilegio** (cada rol puede hacer
+exactamente lo necesario para su función, nada más) y **separación de funciones** (ningún rol
+controla el ciclo completo en solitario, reduciendo el riesgo de fraude o error no detectado).
 
-git push origin feature/change-password
+### Bloque G — Verificación de contraseñas filtradas (HIBP) y hashing no sensible
 
-# Crear PR en GitHub con descripción:
-# - Permite a usuarios cambiar su contraseña
-# - Validación: contraseña actual correcta, nueva >= 8 caracteres
-# - Tests: 4 cases (success, wrong old, weak new, unauthenticated)
-# - Security: Argon2id hash, auditoría de cambios
-```
+**G1. Explica paso a paso el modelo de "k-anonimato" usado por `check_password_pwned` para
+consultar Have I Been Pwned sin revelar la contraseña al servicio externo.**
+1. Se calcula `SHA-1(contraseña)` y se expresa en hexadecimal mayúsculas.
+2. Se envían a la API **sólo los primeros 5 caracteres** del hash (el "prefijo"), nunca la
+   contraseña ni el hash completo.
+3. El servicio responde con **todos los sufijos** (el resto del hash) de contraseñas filtradas
+   que comparten ese prefijo — potencialmente cientos o miles de candidatos.
+4. La comparación final del **sufijo completo** ocurre **localmente**, en el servidor de Casa
+   Monarca, sin que HIBP llegue a saber qué contraseña exacta se está consultando.
+Este diseño (k-anonimato) permite aprovechar una base de datos externa de filtraciones masivas
+**sin comprometer la confidencialidad** de la contraseña que se está validando — ni siquiera
+ante el propio proveedor del servicio.
 
-**Checklist antes de hacer PR:**
-- ✅ Tests nuevos pasan: `PYTHONPATH=. pytest tests/test_change_password.py -v`
-- ✅ Tests existentes no fallan: `PYTHONPATH=. pytest -v`
-- ✅ Código sigue PEP 8: `pylint app.py` o `black --check app.py`
-- ✅ Sin hardcoded secrets
-- ✅ Docstrings completos
-- ✅ Commits atómicos con mensajes claros
-- ✅ Rama actualizada con main: `git pull origin main`
+**G2. ¿Por qué se usa `SHA-1` aquí, si en el Bloque A se explicó que es inadecuado para
+contraseñas?**
+No hay contradicción: `SHA-1` no se usa aquí **como mecanismo de almacenamiento/protección** de
+la contraseña (para eso se usa Argon2id), sino como **identificador de búsqueda** en un protocolo
+de terceros (la API de HIBP fue diseñada y publicada usando SHA-1 por razones de compatibilidad
+e interoperabilidad con su base de datos existente de filtraciones). El uso es efímero —sólo
+para esa consulta puntual— y su "debilidad" frente a ataques de fuerza bruta es irrelevante en
+este contexto, porque no protege ningún secreto a largo plazo: simplemente referencia un valor
+que, por definición, **ya está filtrado públicamente**.
+
+**G3. ¿Qué diferencia hay entre que el sistema rechace una contraseña por "filtrada" (HIBP) y
+que la rechace por "entropía insuficiente" (`password_has_minimum_entropy`)?**
+Son controles complementarios sobre amenazas distintas: la verificación de **entropía** evalúa
+si la contraseña, *en abstracto*, es lo bastante impredecible (longitud, variedad de caracteres,
+ausencia de patrones triviales o de `COMMON_WEAK_PASSWORDS`) para resistir un ataque de fuerza
+bruta genérico; la verificación **HIBP** comprueba si esa contraseña concreta **ya apareció en
+filtraciones reales conocidas** — es decir, si ya forma parte de los diccionarios que cualquier
+atacante real usaría primero, sin importar cuán "aleatoria" parezca a simple vista (una
+contraseña larga y compleja, pero reutilizada de un sitio ya filtrado, sigue siendo insegura).
+
+### Bloque H — Preguntas de análisis / comparación (tipo "explica con tus palabras")
+
+**H1. Si tuvieras que explicar en una frase por qué este sistema usa *tres* mecanismos
+criptográficos distintos para "demostrar identidad" (contraseña+Argon2id, certificado X.509,
+passkey WebAuthn), ¿cuál sería la justificación de diseño?**
+Cada mecanismo cubre una capa distinta del modelo de amenazas: la contraseña (con Argon2id) es
+el factor base de "algo que sabes", resistente a ataques de fuerza bruta fuera de línea; el
+certificado X.509 añade "algo que tienes" verificable mediante criptografía asimétrica clásica e
+interoperable (útil para automatización/firma de retos); la *passkey* WebAuthn añade un segundo
+"algo que tienes" moderno, resistente a *phishing* por diseño y normalmente respaldado por
+verificación local del dispositivo (biometría/PIN) — y sólo se exige a los roles cuyo
+compromiso tendría mayor impacto (`admin`, `coordinador`).
+
+**H2. ¿Qué tienen en común, criptográficamente, la verificación de una firma de certificado
+(`PKCS1v15`+`SHA256`), la verificación de una *passkey* y la verificación del HMAC dentro de un
+token Fernet? ¿Qué principio de seguridad subyace a los tres?**
+Los tres son, en el fondo, **comprobaciones de un valor producido con un secreto que el
+verificador no posee (o no necesita poseer)**: una firma RSA requiere la llave privada del
+firmante; la verificación WebAuthn requiere la llave privada del autenticador; el HMAC de Fernet
+requiere la llave simétrica compartida. En los tres casos, el verificador puede confirmar
+**autenticidad/integridad sin poder, por sí solo, producir un valor válido falso** — el principio
+subyacente es que la seguridad reside en el secreto (la llave), no en el secreto del algoritmo
+(*Kerckhoffs's principle*): los algoritmos (RSA, ECDSA/COSE, HMAC-SHA256) son públicos y
+estandarizados; lo que protege al sistema es exclusivamente el control de las llaves.
+
+**H3. Un compañero argumenta: "si ya tenemos Argon2id para las contraseñas, ¿por qué
+complicar el sistema con certificados X.509 y passkeys además?" ¿Cómo le responderías,
+relacionándolo con el modelo de amenazas de Casa Monarca?**
+Argon2id protege **un secreto compartido** (la contraseña): si ese secreto se filtra —por
+*phishing*, reutilización en otro sitio comprometido, o malware en el dispositivo del usuario—
+deja de ser una barrera, sin importar cuán robusto sea el hashing del lado del servidor (el
+hashing protege la base de datos, no protege al usuario de revelar su contraseña). Los
+certificados y *passkeys* añaden factores basados en **posesión de una llave privada que nunca
+viaja por la red ni se revela al servidor**, eliminando esa clase de riesgo para las cuentas
+(`admin`, `coordinador`) cuyo compromiso tendría el mayor impacto sobre la organización (acceso a
+datos personales sensibles de personas migrantes, control de la rotación de llaves de cifrado,
+etc.) — es defensa en profundidad dirigida específicamente a los activos de mayor criticidad.
+
+**H4. Explica por qué la combinación "cifrado de campo (Fernet) + huellas SHA-256 + cola de
+re-cifrado (`reencrypt_jobs`)" es preferible a simplemente "cambiar la llave y aceptar que los
+datos viejos queden ilegibles".**
+Cambiar la llave sin un mecanismo de transición provocaría **pérdida de disponibilidad de los
+datos históricos** (todos los expedientes cifrados con la llave anterior quedarían
+irrecuperables) — inaceptable para un sistema que custodia información sensible con valor legal y
+operativo a largo plazo. El diseño con huellas + *keyring* + cola de trabajos permite una
+transición **gradual y verificable**: los datos antiguos siguen siendo legibles (vía la llave
+legada, identificada por su huella) mientras un proceso en segundo plano los migra
+progresivamente a la llave nueva, sin tiempo de inactividad y sin arriesgar la integridad ni la
+disponibilidad de la información durante la rotación — precisamente el objetivo de una política
+de ciclo de vida de llaves bien diseñada (cf. NIST SP 800-57).
 
 ---
 
-## Problemas Conocidos
-
-### Bugs actuales
-❌ N/A — Primera versión (1.0.0), sin bugs reportados en testing.
-
-### Limitaciones
-
-#### 1. Base de datos SQLite (HostGator)
-- ❌ Single-writer: máx 1 transacción simultánea
-- ❌ No soporta >100-1000 conexiones concurrentes
-- ❌ No escalable horizontalmente
-- ✅ Solución Etapa 2: Migrar a PostgreSQL
-
-#### 2. Almacenamiento en HostGator
-- ❌ Límite de espacio en disco (revisar plan)
-- ❌ Backups manuales en carpeta (backups/)
-- ✅ Solución: Implementar backup automático a S3 (Etapa 2)
-
-#### 3. Certificados auto-firmados
-- ❌ Navegadores muestran advertencia de seguridad
-- ❌ No válidos para producción real
-- ✅ Solución: Usar Let's Encrypt o CA institucional en Etapa 2
-
-#### 4. Sin caché distribuida
-- ❌ Cada servidor tiene caché local
-- ❌ No hay sesiones compartidas en multi-servidor
-- ✅ Solución: Implementar Redis (Etapa 2)
-
-#### 5. Sin autoscaling
-- ❌ HostGator no permite load balancing automático
-- ❌ Escalabilidad manual (cambiar plan)
-- ✅ Solución: Considerar migración a cloud (Etapa 2)
-
-#### 6. Logs locales
-- ❌ Logs solo en servidor (sin centralización)
-- ❌ Difícil monitoreo multi-servidor
-- ✅ Solución: ELK Stack o Datadog (Etapa 2)
-
-#### 7. Sin 2FA (aún)
-- ❌ Autenticación solo básica + certificados
-- ✅ Solución: Agregar TOTP (Etapa 2)
-
----
-
-## FAQ Técnica
-
-### Q1: ¿Cómo levantar el proyecto en local?
-
-**A:** 
-```bash
-# 1. Clonar
-git clone <repo>
-cd Intentoa2
-
-# 2. Crear venv
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. Instalar dependencias
-pip install -r requirements.txt
-
-# 4. Generar claves
-python generate_key.py
-
-# 5. Crear BD
-python -c "from database import create_tables; create_tables()"
-
-# 6. Crear usuario admin
-python -c "from database import add_user; add_user('admin', 'AdminDev123!', 'admin')"
-
-# 7. Ejecutar
-python app.py
-```
-
-### Q2: Error "ModuleNotFoundError: No module named 'database'"
-
-**A:** Falta PYTHONPATH
-```bash
-# Antes de ejecutar tests:
-export PYTHONPATH=.
-pytest tests/ -v
-
-# O en un comando:
-PYTHONPATH=. python app.py
-```
-
-### Q3: Error "database.db no existe"
-
-**A:** Crear tablas
-```bash
-python -c "from database import create_tables; create_tables()"
-```
-
-### Q4: Error en certificados "ca.key o ca.crt no encontrados"
-
-**A:** Generar certificados
-```bash
-python scripts/generate_certs.py --env dev
-```
-
-### Q5: ¿Cómo resetear la contraseña de un usuario?
-
-**A:** 
-```python
-# En terminal Python
-from database import update_user_password
-update_user_password(user_id=1, new_password='NewPass123!')
-```
-
-### Q6: Tests fallan con "sqlite3.OperationalError: database is locked"
-
-**A:** Cerrar todas las instancias de app
-```bash
-# Matar procesos Python
-pkill -f "python app.py"
-pkill -f "pytest"
-
-# Luego ejecutar tests
-PYTHONPATH=. pytest -v
-```
-
-### Q7: ¿Cómo ver logs en tiempo real?
-
-**A:**
-```bash
-# Error logs
-tail -f logs/error.log
-
-# Info logs
-tail -f logs/app.log | grep INFO
-
-# Ver últimas 50 líneas
-tail -50 logs/error.log
-
-# Buscar errores específicos
-grep "ERROR\|CRITICAL" logs/error.log
-```
-
-### Q8: Error "key.key not found" en backups
-
-**A:** Generar clave AES
-```bash
-python generate_key.py
-```
-
-### Q9: ¿Cómo ejecutar un test específico?
-
-**A:**
-```bash
-# Test específico
-PYTHONPATH=. pytest tests/test_password_security.py::test_weak_password_rejected -v
-
-# Tests que coincidan con patrón
-PYTHONPATH=. pytest -k "login" -v
-
-# Tests lentos (si tienen marker @pytest.mark.slow)
-PYTHONPATH=. pytest -m "slow" -v
-```
-
-### Q10: ¿Cómo cambiar puerto (no es 5000)?
-
-**A:** En `app.py`, última línea:
-```python
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
-```
-
-O en terminal:
-```bash
-python -c "import app; app.app.run(port=8080)"
-```
-
-### Q11: Error "Address already in use" en puerto 5000
-
-**A:** Encontrar y matar proceso
-```bash
-# Encontrar PID usando puerto 5000
-lsof -i :5000
-
-# Matar proceso
-kill -9 <PID>
-
-# O usar otro puerto
-python app.py --port 8080
-```
-
-### Q12: ¿Cómo cambiar la BD a otro nombre?
-
-**A:** En `app.py` o `.env`:
-```python
-DATABASE_URL = 'sqlite:///mi_base_datos.db'
-
-# Luego crear tablas
-python -c "from database import create_tables; create_tables()"
-```
-
-### Q13: Error "certificate verify failed" en HTTPS local
-
-**A:** Certificado auto-firmado en desarrollo, es normal. Para ignorar:
-```bash
-# Python requests
-import requests
-from urllib3.exceptions import InsecureRequestWarning
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-response = requests.get('https://localhost:5000', verify=False)
-
-# curl
-curl -k https://localhost:5000/health
-```
-
-### Q14: ¿Cómo hacer backup de la BD?
-
-**A:**
-```bash
-# Backup encriptado
-python tools/backup_db.py
-
-# Ver backups creados
-ls -lh backups/
-
-# Restaurar desde backup
-python tools/restore_db.py backups/db_backup_20260517T143022Z.enc
-```
-
-### Q15: Tests de cobertura muy bajos
-
-**A:** Generar reporte HTML
-```bash
-PYTHONPATH=. pytest --cov=. --cov-report=html
-
-# Abrir reporte
-open htmlcov/index.html
-```
-
----
+*Fin del documento.*
