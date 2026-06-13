@@ -1,0 +1,1047 @@
+%==============================================================================
+%  Manual de Desarrollador / SDK
+%  Gestor de Identidades de Casa Monarca
+%
+%  Formato segun rubrica (DocuDesarrolloMA2006B2026):
+%   - Clase: report
+%   - Fuente: 10 pt, Arial (sustituida por Helvetica via paquete helvet)
+%   - Hoja: Carta (letterpaper)
+%   - Margenes: superior/inferior 20 mm, izquierdo/derecho 25 mm
+%   - Interlineado: 5.0 pt (interpretado como espaciado comodo; ver \setstretch
+%     y \parskip abajo, ajustables si el profesor pide otro valor exacto)
+%   - ~60% del documento es texto (descripciones e ideas)
+%
+%  Compilacion recomendada: pdflatex (2 pasadas para indice y referencias).
+%==============================================================================
+\documentclass[10pt,letterpaper]{report}
+
+%------------------------------ Idioma y codificacion -------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands]{babel} % es-noshorthands evita choques con listings
+\usepackage[strings]{underscore}            % permite escribir _ en texto sin escaparlo
+
+%------------------------------ Fuente Arial (Helvetica) ----------------------
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}    % usa sans-serif (Helvetica ~ Arial) por defecto
+
+%------------------------------ Geometria de pagina ---------------------------
+\usepackage[letterpaper,top=20mm,bottom=20mm,left=25mm,right=25mm]{geometry}
+
+%------------------------------ Interlineado ----------------------------------
+\usepackage{setspace}
+\setstretch{1.25}                 % interlineado comodo (ajustable)
+\setlength{\parskip}{5pt}         % separacion entre parrafos ~5pt
+\setlength{\parindent}{0pt}
+
+%------------------------------ Graficos, color, tablas -----------------------
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\setlist{topsep=2pt,itemsep=1pt,parsep=0pt}
+
+%------------------------------ Codigo (listings) -----------------------------
+\usepackage{listings}
+\definecolor{codebg}{gray}{0.95}
+\definecolor{codekw}{RGB}{0,90,160}
+\definecolor{codecm}{RGB}{90,120,90}
+\definecolor{codestr}{RGB}{160,60,30}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecm}\itshape,
+  stringstyle=\color{codestr},
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  frame=single,
+  framesep=4pt,
+  xleftmargin=6pt,
+  xrightmargin=4pt,
+  aboveskip=8pt,
+  belowskip=8pt
+}
+\lstdefinestyle{bash}{language=bash}
+\lstdefinestyle{python}{language=Python}
+\lstdefinestyle{plain}{}
+
+%------------------------------ Diagramas (TikZ) ------------------------------
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
+
+%------------------------------ Encabezado / pie ------------------------------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize Gestor de Identidades de Casa Monarca}
+\fancyhead[R]{\footnotesize Manual de Desarrollador}
+\fancyfoot[C]{\footnotesize \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.0pt}
+
+%------------------------------ Hipervinculos (al final) ----------------------
+\usepackage[hidelinks]{hyperref}
+\hypersetup{
+  pdftitle={Manual de Desarrollador - Gestor de Identidades de Casa Monarca},
+  pdfauthor={Equipo de desarrollo}
+}
+
+%==============================================================================
+%  DATOS DE PORTADA  (rellenar / confirmar)
+%==============================================================================
+\newcommand{\manualNombre}{Gestor de Identidades de Casa Monarca}
+\newcommand{\manualVersion}{1.0}
+\newcommand{\escudoPath}{tecnologico-de-monterrey-blue.png}
+\newcommand{\fechaLugar}{Monterrey, Nuevo Le\'on. 12 de junio de 2026}
+\newcommand{\carrera}{Ingenier\'ia en Ciencia de Datos y Matem\'aticas}
+\newcommand{\curso}{Uso de \'algebras modernas para seguridad y criptograf\'ia (Gpo 601)}
+\newcommand{\grupo}{Grupo 601}
+% --- Estudiantes (nombre completo y matricula) ---
+\newcommand{\estudiantes}{%
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{ll}
+\toprule
+\textbf{Nombre} & \textbf{Matr\'icula} \\
+\midrule
+Ana Lidia Arteaga Bret\'on & A00838732 \\
+Ricardo Ballesteros Amavizca & A01255358 \\
+Daniel Garnelo Mart\'inez & A00573086 \\
+Daniela Ortiz Blanco & A00840140 \\
+Axel Gabriel Rocha P\'erez & A01067854 \\
+\'Alvaro Yeudiel Padilla Lobat\'on & A01665850 \\
+\bottomrule
+\end{tabular}}
+\newcommand{\profesores}{%
+\begin{tabular}{c}
+\toprule
+Alberto F. Mart\'inez \\
+Ra\'ul G\'omez Mu\~noz \\
+Daniel Otero Fadul \\
+Pedro Leonel Olaya Trejos \\
+\bottomrule
+\end{tabular}}
+
+%==============================================================================
+\begin{document}
+\selectlanguage{spanish}
+
+%------------------------------ PORTADA ---------------------------------------
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+
+% Escudo del Instituto (se omite limpio si el archivo no existe)
+\IfFileExists{\escudoPath}{%
+  \includegraphics[height=2.8cm]{\escudoPath}\\[10mm]
+}{%
+  \fbox{\parbox[c][2.8cm][c]{0.40\textwidth}{\centering \itshape Escudo del Instituto\\ (colocar \texttt{\escudoPath})}}\\[10mm]
+}
+
+{\LARGE\bfseries Manual de Desarrollador}\\[2mm]
+{\Large\bfseries \manualNombre}\\[2mm]
+{\large Versi\'on \manualVersion}\\[12mm]
+
+{\large\bfseries Equipo de trabajo}\\[3mm]
+\estudiantes\\[10mm]
+
+{\large\bfseries Profesores}\\[3mm]
+\profesores\\[10mm]
+
+{\large\bfseries Socio Formador}\\[3mm]
+\begin{tabular}{c}
+\toprule
+Casa Monarca \\
+\bottomrule
+\end{tabular}
+
+\vfill
+
+{\large Instituto Tecnol\'ogico y de Estudios Superiores de Monterrey}\\[1mm]
+{\large Escuela de Ingenier\'ia y Ciencias}\\[1mm]
+{\large \carrera}\\[5mm]
+{\large \curso}\\[1mm]
+{\normalsize \fechaLugar}
+\end{titlepage}
+
+%------------------------------ INDICE ----------------------------------------
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+%==============================================================================
+\chapter{Descripci\'on General}
+%==============================================================================
+
+\section{Prop\'osito del sistema}
+El \textbf{Gestor de Identidades de Casa Monarca} es una aplicaci\'on web cuyo prop\'osito es
+administrar, de forma segura y trazable, las identidades digitales y los privilegios de acceso del
+personal de Casa Monarca, as\'i como proteger la informaci\'on sensible de los expedientes de las
+personas migrantes y refugiadas que la organizaci\'on atiende. Aunque la aplicaci\'on tambi\'en
+digitaliza el levantamiento de expedientes (denominados \texttt{encuestas} en el c\'odigo), su
+columna vertebral es un \emph{stack} de gesti\'on de identidad y seguridad: autenticaci\'on
+robusta de contrase\~nas, control de acceso basado en roles (RBAC), infraestructura de clave
+p\'ublica (PKI X.509), llaves de acceso WebAuthn (\emph{passkeys}), cifrado de campo con rotaci\'on
+de llaves y una bit\'acora de auditor\'ia.
+
+En otras palabras, el sistema responde a una necesidad concreta del Socio Formador: una
+organizaci\'on con recursos limitados que custodia datos personales altamente delicados ---cuya
+filtraci\'on podr\'ia poner en riesgo f\'isico y legal a personas ya vulnerables--- requiere
+mecanismos de identidad y proteccion de datos del nivel de una instituci\'on grande, pero operables
+y mantenibles con su propia infraestructura. El gestor de identidades provee exactamente esa capa:
+decide \emph{qui\'en} puede entrar, \emph{qu\'e} puede hacer seg\'un su rol, \emph{c\'omo} se prueba
+criptogr\'aficamente su identidad para las acciones cr\'iticas, y \emph{queda registro} de cada
+operaci\'on relevante.
+
+\section{Alcance}
+
+\subsection*{Qu\'e hace}
+\begin{itemize}
+  \item \textbf{Autenticaci\'on de usuarios} con hashing \textbf{Argon2id}, bloqueo de cuentas por
+  intentos fallidos y verificaci\'on de contrase\~nas filtradas contra la base de datos de
+  \emph{Have I Been Pwned} (HIBP) mediante k-anonimato.
+  \item \textbf{Control de acceso basado en roles} (RBAC) con cuatro roles
+  (\texttt{usuario}, \texttt{operativo}, \texttt{coordinador}, \texttt{admin}) y un conjunto de
+  permisos CRUD por rol.
+  \item \textbf{Identidad reforzada para roles cr\'iticos} (\texttt{admin}, \texttt{coordinador})
+  v\'ia certificados \textbf{X.509} con reto--respuesta firmado (RSA PKCS\#1 v1.5 + SHA-256) y
+  \textbf{passkeys WebAuthn}, con derivaci\'on autom\'atica de un certificado a partir de la primera
+  passkey (arquitectura N:1).
+  \item \textbf{Cifrado de campo} (Fernet) de los datos sensibles de cada expediente, con
+  \textbf{rotaci\'on de llaves} basada en un \emph{keyring} con huellas SHA-256 y re-cifrado masivo
+  en segundo plano.
+  \item \textbf{Flujo de expedientes} con una m\'aquina de estados revisada en cascada por los
+  distintos niveles operativos.
+  \item \textbf{Solicitudes ARCO} (Acceso, Rectificaci\'on, Cancelaci\'on y Oposici\'on) con un
+  pipeline de aprobaci\'on multinivel.
+  \item \textbf{Auditor\'ia} (tabla \texttt{logs}) y \textbf{respaldos cifrados} de la base de datos.
+\end{itemize}
+
+\subsection*{Qu\'e l\'imites tiene}
+\begin{itemize}
+  \item No expone una API JSON/REST de prop\'osito general: la interacci\'on es por
+  formularios HTML renderizados en el servidor (Jinja2). Solo los flujos WebAuthn y algunos paneles
+  de administraci\'on responden JSON consumido por \texttt{fetch()}.
+  \item No integra directorios corporativos (LDAP/Active Directory) ni inicio de sesi\'on \'unico
+  (SSO); las cuentas se administran localmente.
+  \item No usa un m\'odulo de seguridad por hardware (HSM): el material criptogr\'afico reside en
+  archivos locales protegidos (\texttt{key.key}, \texttt{certs/}, \texttt{keys/}).
+  \item No est\'a dise\~nado para escalado horizontal con estado compartido: usa SQLite como un
+  \'unico proceso. Esto condiciona el despliegue (ver el cap\'itulo de Despliegue y el de
+  Problemas Conocidos).
+  \item El segundo factor para roles cr\'iticos es exclusivamente certificado X.509 + passkey; no
+  hay 2FA por SMS o correo.
+\end{itemize}
+
+\section{Casos de uso principales}
+\begin{enumerate}
+  \item \textbf{Inicio de sesi\'on seguro.} Un colaborador se autentica con usuario y contrase\~na;
+  si su rol es cr\'itico, el sistema le exige completar y usar su certificado/passkey antes de
+  operar.
+  \item \textbf{Levantamiento y canalizaci\'on de un expediente.} Un \texttt{usuario} crea un
+  expediente (estado \texttt{borrador}); este avanza por revisi\'on de \texttt{operativo},
+  \texttt{coordinador} y, finalmente, \texttt{admin}, cifrando los datos sensibles en cada paso.
+  \item \textbf{Administraci\'on de identidades.} Un \texttt{admin} emite, descarga o revoca
+  certificados, gestiona passkeys y consulta el estado del v\'inculo passkey--certificado.
+  \item \textbf{Rotaci\'on de llave de cifrado.} Un \texttt{admin}, autorizando la acci\'on con su
+  passkey, configura y activa una nueva llave; el sistema re-cifra los expedientes en segundo plano.
+  \item \textbf{Solicitud ARCO.} Una persona presenta una solicitud sobre sus datos en un formulario
+  p\'ublico; la solicitud escala por niveles hasta su resoluci\'on o reenv\'io a \texttt{admin}.
+  \item \textbf{Auditor\'ia.} Un \texttt{admin} revisa la bit\'acora de eventos de seguridad y
+  operaci\'on.
+\end{enumerate}
+
+%==============================================================================
+\chapter{Arquitectura del Sistema}
+%==============================================================================
+
+\section{Tipo de arquitectura}
+El sistema sigue una arquitectura \textbf{mon\'olito web cliente--servidor} renderizada en el
+servidor (\emph{server-side rendering}). Es una aplicaci\'on Flask de \emph{archivo \'unico}: casi
+toda la l\'ogica de negocio, el acceso a datos, los \emph{helpers} criptogr\'aficos y las rutas
+viven en \texttt{app.py} (alrededor de 5\,600 l\'ineas, unas 40 rutas). No hay una capa de modelos u
+ORM separada: el acceso a datos se hace con \texttt{sqlite3} crudo a trav\'es de \texttt{get\_conn()}.
+La configuraci\'on por ambiente se centraliza en \texttt{config.py}.
+
+Este estilo se eligi\'o deliberadamente por \textbf{simplicidad operativa}: un solo proceso, una sola
+base de datos en archivo, sin dependencias de infraestructura pesada, de modo que el Socio Formador
+pueda instalarlo y mantenerlo con recursos modestos.
+
+\section{Componentes principales}
+\begin{itemize}
+  \item \textbf{Capa web (Flask + Jinja2):} define las rutas \texttt{@app.route}, procesa formularios
+  y renderiza plantillas HTML en \texttt{templates/}.
+  \item \textbf{Control de acceso (RBAC):} \texttt{PERMISSIONS}, \texttt{has\_permission()},
+  \texttt{require\_role()} y el \emph{gating} de identidad \texttt{enforce\_certificate\_setup()}.
+  \item \textbf{Subsistema de identidad reforzada:} PKI X.509 (CA local en \texttt{certs/}) y
+  WebAuthn/passkeys (\texttt{passkey\_credentials}).
+  \item \textbf{Subsistema de cifrado:} Fernet con \emph{keyring} de llaves
+  (\texttt{encrypt\_data}/\texttt{decrypt\_data}), m\'etricas y cola de re-cifrado.
+  \item \textbf{Persistencia:} base de datos SQLite (\texttt{database.db}) con 11 tablas, creada y
+  migrada por \texttt{init\_db()} mediante \texttt{ensure\_column()}.
+  \item \textbf{Auditor\'ia:} funci\'on \texttt{log()} que escribe en la tabla \texttt{logs}.
+  \item \textbf{Procesos auxiliares (\texttt{tools/}):} respaldo/restauraci\'on cifrados y
+  \emph{worker} de re-cifrado que consume la cola \texttt{reencrypt\_jobs}.
+\end{itemize}
+
+\section{Diagrama general}
+La Figura~\ref{fig:arq} muestra la relaci\'on entre los componentes: el navegador interact\'ua por
+HTTP con \texttt{app.py}, que concentra la l\'ogica y persiste en SQLite; los procesos auxiliares
+operan fuera del ciclo de petici\'on/respuesta sobre la misma base de datos y el material de llaves.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw, rounded corners, align=center, inner sep=5pt, minimum height=9mm},
+  node distance=10mm and 16mm
+]
+  \node[box, fill=blue!8] (browser) {Navegador\\(cliente web)};
+  \node[box, fill=green!10, below=of browser, text width=6.6cm]
+    (app) {\textbf{app.py} (Flask, $\sim$5\,600 l\'ineas, $\sim$40 rutas)\\[2pt]
+            RBAC \textbullet\ CSRF \textbullet\ Cifrado Fernet\\
+            PKI X.509 \textbullet\ WebAuthn \textbullet\ Auditor\'ia};
+  \node[box, fill=orange!12, below=of app] (db) {SQLite \textemdash\ \texttt{database.db} (11 tablas)};
+  \node[box, fill=gray!12, right=of app, text width=3.6cm]
+    (tools) {\texttt{tools/}\\ \texttt{backup\_db.py}\\ \texttt{reencrypt\_worker.py}};
+  \node[box, fill=gray!8, below=of tools, text width=3.6cm]
+    (keys) {Material de llaves\\ \texttt{key.key}, \texttt{certs/}, \texttt{keys/}};
+
+  \draw[<->, thick] (browser) -- (app) node[midway, right]{HTTP / HTML};
+  \draw[<->, thick] (app) -- (db) node[midway, right]{\texttt{sqlite3}};
+  \draw[<->] (app) -- (tools);
+  \draw[<->] (tools) -- (db);
+  \draw[<->] (tools) -- (keys);
+  \draw[<->] (app.south west) to[bend right=20] (keys.west);
+\end{tikzpicture}
+\caption{Diagrama general de componentes del Gestor de Identidades.}
+\label{fig:arq}
+\end{figure}
+
+%==============================================================================
+\chapter{Stack Tecnol\'ogico}
+%==============================================================================
+
+\section{Lenguajes}
+El backend est\'a escrito \'integramente en \textbf{Python} (3.10 o superior). Las plantillas usan
+\textbf{HTML} con el lenguaje de plantillas \textbf{Jinja2}, y el lado del cliente emplea
+\textbf{JavaScript} est\'andar del navegador para las ceremonias WebAuthn
+(\texttt{navigator.credentials.create/get}) y algunas llamadas \texttt{fetch()}. Las consultas a la
+base de datos se expresan en \textbf{SQL} (dialecto SQLite).
+
+\section{Frameworks}
+\begin{itemize}
+  \item \textbf{Flask 2.3.3} \textemdash\ framework web: enrutamiento, sesiones, render de plantillas.
+  \item \textbf{Werkzeug 2.3.7} \textemdash\ capa WSGI subyacente de Flask.
+  \item \textbf{Jinja2 3.1.2} \textemdash\ motor de plantillas HTML.
+\end{itemize}
+
+\section{Bibliotecas}
+La Tabla~\ref{tab:stack} resume las dependencias declaradas en \texttt{requirements.txt} y su
+funci\'on criptogr\'afica o de soporte.
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Biblioteca} & \textbf{Versi\'on} & \textbf{Uso} \\
+\midrule
+\texttt{cryptography} & $\geq$43.0.3,$<$46 & Fernet, X.509, RSA, \emph{padding} PKCS1v15, hashes SHA-256. \\
+\texttt{argon2-cffi} & 23.1.0 & Hashing de contrase\~nas Argon2id. \\
+\texttt{webauthn} & 2.3.0 & Ceremonias WebAuthn (registro y autenticaci\'on de passkeys). \\
+\texttt{requests} & 2.31.0 & Llamadas HTTP salientes auxiliares. \\
+\texttt{pytest} / \texttt{pytest-cov} & 7.4.3 / 4.1.0 & Suite de pruebas y cobertura. \\
+\bottomrule
+\end{tabularx}
+\caption{Bibliotecas principales del proyecto.}
+\label{tab:stack}
+\end{table}
+
+La base de datos es \textbf{SQLite}, incluida en la biblioteca est\'andar de Python (\texttt{sqlite3}),
+por lo que no requiere un servidor de base de datos aparte.
+
+%==============================================================================
+\chapter{Estructura del Proyecto}
+%==============================================================================
+
+\section{Organizaci\'on de carpetas}
+\begin{lstlisting}[style=plain]
+casa-monarca-app/
+|- app.py              # Backend completo: rutas, esquema DB, criptografia, reglas
+|- config.py           # DevelopmentConfig / ProductionConfig / TestingConfig
+|- generate_key.py     # Genera la llave Fernet maestra (key.key)
+|- requirements.txt
+|- setup.sh            # Instalacion: .venv, deps, .env, key.key, carpetas
+|- .env.example        # Plantilla de variables de entorno
+|- .gitignore          # Excluye key.key, keys/, certs/*.pem, *.db, etc.
+|- templates/          # 14 plantillas Jinja2 (HTML)
+|- static/             # Activos estaticos (CSS/JS/imagenes)
+|- tools/
+|   |- backup_db.py       # Respaldo cifrado de database.db (Fernet)
+|   |- restore_db.py      # Restauracion desde respaldo cifrado
+|   |- reencrypt_worker.py# Procesa la cola reencrypt_jobs (rotacion)
+|- tests/              # Suite pytest (fixtures con DB/certs/llaves aislados)
+|- certs/              # CA local + certificados emitidos (gitignored)
+|- keys/               # Material de llaves rotadas (gitignored)
+|- backups/            # Respaldos cifrados
+|- logs/               # Logs de ejecucion
+|- key.key             # Llave Fernet activa (gitignored)
+|- database.db         # Base de datos SQLite (gitignored, creada al arrancar)
+\end{lstlisting}
+
+\section{Descripci\'on de m\'odulos}
+\begin{itemize}
+  \item \textbf{\texttt{app.py}} \textemdash\ n\'ucleo de la aplicaci\'on. Para orientarse conviene
+  buscar \texttt{@app.route} (rutas) y los \texttt{def} de nivel superior (helpers). Agrupa: esquema y
+  migraciones (\texttt{init\_db}, \texttt{ensure\_column}), RBAC, contrase\~nas (Argon2id, pol\'itica,
+  HIBP), PKI X.509, WebAuthn/passkeys, cifrado Fernet, CSRF y banderas de cookies, y la l\'ogica de
+  expedientes y ARCO.
+  \item \textbf{\texttt{config.py}} \textemdash\ jerarqu\'ia \texttt{Config} $\rightarrow$
+  \texttt{DevelopmentConfig}/\texttt{ProductionConfig}/\texttt{TestingConfig}, seleccionada con la
+  variable \texttt{FLASK\_ENV}.
+  \item \textbf{\texttt{generate\_key.py}} \textemdash\ genera la llave maestra Fernet en \texttt{key.key}.
+  \item \textbf{\texttt{tools/}} \textemdash\ utilidades fuera del ciclo de petici\'on: respaldo y
+  restauraci\'on cifrados y el \emph{worker} de re-cifrado.
+  \item \textbf{\texttt{templates/}} \textemdash\ 14 plantillas Jinja2 (login, dashboard, survey,
+  admin, admin\_cifrado, admin\_identidades, admin\_pki, arco, cert\_setup, colaborador, logs,
+  password\_update, profile, usuarios).
+  \item \textbf{\texttt{tests/}} \textemdash\ pruebas \texttt{pytest} con \emph{fixtures} que
+  reconstruyen una base de datos, certificados y llaves aislados por prueba.
+\end{itemize}
+
+%==============================================================================
+\chapter{Configuraci\'on del Entorno}
+%==============================================================================
+
+\section{Requisitos (versiones)}
+\begin{itemize}
+  \item \textbf{Python} 3.10 o superior.
+  \item Las dependencias de \texttt{requirements.txt} (ver Tabla~\ref{tab:stack}).
+  \item Sistema operativo tipo Unix (macOS o Linux) para \texttt{setup.sh}; en Windows pueden
+  ejecutarse los pasos manualmente dentro de un entorno virtual.
+\end{itemize}
+
+\section{Variables de entorno}
+La configuraci\'on se controla con variables de entorno (plantilla en \texttt{.env.example}). Las m\'as
+relevantes, con sus valores por defecto, se listan en la Tabla~\ref{tab:env}.
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Variable} & \textbf{Default} & \textbf{Funci\'on} \\
+\midrule
+\texttt{FLASK\_ENV} & development & Selecciona la clase de configuraci\'on. \\
+\texttt{SECRET\_KEY} & \itshape inseguro & Firma de cookies de sesi\'on (debe cambiarse en prod). \\
+\texttt{ENCRYPTION\_KEY\_PATH} & key.key & Ruta de la llave Fernet activa. \\
+\texttt{ENCRYPTION\_LEGACY\_KEY\_PATHS} & (vac\'io) & Llaves ``legadas'' para descifrar durante rotaci\'on. \\
+\texttt{CERT\_CA\_CERT\_PATH} & certs/ca\_cert.pem & Certificado de la CA local. \\
+\texttt{CERT\_CA\_KEY\_PATH} & certs/ca\_key.pem & Llave privada de la CA local. \\
+\texttt{LOGIN\_MAX\_ATTEMPTS} & 5 & Intentos antes de bloquear. \\
+\texttt{LOGIN\_WINDOW\_SECONDS} & 300 & Ventana de conteo de intentos. \\
+\texttt{LOGIN\_LOCKOUT\_SECONDS} & 900 & Duraci\'on del bloqueo. \\
+\texttt{PASSWORD\_MIN\_LENGTH} & 12 & Longitud m\'inima de contrase\~na. \\
+\texttt{SIGNATURE\_CHALLENGE\_TTL\_SECONDS} & 300 & Vigencia del reto de firma. \\
+\texttt{PASSKEY\_ENABLED} & 1 & Habilita WebAuthn. \\
+\texttt{PASSKEY\_ENFORCE\_CRITICAL} & 0 & Exige passkey a roles cr\'iticos. \\
+\texttt{PASSKEY\_RP\_ID} / \texttt{PASSKEY\_ORIGIN} & localhost / http://localhost:5000 & Identidad de la \emph{Relying Party}. \\
+\texttt{ENABLE\_SESSION\_COOKIE\_SECURE} & 1 (prod) & Fuerza cookies \texttt{Secure}. \\
+\bottomrule
+\end{tabularx}
+\caption{Variables de entorno principales.}
+\label{tab:env}
+\end{table}
+
+\section{Archivos de configuraci\'on}
+\begin{itemize}
+  \item \textbf{\texttt{.env}} \textemdash\ valores del entorno local (copiado de \texttt{.env.example}
+  por \texttt{setup.sh}); est\'a en \texttt{.gitignore}.
+  \item \textbf{\texttt{config.py}} \textemdash\ define las tres clases de configuraci\'on. En
+  \texttt{TestingConfig}, \texttt{LOGIN\_MAX\_ATTEMPTS} sube a 1000 para no interferir con las pruebas;
+  \texttt{ProductionConfig} fuerza \texttt{SESSION\_COOKIE\_SAMESITE="Strict"} y desactiva
+  \texttt{DEBUG}.
+  \item \textbf{\texttt{key.key}}, \textbf{\texttt{certs/*.pem}}, \textbf{\texttt{keys/}} \textemdash\
+  material criptogr\'afico generado en tiempo de ejecuci\'on; \textbf{nunca debe versionarse} (todos
+  est\'an en \texttt{.gitignore}).
+\end{itemize}
+
+%==============================================================================
+\chapter{Instalaci\'on y Ejecuci\'on}
+%==============================================================================
+
+\section{Pasos para levantar el sistema}
+\begin{enumerate}
+  \item Clonar el repositorio y entrar al directorio del proyecto.
+  \item Ejecutar el \emph{script} de configuraci\'on: \texttt{./setup.sh}. Este crea el entorno
+  virtual \texttt{.venv}, instala dependencias, copia \texttt{.env.example} a \texttt{.env}, genera
+  \texttt{key.key} y crea las carpetas \texttt{certs/}, \texttt{backups/} y \texttt{logs/}.
+  \item Editar \texttt{.env} con los valores apropiados (sobre todo \texttt{SECRET\_KEY} en
+  producci\'on).
+  \item Ejecutar la aplicaci\'on: \texttt{.venv/bin/python app.py}. En el primer arranque,
+  \texttt{init\_db()} crea/migra el esquema, \texttt{create\_default\_accounts()} siembra cuentas por
+  defecto y \texttt{bootstrap\_dev\_certificates()} genera la CA y certificados de desarrollo.
+  \item Abrir \url{http://127.0.0.1:5000} en el navegador.
+\end{enumerate}
+
+\section{Comandos principales}
+\begin{lstlisting}[style=bash]
+# Configuracion inicial (entorno, deps, .env, key.key, carpetas)
+./setup.sh
+
+# Ejecutar la app (sirve en http://127.0.0.1:5000)
+.venv/bin/python app.py
+
+# Verificacion de sintaxis
+.venv/bin/python -m py_compile app.py
+
+# Suite de pruebas completa
+PYTHONPATH=. .venv/bin/pytest -q
+
+# Una prueba puntual
+PYTHONPATH=. .venv/bin/pytest tests/test_password_security.py -q
+
+# Generar/regenerar la llave Fernet de cifrado de datos
+.venv/bin/python generate_key.py
+
+# Respaldo / restauracion cifrados de la base de datos
+.venv/bin/python tools/backup_db.py
+.venv/bin/python tools/restore_db.py
+\end{lstlisting}
+
+No existe un comando de \emph{lint}/\emph{format} dedicado: la v\'ia de verificaci\'on establecida es
+\texttt{py\_compile} m\'as \texttt{pytest}.
+
+%==============================================================================
+\chapter{Base de Datos}
+%==============================================================================
+
+\section{Modelo de datos}
+La persistencia es \textbf{SQLite} (\texttt{database.db}), accedida con \texttt{sqlite3} crudo a
+trav\'es de \texttt{get\_conn()} (con \texttt{row\_factory} para filas tipo diccionario). El esquema
+se crea y evoluciona en \texttt{init\_db()} usando el patr\'on \texttt{ensure\_column(conn, tabla,
+columna, definici\'on)}, que a\~nade columnas de forma \textbf{idempotente} sobre bases de datos
+existentes ---evitando migraciones destructivas. Consta de \textbf{11 tablas}.
+
+\section{Tablas principales}
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Tabla} & \textbf{Contenido} \\
+\midrule
+\texttt{usuarios} & Cuentas: \texttt{username}, \texttt{password\_hash} (Argon2id), \texttt{role}, \texttt{must\_change\_password}, estado de identidad reforzada. \\
+\texttt{encuestas} & Expedientes: \texttt{estado}, \texttt{datos} (\emph{blob} cifrado Fernet), \texttt{encryption\_key\_fingerprint}, metadatos de revisi\'on. \\
+\texttt{logs} & Bit\'acora: \texttt{usuario}, \texttt{accion}, \texttt{categoria} (operacion/seguridad), \texttt{detalle}, \texttt{timestamp}, \texttt{ip\_address}. \\
+\texttt{encryption\_keys} & Ciclo de vida de llaves: \texttt{key\_fingerprint} (SHA-256), \texttt{state} (activo/legada/retiring). \\
+\texttt{encryption\_metrics} & M\'etricas de latencia/uso de cifrado y descifrado. \\
+\texttt{reencrypt\_jobs} & Cola de re-cifrado masivo durante una rotaci\'on de llave. \\
+\texttt{solicitudes\_eliminacion} & Solicitudes de eliminaci\'on de expedientes y su resoluci\'on. \\
+\texttt{login\_lockouts} & Bloqueo de cuentas: \texttt{intentos}, ventana, \texttt{locked\_until}. \\
+\texttt{certificados} & Certificados X.509: \texttt{serial\_number}, \texttt{certificate\_pem}, \texttt{estado}, \texttt{expires\_at}, \texttt{algorithm}. \\
+\texttt{passkey\_credentials} & Credenciales WebAuthn: \texttt{credential\_id}, \texttt{public\_key} (COSE), \texttt{sign\_count}, \texttt{cert\_id}. \\
+\texttt{solicitudes\_arco} & Solicitudes ARCO con aprobaci\'on por nivel y \texttt{nivel\_actual}. \\
+\bottomrule
+\end{tabularx}
+\caption{Tablas de la base de datos.}
+\label{tab:tablas}
+\end{table}
+
+\section{Relaciones}
+Las relaciones se modelan de forma ligera mediante claves for\'aneas l\'ogicas (SQLite no exige su
+declaraci\'on, pero el c\'odigo las respeta):
+\begin{itemize}
+  \item \texttt{encuestas.usuario\_id} $\rightarrow$ \texttt{usuarios.id} (autor del expediente; uno a
+  muchos: un usuario crea muchos expedientes).
+  \item \texttt{certificados.user\_id} $\rightarrow$ \texttt{usuarios.id} (uno a muchos hist\'orico,
+  pero solo un certificado \texttt{activo} por usuario).
+  \item \texttt{passkey\_credentials.user\_id} $\rightarrow$ \texttt{usuarios.id} y
+  \texttt{passkey\_credentials.cert\_id} $\rightarrow$ \texttt{certificados.id}. Esta \'ultima es la
+  relaci\'on \textbf{N:1} clave: varias passkeys de un usuario se enlazan a un mismo certificado
+  derivado.
+  \item \texttt{logs.usuario} referencia (por nombre) a \texttt{usuarios.username} para fines de
+  auditor\'ia.
+  \item \texttt{encuestas.encryption\_key\_fingerprint} corresponde a un
+  \texttt{encryption\_keys.key\_fingerprint}, indicando con qu\'e llave se cifr\'o el registro.
+\end{itemize}
+
+%==============================================================================
+\chapter{API / Interfaces}
+%==============================================================================
+
+La aplicaci\'on \textbf{no expone una API JSON/REST de prop\'osito general}: cada ruta renderiza una
+plantilla Jinja2 o redirige tras procesar un formulario. Las respuestas JSON se limitan a los
+\emph{endpoints} WebAuthn (que siguen el protocolo del navegador) y a algunos paneles de
+administraci\'on consumidos por \texttt{fetch()}. Por ello, en este cap\'itulo ``API/Interfaces'' se
+documentan las \textbf{rutas HTTP} como interfaz del sistema.
+
+\section{Endpoints}
+La Tabla~\ref{tab:rutas} resume las rutas por \'area funcional (40 rutas en total).
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Ruta} & \textbf{M\'etodos} & \textbf{Funci\'on} \\
+\midrule
+\multicolumn{3}{l}{\textit{Autenticaci\'on e identidad}}\\
+\texttt{/} & GET, POST & Login (Argon2id, bloqueo, gating de identidad). \\
+\texttt{/auth/passkey/register/options|verify} & POST & Registro WebAuthn. \\
+\texttt{/auth/passkey/login/options|verify} & POST & Autenticaci\'on WebAuthn. \\
+\texttt{/auth/check-passkey-required} & POST & Indica si la cuenta exige passkey. \\
+\texttt{/action/passkey/options|verify} & POST & Firma de acciones cr\'iticas con passkey. \\
+\texttt{/certificado/setup} & GET, POST & Alta de certificado X.509 (servidor o CSR). \\
+\texttt{/password/update} & GET, POST & Cambio de contrase\~na. \\
+\texttt{/logout} & GET & Cierre de sesi\'on. \\
+\midrule
+\multicolumn{3}{l}{\textit{Expedientes}}\\
+\texttt{/dashboard} & GET & Panel seg\'un rol. \\
+\texttt{/survey} & GET, POST & Alta de expediente (cifra \texttt{datos}). \\
+\texttt{/bandeja} & GET & Pendientes de revisi\'on del rol. \\
+\texttt{/encuesta/<id>/avanzar} & POST & Avanza el estado del expediente. \\
+\texttt{/solicitar-eliminacion/<id>} & POST & Solicita eliminaci\'on. \\
+\texttt{/solicitud/<id>/resolver} & POST & Resuelve la solicitud. \\
+\midrule
+\multicolumn{3}{l}{\textit{Usuarios, PKI y passkeys}}\\
+\texttt{/usuarios}, \texttt{/eliminar-usuario/<id>} & GET/POST & Gesti\'on de cuentas. \\
+\texttt{/admin}, \texttt{/admin/identidades}, \texttt{/admin/pki} & GET & Paneles de administraci\'on. \\
+\texttt{/admin/pki/revoke-passkey|revoke-certificate} & POST & Revocaciones. \\
+\texttt{/certificado/<id>/descargar|revocar} & POST & Descarga/revoca certificado. \\
+\midrule
+\multicolumn{3}{l}{\textit{Cifrado y rotaci\'on}}\\
+\texttt{/admin/cifrado}, \texttt{/admin/cifrado/metrics|jobs} & GET/POST & Estado, m\'etricas y trabajos. \\
+\texttt{/admin/keys/configure} & POST & Configura llave candidata (firma passkey). \\
+\texttt{/admin/keys/<fp>/activate} & POST & Activa llave y encola re-cifrado. \\
+\midrule
+\multicolumn{3}{l}{\textit{Auditor\'ia, perfil y ARCO}}\\
+\texttt{/logs}, \texttt{/logs/clear} & GET/POST & Bit\'acora y limpieza (solo admin). \\
+\texttt{/profile} & GET, POST & Perfil del usuario. \\
+\texttt{/arco}, \texttt{/arco/solicitud} & GET/POST & Formulario y alta de solicitud. \\
+\texttt{/arco/<id>/aprobar|resolver|resolver-coordinador} & POST & Pipeline multinivel. \\
+\bottomrule
+\end{tabularx}
+\caption{Rutas HTTP (interfaz del sistema).}
+\label{tab:rutas}
+\end{table}
+
+\section{M\'etodos y par\'ametros}
+Las rutas siguen la convenci\'on HTTP est\'andar: \texttt{GET} para vistas y \texttt{POST} para
+operaciones que modifican estado. Los par\'ametros se reciben como \textbf{campos de formulario}
+(\texttt{request.form}), \textbf{par\'ametros de ruta} (p.\,ej. \texttt{<int:encuesta\_id>}) o, en los
+\emph{endpoints} WebAuthn, como \textbf{cuerpo JSON}. Toda solicitud que modifica estado debe incluir
+el \textbf{token CSRF} de la sesi\'on (ver el cap\'itulo de Manejo de Errores y Seguridad).
+
+\section{Ejemplos de uso}
+\textbf{Avanzar un expediente} (formulario HTML que dispara \texttt{POST /encuesta/<id>/avanzar}):
+\begin{lstlisting}[style=plain]
+<form method="POST" action="/encuesta/42/avanzar">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Avanzar al siguiente estado</button>
+</form>
+\end{lstlisting}
+
+\textbf{Iniciar el registro de una passkey} (cliente, JSON):
+\begin{lstlisting}[style=plain]
+const resp = await fetch('/auth/passkey/register/options', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken}
+});
+const options = await resp.json();
+const credential = await navigator.credentials.create({ publicKey: options });
+// ... se envia el atestado a /auth/passkey/register/verify
+\end{lstlisting}
+
+%==============================================================================
+\chapter{Flujos y L\'ogica de Negocio}
+%==============================================================================
+
+\section{Procesos clave del sistema}
+
+\subsection*{Inicio de sesi\'on y refuerzo de identidad}
+El login (\texttt{/}) valida usuario/contrase\~na con \texttt{verify\_password\_argon2id}. Antes de
+comprobar la contrase\~na, \texttt{\_is\_locked()} verifica si la cuenta/IP est\'a bloqueada. Tras un
+fallo, \texttt{\_record\_failed()} incrementa el contador; al alcanzar el m\'aximo se fija el bloqueo y
+se registra en \texttt{logs} con \texttt{categoria="seguridad"}. Para roles cr\'iticos,
+\texttt{enforce\_certificate\_setup()} (\emph{hook} \texttt{before\_request}) obliga a completar y usar
+certificado/passkey antes de operar.
+
+\subsection*{Ciclo de vida del expediente}
+La m\'aquina de estados (\texttt{next\_status\_for\_role()}) gobierna las transiciones, atando cada
+una al rol que corresponde revisar ese estado:
+\begin{center}
+\texttt{borrador} $\rightarrow$ \texttt{en\_revision\_operativa} $\rightarrow$
+\texttt{en\_revision\_coordinacion} $\rightarrow$ \texttt{validado\_coordinacion} $\rightarrow$
+\texttt{cerrado}
+\end{center}
+
+\subsection*{Cifrado y rotaci\'on de llaves}
+\texttt{encrypt\_data()} cifra con la llave activa y antepone la huella de la llave; el formato del
+\emph{blob} resultante es:
+\begin{lstlisting}[style=plain]
+b"fp:" + <huella SHA-256 de la llave> + b"\n" + <token Fernet>
+\end{lstlisting}
+\texttt{decrypt\_data()} lee la huella, ubica la llave en el \emph{keyring}
+(\texttt{get\_cipher\_for\_fingerprint}) ---que incluye la activa y las legadas--- y descifra. La
+rotaci\'on configura/activa una nueva llave y encola \texttt{reencrypt\_jobs}, que
+\texttt{tools/reencrypt\_worker.py} procesa en lotes.
+
+\subsection*{Solicitudes ARCO multinivel}
+\begin{center}
+\texttt{/arco} $\rightarrow$ usuarios $\rightarrow$ operativos $\rightarrow$ coordinadores
+$\rightarrow$ \{resuelto \textbar\ reenviado a admin\}
+\end{center}
+Cada nivel registra su aprobaci\'on en columnas dedicadas (\texttt{aprobado\_<nivel>}, \texttt{\_at},
+\texttt{\_por}).
+
+\section{Reglas importantes}
+\begin{itemize}
+  \item Una transici\'on de estado solo procede si el expediente est\'a en el estado que el rol actual
+  puede mover; de lo contrario se rechaza.
+  \item Las acciones cr\'iticas (rotar llave, revocar identidades) exigen firma con passkey v\'ia
+  \texttt{check\_and\_consume\_passkey\_action} (vigencia de 60 s).
+  \item Los retos de firma (certificado) son de un solo uso y caducan a los 300 s.
+  \item Si un certificado expira, \texttt{check\_certificate\_expiration} desactiva autom\'aticamente
+  las passkeys vinculadas (relaci\'on N:1).
+  \item Toda contrase\~na nueva pasa por \texttt{validate\_new\_password\_policy} (longitud, entrop\'ia
+  y verificaci\'on HIBP).
+\end{itemize}
+
+\section{Casos cr\'iticos}
+\begin{itemize}
+  \item \textbf{Cuenta bloqueada:} tras 5 intentos fallidos en 5 minutos, la cuenta queda bloqueada 15
+  minutos; el contador se reinicia al expirar la ventana.
+  \item \textbf{Llave activa perdida sin rotaci\'on ordenada:} sustituir \texttt{key.key} sin el flujo
+  de rotaci\'on deja ilegibles los datos cifrados con la llave anterior.
+  \item \textbf{Certificado comprometido:} debe \emph{revocarse} de inmediato (no basta esperar a su
+  expiraci\'on), lo que adem\'as desactiva sus passkeys.
+\end{itemize}
+
+%==============================================================================
+\chapter{Ejemplos de Uso}
+%==============================================================================
+
+\section{Casos t\'ipicos de uso}
+\textbf{Crear y canalizar un expediente.} Un \texttt{usuario} entra a \texttt{/survey}, llena el
+formulario y lo guarda (estado \texttt{borrador}, datos cifrados). El \texttt{operativo} lo ve en su
+\texttt{/bandeja} y lo avanza; luego el \texttt{coordinador} lo revisa y valida; finalmente el
+\texttt{admin} lo cierra. Cada paso queda en la bit\'acora.
+
+\section{Integraci\'on b\'asica}
+Aunque no hay SDK/cliente externo, los \emph{helpers} criptogr\'aficos pueden usarse de forma
+program\'atica dentro del proyecto. Por ejemplo, para cifrar y descifrar un dato sensible:
+\begin{lstlisting}[style=python]
+from app import encrypt_data, decrypt_data
+
+blob = encrypt_data("Informacion sensible del expediente")
+# blob == b"fp:<huella>\n<token Fernet>"
+
+texto = decrypt_data(blob)   # usa el keyring (llave activa + legadas)
+assert texto == "Informacion sensible del expediente"
+\end{lstlisting}
+
+\section{Ejecuci\'on de funciones clave}
+\textbf{Hashing y verificaci\'on de contrase\~na (Argon2id):}
+\begin{lstlisting}[style=python]
+from app import hash_password_argon2id, verify_password_argon2id
+
+hashed = hash_password_argon2id("UnaContrasenaFuerte!2026")
+ok = verify_password_argon2id("UnaContrasenaFuerte!2026", hashed)  # True
+\end{lstlisting}
+
+\textbf{Generaci\'on de la llave Fernet} (desde la l\'inea de comandos):
+\begin{lstlisting}[style=bash]
+.venv/bin/python generate_key.py   # escribe key.key
+\end{lstlisting}
+
+%==============================================================================
+\chapter{Manejo de Errores}
+%==============================================================================
+
+\section{Estrategia de errores}
+El sistema no usa un \emph{framework} de errores estructurado tipo JSON. Los errores de negocio se
+comunican con \textbf{mensajes \emph{flash}} renderizados en las plantillas
+(\texttt{flash()} + \texttt{render\_template}); los flujos WebAuthn/AJAX responden \textbf{JSON} con un
+c\'odigo HTTP apropiado y un campo de error legible. Los fallos criptogr\'aficos (firma inv\'alida,
+certificado expirado, reto vencido, descifrado fallido) producen un mensaje espec\'ifico al usuario
+y, en paralelo, una entrada de auditor\'ia con \texttt{categoria="seguridad"}.
+
+La protecci\'on \textbf{CSRF} es global (\emph{hook} \texttt{before\_request}): \texttt{ensure\_csrf\_token()}
+genera el token, \texttt{validate\_csrf()} lo compara y \texttt{csrf\_protect()} rechaza toda
+solicitud que modifique estado sin un token v\'alido.
+
+\section{Mensajes comunes}
+\begin{itemize}
+  \item ``Credenciales incorrectas.'' \textemdash\ usuario o contrase\~na inv\'alidos.
+  \item ``Cuenta bloqueada temporalmente.'' \textemdash\ se super\'o \texttt{LOGIN\_MAX\_ATTEMPTS}.
+  \item ``Debe configurar su certificado/passkey.'' \textemdash\ \emph{gating} de identidad para rol
+  cr\'itico.
+  \item ``Firma inv\'alida'' / ``Reto expirado.'' \textemdash\ fallo en reto--respuesta.
+  \item ``Contrase\~na insegura o presente en filtraciones.'' \textemdash\ rechazo de pol\'itica/HIBP.
+  \item ``Token CSRF inv\'alido.'' \textemdash\ formulario sin token o token incorrecto.
+\end{itemize}
+
+\section{Registro (logs)}
+La funci\'on \texttt{log(usuario, accion, categoria="operacion", detalle=None)} inserta en la tabla
+\texttt{logs} con marca de tiempo e IP. Se invoca en cada operaci\'on sensible: logins
+(\'exito/fallo/bloqueo), cambios de estado, emisi\'on/revocaci\'on de certificados y passkeys,
+configuraci\'on/rotaci\'on de llaves, resoluciones ARCO y eliminaci\'on de usuarios. La categor\'ia
+\texttt{seguridad} separa los eventos de inter\'es forense de las operaciones de negocio
+(\texttt{operacion}). La ruta \texttt{/logs} permite visualizar la bit\'acora; \texttt{/logs/clear} su
+limpieza (solo \texttt{admin}).
+
+%==============================================================================
+\chapter{Pruebas}
+%==============================================================================
+
+\section{Tipos de tests}
+La suite vive en \texttt{tests/} y usa \emph{fixtures} (\texttt{app\_module}) que aplican
+\texttt{monkeypatch.chdir(tmp\_path)} para reconstruir, por cada prueba, una base de datos, un
+conjunto de certificados y llaves \textbf{aislados}. La cobertura incluye:
+\begin{itemize}
+  \item Seguridad de contrase\~nas: rechazo de contrase\~nas d\'ebiles y bloqueo de hashes
+  ``legados''.
+  \item L\'imite de intentos de login y bloqueo temporal.
+  \item Emisi\'on, activaci\'on, revocaci\'on y flujo CSR de certificados X.509.
+  \item Firma de acciones cr\'iticas con passkeys y verificaci\'on CSRF.
+  \item Ciclo completo de canalizaci\'on de un expediente entre los cuatro roles.
+  \item Flujo y escalamiento de solicitudes ARCO multinivel (incluido el reenv\'io a \texttt{admin}).
+\end{itemize}
+Los archivos \texttt{test\_arco\_*.py}, \texttt{test\_csrf\_arco.py} y \texttt{test\_final\_verification.py}
+en la ra\'iz son \emph{scripts} de verificaci\'on ad hoc, no parte de la suite \texttt{pytest} formal.
+
+\section{C\'omo ejecutarlos}
+\begin{lstlisting}[style=bash]
+# Suite completa
+PYTHONPATH=. .venv/bin/pytest -q
+
+# Un archivo
+PYTHONPATH=. .venv/bin/pytest tests/test_password_security.py -q
+
+# Una funcion especifica
+PYTHONPATH=. .venv/bin/pytest \
+  tests/test_password_security.py::test_qa_a_rejects_weak_password_on_forced_update -q
+\end{lstlisting}
+
+%==============================================================================
+\chapter{Despliegue}
+%==============================================================================
+
+\section{C\'omo hacerlo}
+\subsection*{Despliegue local / autoalojado (referencia)}
+\begin{enumerate}
+  \item Ejecutar \texttt{setup.sh} en el servidor de destino.
+  \item Ajustar \texttt{.env} para producci\'on: \texttt{FLASK\_ENV=production}, \texttt{SECRET\_KEY}
+  fuerte y \'unica, \texttt{ENABLE\_SESSION\_COOKIE\_SECURE=1}.
+  \item Ejecutar la app detr\'as de un \emph{proxy} reverso/terminador TLS (la app no incluye servidor
+  WSGI de producci\'on ni \emph{proxy} propios).
+  \item Resguardar \texttt{key.key}, \texttt{certs/*.pem} y \texttt{database.db} con permisos
+  restrictivos.
+  \item Programar respaldos cifrados peri\'odicos con \texttt{tools/backup\_db.py} y validar la
+  restauraci\'on.
+\end{enumerate}
+
+\subsection*{Despliegue en HostGator (hosting de producci\'on)}
+En el hosting compartido de \textbf{HostGator}, la aplicaci\'on se publica como aplicaci\'on Python a
+trav\'es de \emph{Passenger}/cPanel (``Setup Python App''):
+\begin{enumerate}
+  \item Crear la aplicaci\'on Python en cPanel, seleccionando la versi\'on de Python (3.10+ si est\'a
+  disponible) y el directorio del proyecto.
+  \item Instalar dependencias en el entorno virtual que cPanel administra (\texttt{pip install -r
+  requirements.txt}).
+  \item Definir las variables de entorno desde el panel (las de la Tabla~\ref{tab:env}), en especial
+  \texttt{SECRET\_KEY}, \texttt{FLASK\_ENV=production} y los \texttt{PASSKEY\_*} con el dominio real
+  (\texttt{PASSKEY\_RP\_ID} y \texttt{PASSKEY\_ORIGIN} deben coincidir con el dominio HTTPS de
+  producci\'on, requisito de WebAuthn).
+  \item Subir el material de llaves (\texttt{key.key}, CA) por un canal seguro y fuera de la ra\'iz
+  p\'ublica.
+  \item Apuntar el \emph{passenger\_wsgi} al objeto \texttt{app} de Flask.
+\end{enumerate}
+
+\section{Entornos}
+Se distinguen tres entornos seleccionados por \texttt{FLASK\_ENV}:
+\begin{itemize}
+  \item \textbf{development:} \texttt{DEBUG=True}, cookies sin \texttt{Secure}; para trabajo local.
+  \item \textbf{production:} \texttt{DEBUG=False}, \texttt{SameSite=Strict}, cookies \texttt{Secure};
+  para HostGator.
+  \item \textbf{testing:} \emph{rate-limiting} desactivado; para la suite de pruebas.
+\end{itemize}
+
+\section{Consideraciones}
+\begin{itemize}
+  \item \textbf{HTTPS obligatorio para WebAuthn:} las passkeys solo funcionan sobre un origen seguro;
+  el dominio de HostGator debe servirse por HTTPS y coincidir con \texttt{PASSKEY\_ORIGIN}.
+  \item \textbf{SQLite en hosting compartido:} el bloqueo de archivos puede degradarse bajo
+  concurrencia; conviene mantener un solo proceso/worker.
+  \item \textbf{Procesos en segundo plano:} el \emph{worker} de re-cifrado
+  (\texttt{reencrypt\_worker.py}) puede requerir ejecuci\'on por \emph{cron} si el hosting no permite
+  procesos de larga duraci\'on (ver Problemas Conocidos).
+  \item \textbf{Secretos fuera del repositorio:} nunca subir \texttt{key.key}, \texttt{certs/*.pem} ni
+  \texttt{.env} al control de versiones ni a directorios p\'ublicos.
+\end{itemize}
+
+%==============================================================================
+\chapter{Seguridad}
+%==============================================================================
+
+\section{Autenticaci\'on}
+La autenticaci\'on base usa \textbf{Argon2id} (\texttt{Type.ID}) con \texttt{memory\_cost=65536}
+(64\,MiB), \texttt{time\_cost=3}, \texttt{parallelism=2}, \texttt{hash\_len=32} y una sal aleatoria de
+16 bytes generada con \texttt{os.urandom}. Argon2id es \emph{memory-hard} y resistente tanto a ataques
+de canal lateral como a fuerza bruta con GPU/ASIC. Para roles cr\'iticos se a\~nade un segundo factor
+de \textbf{posesi\'on}: certificado X.509 con reto--respuesta (RSA, \texttt{PKCS1v15} + \texttt{SHA256})
+y/o passkey WebAuthn. Las passkeys son \textbf{resistentes a \emph{phishing}} porque la firma queda
+atada al \texttt{PASSKEY\_ORIGIN}, y verifican el \texttt{sign\_count} para detectar clonaci\'on de
+autenticadores.
+
+\section{Manejo de datos sensibles}
+Los datos sensibles de cada expediente se cifran a nivel de campo con \textbf{Fernet}
+(AES-128-CBC + HMAC-SHA256, \emph{cifrado autenticado}). Cada \emph{blob} lleva la \textbf{huella
+SHA-256} de la llave usada, lo que permite \textbf{rotaci\'on de llaves} sin perder acceso a datos
+antiguos: conviven una llave activa y llaves legadas en el \emph{keyring}. La rotaci\'on sigue el
+ciclo activo $\rightarrow$ legada $\rightarrow$ retirada, con re-cifrado masivo en segundo plano. Los
+respaldos de la base de datos tambi\'en se cifran con Fernet.
+
+\section{Buenas pr\'acticas}
+\begin{itemize}
+  \item \textbf{Verificaci\'on de contrase\~nas filtradas} con HIBP por k-anonimato: solo se env\'ian
+  los 5 primeros caracteres hex del \texttt{SHA-1} de la contrase\~na; la comparaci\'on del sufijo es
+  local.
+  \item \textbf{Cookies endurecidas} (\texttt{enforce\_cookie\_flags}): \texttt{HttpOnly},
+  \texttt{Secure} y \texttt{SameSite}.
+  \item \textbf{CSRF} global con token sincronizado por sesi\'on.
+  \item \textbf{M\'inimo privilegio} y \textbf{separaci\'on de funciones} v\'ia RBAC y la m\'aquina de
+  estados de expedientes.
+  \item \textbf{Secretos fuera del repositorio} (todo el material criptogr\'afico est\'a en
+  \texttt{.gitignore}).
+  \item \textbf{Auditor\'ia} de eventos de seguridad para no repudio y rendici\'on de cuentas.
+\end{itemize}
+
+%==============================================================================
+\chapter{Gu\'ia de Contribuci\'on}
+%==============================================================================
+
+\section{Convenciones de c\'odigo}
+\begin{itemize}
+  \item Todo el backend reside en \texttt{app.py}; al agregar l\'ogica, ub\'iquela cerca de las
+  funciones afines y respete el estilo existente (nombres en espa\~nol para rutas, columnas y mensajes;
+  funciones \emph{snake\_case}).
+  \item Para evolucionar el esquema, use \textbf{siempre} \texttt{ensure\_column()} (idempotente) en
+  lugar de \texttt{ALTER TABLE} directo o migraciones destructivas.
+  \item No imprima ni registre material secreto (llaves, PEM, contrase\~nas).
+  \item Verifique con \texttt{py\_compile} y ejecute \texttt{pytest} antes de proponer cambios.
+\end{itemize}
+
+\section{Flujo de trabajo (git)}
+\begin{enumerate}
+  \item Crear una rama a partir de \texttt{main} (no trabajar directamente sobre \texttt{main}).
+  \item Realizar \emph{commits} peque\~nos y descriptivos (en espa\~nol, consistente con el historial).
+  \item Abrir un \emph{Pull Request} describiendo qu\'e cambia, por qu\'e y c\'omo se prob\'o.
+  \item No incluir en el control de versiones \texttt{key.key}, \texttt{certs/*.pem},
+  \texttt{keys/}, \texttt{.env} ni \texttt{*.db}.
+\end{enumerate}
+
+\section{C\'omo agregar funcionalidades}
+\begin{enumerate}
+  \item \textbf{Nueva ruta:} a\~nadir un \texttt{@app.route} con el decorador \texttt{require\_role()}
+  apropiado y validar permisos con \texttt{has\_permission()}.
+  \item \textbf{Nueva tabla/columna:} declararla en \texttt{init\_db()} y, si aplica a bases
+  existentes, a\~nadirla con \texttt{ensure\_column()}.
+  \item \textbf{Operaci\'on cr\'itica:} protegerla con \texttt{check\_and\_consume\_passkey\_action} y
+  registrar el resultado con \texttt{log(..., categoria="seguridad")}.
+  \item \textbf{Plantilla:} crear el HTML correspondiente en \texttt{templates/} incluyendo el campo
+  \texttt{csrf\_token} en todo formulario \texttt{POST}.
+  \item \textbf{Pruebas:} agregar casos en \texttt{tests/} siguiendo el patr\'on de \emph{fixtures}
+  aislados.
+\end{enumerate}
+
+%==============================================================================
+\chapter{Problemas Conocidos}
+%==============================================================================
+
+\section{Bugs actuales}
+Al tratarse de la primera versi\'on estable del gestor, no hay un registro de \emph{bugs} abiertos
+considerados bloqueantes. Las \'areas a vigilar son la concurrencia sobre SQLite y la coordinaci\'on
+del \emph{worker} de re-cifrado durante rotaciones de llave.
+
+\section{Limitaciones}
+Las principales limitaciones provienen del modelo de despliegue en \textbf{hosting compartido
+(HostGator)} y de la arquitectura de archivo \'unico:
+\begin{itemize}
+  \item \textbf{Soporte de Python/WSGI restringido:} la versi\'on de Python y las extensiones nativas
+  disponibles dependen del plan; \texttt{cryptography} y \texttt{argon2-cffi} requieren ruedas
+  compatibles. Conviene verificar la versi\'on antes de desplegar.
+  \item \textbf{Sin procesos de larga duraci\'on:} el hosting compartido suele matar procesos
+  persistentes, por lo que el \emph{worker} de re-cifrado debe ejecutarse de forma programada (cron)
+  en lotes, en vez de como demonio continuo.
+  \item \textbf{Concurrencia limitada con SQLite:} el bloqueo a nivel de archivo y los l\'imites de
+  E/S del hosting compartido restringen el n\'umero de escrituras simult\'aneas; el sistema se piensa
+  para un solo proceso.
+  \item \textbf{L\'imites de recursos:} cuotas de CPU, memoria y conexiones del plan compartido pueden
+  afectar el costo de Argon2id (64\,MiB por verificaci\'on) bajo picos de login.
+  \item \textbf{Control parcial del entorno:} la terminaci\'on TLS, las cabeceras y el \emph{cron} los
+  administra el panel del proveedor, no la aplicaci\'on; se depende de su configuraci\'on para
+  garantizar HTTPS (indispensable para WebAuthn).
+  \item \textbf{Sin escalado horizontal:} no hay estado compartido entre instancias; replicar el
+  proceso requerir\'ia migrar de SQLite a un motor cliente--servidor.
+\end{itemize}
+
+%==============================================================================
+\chapter{FAQ T\'ecnica}
+%==============================================================================
+
+\section{Problemas comunes al levantar el proyecto}
+\begin{description}[leftmargin=0pt, style=nextline]
+  \item[\texttt{ModuleNotFoundError} al ejecutar \texttt{app.py}.] Activar el entorno virtual
+  (\texttt{source .venv/bin/activate} o usar \texttt{.venv/bin/python}) y reinstalar dependencias con
+  \texttt{pip install -r requirements.txt} (o \texttt{setup.sh}).
+  \item[La app no encuentra \texttt{key.key}.] Generarla con \texttt{python generate\_key.py} o dejar
+  que \texttt{setup.sh} la cree. En HostGator, subirla fuera de la ra\'iz p\'ublica.
+  \item[Las passkeys fallan en producci\'on.] Verificar que \texttt{PASSKEY\_RP\_ID} y
+  \texttt{PASSKEY\_ORIGIN} coincidan con el dominio HTTPS real; WebAuthn exige origen seguro.
+  \item[Cuenta bloqueada en pruebas manuales.] Esperar \texttt{LOGIN\_LOCKOUT\_SECONDS} (15 min) o usar
+  el entorno \texttt{testing}, que relaja el \emph{rate-limiting}.
+\end{description}
+
+\section{Errores t\'ipicos de desarrollo}
+\begin{description}[leftmargin=0pt, style=nextline]
+  \item[Datos ilegibles tras regenerar la llave.] Reemplazar \texttt{key.key} sin pasar por el flujo
+  de rotaci\'on (\texttt{/admin/keys/configure} + \texttt{/admin/keys/<fp>/activate} +
+  \emph{worker}) deja ilegibles los registros previos. Conservar la llave anterior como ``legada''
+  hasta completar el re-cifrado.
+  \item[``Token CSRF inv\'alido'' en formularios nuevos.] Olvidar incluir
+  \texttt{\{\{ csrf\_token \}\}} en un formulario \texttt{POST}.
+  \item[Cambios de esquema que rompen bases existentes.] Usar \texttt{ALTER TABLE} directo en lugar de
+  \texttt{ensure\_column()}.
+  \item[Permisos insuficientes en una ruta nueva.] Olvidar \texttt{require\_role()}/
+  \texttt{has\_permission()}, dejando la acci\'on accesible a roles que no deber\'ian ejecutarla.
+\end{description}
+
+%==============================================================================
+\chapter{Referencias}
+%==============================================================================
+\begin{itemize}
+  \item Documentaci\'on de \texttt{cryptography} (Fernet, X.509, RSA): \url{https://cryptography.io/}
+  \item \texttt{argon2-cffi} (Argon2id): \url{https://argon2-cffi.readthedocs.io/}
+  \item Biblioteca \texttt{webauthn} (py\_webauthn): \url{https://github.com/duo-labs/py_webauthn}
+  \item Especificaci\'on WebAuthn (W3C): \url{https://www.w3.org/TR/webauthn-2/}
+  \item Have I Been Pwned \textemdash\ API de contrase\~nas (k-anonimato):
+  \url{https://haveibeenpwned.com/API/v3#PwnedPasswords}
+  \item RFC 9106 \textemdash\ Argon2: \url{https://www.rfc-editor.org/rfc/rfc9106}
+  \item NIST SP 800-57 \textemdash\ Recomendaciones de gesti\'on de llaves:
+  \url{https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final}
+  \item Documentaci\'on de Flask: \url{https://flask.palletsprojects.com/}
+  \item Configuraci\'on de aplicaciones Python en HostGator/cPanel (Setup Python App):
+  \url{https://www.hostgator.com/help}
+\end{itemize}
+
+\end{document}
