@@ -87,51 +87,56 @@ Aplicación web en Flask para gestionar expedientes y su canalización por nivel
    - Coordinador lo valida.
    - Admin lo cierra.
 
-Para detalles avanzados sobre challenge-response, certificados y flujos complejos, consultar `docs/user_manual_draft.md`.
+Para detalles avanzados sobre challenge-response, certificados y flujos complejos, consultar el `docs/manual_desarrollador.pdf` (manual de desarrollador / SDK) y el `docs/manual_usuario.pdf` (manual de usuario).
 
 ## Estructura del proyecto
 
 ```text
-Intentoa2/
-├── app.py                    # Aplicación principal Flask
-├── database.py               # Módulo de datos y esquema
+casa-monarca-app/
+├── app.py                    # Aplicación principal Flask (rutas, esquema, crypto, PKI)
+├── config.py                 # Configuración por entorno (Development/Production/Testing)
 ├── generate_key.py           # Script para generar/regenerar key.key
-├── key.key                   # Clave de cifrado (generada automáticamente)
-├── database.db               # Base de datos SQLite (generada en primer arranque)
+├── requirements.txt          # Dependencias de Python
+├── setup.sh                  # Setup inicial (venv, deps, .env, key.key, carpetas)
+├── key.key                   # Clave de cifrado Fernet (generada; no se versiona)
+├── database.db               # Base de datos SQLite (generada en primer arranque; no se versiona)
 ├── README.md                 # Este archivo
 ├── LICENSE                   # Licencia de código abierto (MIT)
 ├── DEVELOPERS.md             # Nombres y contacto de desarrolladores
 ├── CONTRIBUTING.md           # Guía de contribuciones
+├── TODO.md                   # Pendientes para producción
+├── CHANGELOG.txt             # Historial de cambios (general)
+├── Changelog-Backend.txt     # Cambios de backend
+├── Changelog-Frontend.txt    # Cambios de frontend
 ├── DOCUMENTATION_CHECKLIST.md # Progreso de documentación
-├── templates/
-│  ├── login.html
-│  ├── dashboard.html
-│  ├── survey.html
-│  ├── colaborador.html
-│  ├── admin.html
-│  ├── usuarios.html
-│  ├── logs.html
-│  └── password_update.html
-├── static/
-│  └── style.css
-├── certs/                    # Certificados X.509 de desarrollo
-│  ├── ca_cert.pem
-│  ├── ca_key.pem
-│  ├── admin_prod.pem
-│  ├── admin_cont.pem
-│  └── coord_admin.pem
+├── IMPLEMENTACION_ARCO_MULTINIVEL.md # Notas de diseño del flujo ARCO
+├── templates/                # Plantillas Jinja2 (HTML)
+├── static/                   # Archivos estáticos (style.css, action-passkey.js)
+├── certs/                    # Certificados X.509 de desarrollo (generados; no se versionan)
 ├── tools/
-│  ├── backup_db.py           # Script de backup cifrado
-│  └── restore_db.py          # Script de restore
-├── tests/
-│  └── test_password_security.py
-├── docs/                     # Documentación de entrega
-│  ├── user_manual_draft.md
-│  ├── technical_report_draft.md
-│  ├── executive_report_draft.md
-│  └── sdk_draft.md
-└── TODO.txt                  # Lista de tareas pendientes
+│  ├── backup_db.py           # Backup cifrado de la BD
+│  ├── restore_db.py          # Restore de la BD
+│  └── reencrypt_worker.py    # Worker de re-cifrado por rotación de llaves
+├── tests/                    # Suite de pruebas (pytest)
+└── docs/                     # Entregables de documentación
+   ├── reporte_técnico.pdf                     # Reporte Técnico
+   ├── reporte_ejecutivo.pdf                   # Reporte Ejecutivo
+   ├── manual_usuario.pdf                      # Manual de Usuario
+   ├── manual_desarrollador.pdf                # Manual de desarrollador / SDK
+   ├── sdk_draft.md                            # Notas del SDK
+   └── fuentes/                                # Código fuente LaTeX de la documentación
+      ├── reporte_técnico.tex
+      ├── reporte_ejecutivo.tex
+      ├── manual_usuario.tex
+      ├── manual_desarrollador.tex
+      └── imagenes/                            # Imágenes de los documentos
+         ├── tecnologico-de-monterrey-blue.png # Logo compartido
+         ├── reporte_tecnico/                  # Imágenes del reporte técnico
+         ├── reporte_ejecutivo/                # Imágenes del reporte ejecutivo
+         └── manual_usuario/                   # Imágenes del manual de usuario
 ```
+
+> Nota: para regenerar un PDF, compilar el `.tex` correspondiente desde `docs/fuentes/` con `pdflatex`. Cada documento resuelve sus imágenes vía `\graphicspath{{imagenes/<documento>/}{imagenes/}}` (su subcarpeta + el logo compartido).
 
 ## Contribuciones
 
@@ -187,6 +192,6 @@ Desarrolladores y contacto disponibles en archivo `DEVELOPERS.md`.
 
 ---
 
-**Nota:** documentación detallada (reportes técnico/ejecutivo, manual completo de usuario, detalles de PKI, guías de despliegue) disponible en carpeta `docs/` como borradores Markdown para refinar y convertir a LaTeX/Word según rúbrica de entrega.
+**Nota:** la documentación detallada (reporte técnico, reporte ejecutivo, manual de usuario y manual de desarrollador/SDK) está disponible en la carpeta `docs/` como PDFs finales, junto con sus fuentes editables (`.tex` y `sdk_draft.md`).
 Equipo del proyecto Casa Monarca.
 Correo sugerido para mantenimiento: `soporte-proyecto@casamonarca.local` (reemplazar por correo real).
