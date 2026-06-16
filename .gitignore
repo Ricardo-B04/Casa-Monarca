@@ -68,6 +68,16 @@ keys/
 *.tmp
 *.log
 
+# LaTeX build artifacts (la documentación final se versiona como PDF)
+*.aux
+*.toc
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
 # OS
 .DS_Store
 Thumbs.db

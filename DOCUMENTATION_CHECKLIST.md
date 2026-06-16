@@ -22,21 +22,18 @@ Estado actual: Primera etapa completada — preparar documentación para entrega
 - [x] Desarrolladores: `DEVELOPERS.md` (placeholder, espera nombres y contactos)
 - [x] Contribuciones: `CONTRIBUTING.md` (breve guía)
 
-## Documentación en borradores (docs/)
-- [x] `docs/user_manual_draft.md` (borrador)
-- [x] `docs/technical_report_draft.md` (borrador)
-- [x] `docs/executive_report_draft.md` (borrador)
-- [x] `docs/sdk_draft.md` (borrador)
+## Entregables finales (docs/)
+- [x] `docs/reporte_técnico.pdf` (Reporte Técnico) — regenerado desde fuente
+- [x] `docs/reporte_ejecutivo.pdf` (Reporte Ejecutivo) — regenerado desde fuente
+- [x] `docs/manual_usuario.pdf` (Manual de Usuario) — regenerado con la portada corregida
+- [x] `docs/manual_desarrollador.pdf` (Manual de Desarrollador / SDK)
+- [x] Fuentes editables: `docs/fuentes/*.tex` + imágenes por documento en `docs/fuentes/imagenes/`, y `docs/sdk_draft.md`
 
 ## Tareas pendientes
 - [x] Rellenar `DEVELOPERS.md` con nombres y contactos reales
-- [ ] Expandir y enriquecer borradores en `docs/` (agregar ejemplos, comandos, capturas)
-- [ ] Revisar y comentar código fuente (`app.py`, `database.py`, etc.)
+- [x] Confirmar e incorporar versiones finales de los reportes y el manual de usuario
+- [ ] Revisar y comentar código fuente (`app.py`)
 - [ ] Completar pruebas básicas y documentar resultados
-- [ ] Convertir borradores Markdown a LaTeX (reportes técnico/ejecutivo)
-- [ ] Convertir manual de usuario Markdown a Word
-- [ ] Generar PDFs finales
 
 Notas:
-- Archivo base para ir marcando progreso y enlazando documentos finales.
-- Próximo paso: crear los archivos iniciales en `docs/` y mover secciones desde `README.md`.
+- Pendientes de lanzamiento a producción centralizados en `TODO.md`.
